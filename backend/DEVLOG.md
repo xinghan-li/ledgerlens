@@ -1,0 +1,518 @@
+# 2026-01-10 工作日志
+
+## 项目：LedgerLens - 收据 OCR 后端系统
+
+### 主要成就
+今天完成了从基础 OCR 到完整 LLM 处理流程的重大升级，实现了基于 RAG 的商店特定配置系统，并建立了可扩展的架构基础。
+
+---
+
+## 一、核心功能实现
+
+### 1. RAG（检索增强生成）系统
+**目标**：为不同商店提供定制化的 LLM prompt，提升解析准确率
+
+**完成内容**：
+- ✅ 创建 `merchant_prompts` 数据库表（`002_merchant_prompts.sql`）
+  - 支持商店特定的 prompt_template 和 system_message
+  - 支持版本管理和激活状态控制
+  - 使用部分唯一索引确保每个商店只有一个激活的 prompt
+  
+- ✅ 实现 `prompt_manager.py` 模块
+  - `get_merchant_prompt()`: 从数据库加载商店特定的 prompt
+  - 支持缓存机制提升性能
+  - 提供默认 prompt 作为 fallback
+  - 自动格式化 prompt（替换占位符：{raw_text}, {trusted_hints}, {output_schema}）
+
+- ✅ 创建示例 prompt（`003_insert_example_prompt.sql`）
+  - T&T Supermarket 的定制化 prompt
+  - 包含详细的验证要求和格式说明
+
+**技术亮点**：
+- 数据库驱动的配置管理，无需修改代码即可更新 prompt
+- 与现有 RAG 架构完美集成
+
+---
+
+### 2. LLM 处理流程
+**目标**：整合 Document AI + LLM，实现高精度收据解析
+
+**完成内容**：
+- ✅ 创建 `llm_client.py` 模块
+  - OpenAI API 客户端封装
+  - 强制 JSON 输出格式（`response_format={"type": "json_object"}`）
+  - 完善的错误处理和日志记录
+  
+- ✅ 创建 `receipt_llm_processor.py` 模块
+  - `process_receipt_with_llm_from_docai()`: 完整处理流程
+  - 提取高置信度字段（confidence >= 0.95）作为 trusted_hints
+  - 自动获取商店特定的 prompt
+  - 调用 LLM 进行结构化重建
+  - 返回包含 tbd（待确认）字段的完整 JSON
+
+- ✅ 新增 API 端点 `/api/receipt/llm-process`
+  - 接收 Document AI 的 JSON 输出
+  - 返回 LLM 处理后的结构化数据
+  - 支持直接存储到数据库
+
+**技术亮点**：
+- 分离关注点：Document AI 负责 OCR，LLM 负责语义理解
+- 支持增量处理：可以先调用 Document AI，再决定是否使用 LLM
+
+---
+
+### 3. 提取规则系统（类似 RAG）
+**目标**：为不同商店提供定制化的价格提取规则，不依赖 LLM
+
+**完成内容**：
+- ✅ 扩展 `merchant_prompts` 表（`004_add_extraction_rules.sql`）
+  - 添加 `extraction_rules` JSONB 字段
+  - 存储商店特定的正则表达式规则
+  
+- ✅ 创建 `extraction_rule_manager.py` 模块
+  - `get_merchant_extraction_rules()`: 从数据库加载规则
+  - `apply_extraction_rules()`: 应用规则提取价格
+  - 支持缓存机制
+  - 提供默认规则作为 fallback
+
+- ✅ 改进 `extract_line_totals_from_raw_text()` 函数
+  - 优先使用 Document AI 的 line_items
+  - Fallback 到商店特定的正则表达式规则
+  - 支持全局 FP 匹配（T&T 格式）
+  - 智能过滤非商品行
+
+- ✅ 创建示例规则（`005_insert_extraction_rules_examples.sql`）
+  - T&T Supermarket 的规则配置
+  - 包含 Walmart、Costco 的模板（注释状态）
+
+**技术亮点**：
+- 数据库驱动的规则管理，类似 RAG 系统
+- 无需修改代码即可为不同商店配置规则
+- 避免了代码中的大量 if-else 判断
+
+---
+
+### 4. 数学验证系统
+**目标**：在后端自动验证 LLM 结果的数学正确性
+
+**完成内容**：
+- ✅ 实现 `_validate_llm_result()` 函数
+  - **Item 级别验证**：`quantity × unit_price ≈ line_total`（误差容忍度 ±0.01）
+  - **总和验证**：所有 items 的 `line_total` 总和 ≈ `receipt.total`
+  - 自动更新 `tbd` 结构，标记验证失败的项目
+  - 自动更新 `validation_status`（"pass" 或 "needs_review"）
+
+- ✅ 增强验证功能
+  - 对比 LLM 计算结果 vs raw_text 提取结果
+  - 如果 raw_text 提取更准确，自动标记可能遗漏的商品
+  - 详细的错误信息记录（expected vs actual）
+
+**技术亮点**：
+- 双重验证：LLM 验证 + 后端数学验证
+- 不依赖 LLM 是否执行验证，确保可靠性
+- 为未来自动纠错和补全提供数据基础
+
+---
+
+## 二、配置和架构改进
+
+### 1. 环境变量统一管理
+**完成内容**：
+- ✅ 将 OpenAI 模型配置统一到环境变量
+  - `OPENAI_MODEL` 环境变量（默认 `gpt-4o-mini`）
+  - 数据库中的 prompt 如果没有设置 model_name，自动使用环境变量默认值
+  - 所有硬编码的模型名称已移除
+
+**优势**：
+- 修改模型只需改 `.env` 文件，无需改代码
+- 支持为特定商店设置不同模型（在数据库中）
+
+---
+
+### 2. API 端点改进
+**完成内容**：
+- ✅ `/api/receipt/llm-process` 端点重构
+  - 从接收图片改为接收 Document AI 的 JSON 输出
+  - 更清晰的流程：先 Document AI，再 LLM
+  - 支持增量处理
+
+- ✅ 添加 `DocumentAIResultRequest` 模型
+  - 使用 `dict` 类型避免 Pydantic schema 生成问题
+  - 完善的示例和文档
+
+---
+
+### 3. 数据库架构完善
+**完成内容**：
+- ✅ `merchant_prompts` 表
+  - 支持 prompt 版本管理
+  - 支持激活/禁用状态
+  - 自动更新时间戳
+
+- ✅ `extraction_rules` 字段
+  - JSONB 类型，灵活存储规则配置
+  - 支持复杂的正则表达式模式
+
+---
+
+## 三、Bug 修复
+
+### 1. 导入错误修复
+- ✅ 修复 `List` 类型未导入错误（`documentai_client.py`）
+- ✅ 修复 `Dict`, `Any` 类型未导入错误（`models.py`）
+
+### 2. SQL 语法错误修复
+- ✅ 修复 `merchant_prompts` 表的唯一约束语法错误
+  - 改为使用部分唯一索引（partial unique index）
+  - 修复表定义中的语法错误（多余的逗号和注释位置）
+
+### 3. Pydantic Schema 错误修复
+- ✅ 修复 `DocumentAIResultRequest` 的 schema 生成问题
+  - 将 `Dict[str, Any]` 改为 `dict` 类型
+  - 使用 `Field` 提供描述和示例
+
+### 4. 包安装问题
+- ✅ 确认 `openai` 包已正确安装到虚拟环境
+- ✅ 修复延迟导入问题（`documentai_client.py`）
+
+---
+
+## 四、文档和示例
+
+### 1. 创建文档
+- ✅ `docs/LLM_PROCESSING.md`
+  - 完整的 LLM 处理系统文档
+  - API 使用说明
+  - 配置指南
+  - 最佳实践
+
+### 2. 创建示例 SQL
+- ✅ `003_insert_example_prompt.sql`: T&T Supermarket prompt 示例
+- ✅ `005_insert_extraction_rules_examples.sql`: 多个商店的规则示例
+
+### 3. 更新 README
+- ✅ 添加 LLM 处理系统说明
+- ✅ 更新环境变量配置说明
+- ✅ 添加新 API 端点文档
+
+---
+
+## 五、代码质量改进
+
+### 1. 类型提示完善
+- ✅ 所有函数添加完整的类型提示
+- ✅ 使用 `TYPE_CHECKING` 避免循环导入
+
+### 2. 错误处理
+- ✅ 完善的异常处理和日志记录
+- ✅ 清晰的错误消息
+
+### 3. 代码组织
+- ✅ 模块化设计，职责清晰
+- ✅ 支持缓存机制提升性能
+
+---
+
+## 六、技术债务和 TODO
+
+### 已标记的 TODO
+1. ✅ `receipt_parser.py`: 标记未来 LLM 集成点
+2. ✅ `_validate_llm_result()`: 标记验证数据未来用途
+   - 训练数据质量评估
+   - 模型性能监控
+   - 自动纠错和补全
+   - 生成验证报告和统计
+3. ✅ `extract_line_totals_from_raw_text()`: 标记提取数据未来用途
+   - 与 LLM 结果对比验证
+   - 自动补全缺失的商品
+   - 训练数据质量评估
+
+---
+
+## 七、测试和验证
+
+### 测试内容
+- ✅ 测试 Document AI + LLM 完整流程
+- ✅ 验证数学验证系统（发现并修复了 GREEN ONION 配对错误）
+- ✅ 测试不同商店的规则系统
+- ✅ 验证环境变量配置
+
+### 发现的问题
+1. **商品配对错误**：LLM 有时会将商品名和价格错误配对
+   - **解决方案**：改进了 prompt，添加了详细的示例和验证要求
+   - **后续**：需要持续优化 prompt
+
+2. **总和验证失败**：LLM 遗漏了 EGG TRAY BUN ($6.50)
+   - **解决方案**：实现了后端数学验证，自动检测并标记
+   - **后续**：可以基于验证数据自动补全
+
+---
+
+## 八、架构设计决策
+
+### 1. 数据库驱动的配置管理
+**决策**：使用数据库存储商店特定的 prompt 和规则，而不是代码中的 if-else
+
+**理由**：
+- 易于管理和更新
+- 无需重新部署即可修改配置
+- 支持版本控制和 A/B 测试
+- 与 RAG 系统架构一致
+
+### 2. 分离 Document AI 和 LLM 处理
+**决策**：`/api/receipt/llm-process` 接收 Document AI 的输出，而不是图片
+
+**理由**：
+- 支持增量处理
+- 可以单独测试 Document AI 结果
+- 更清晰的职责划分
+- 支持未来添加其他 OCR 服务
+
+### 3. 双重验证机制
+**决策**：LLM 验证 + 后端数学验证
+
+**理由**：
+- 提高可靠性
+- 不依赖 LLM 是否执行验证
+- 为未来自动纠错提供数据基础
+
+---
+
+## 九、文件清单
+
+### 新增文件
+1. `backend/app/prompt_manager.py` - RAG prompt 管理
+2. `backend/app/llm_client.py` - OpenAI 客户端
+3. `backend/app/receipt_llm_processor.py` - LLM 处理流程
+4. `backend/app/extraction_rule_manager.py` - 提取规则管理
+5. `backend/database/002_merchant_prompts.sql` - RAG 表结构
+6. `backend/database/003_insert_example_prompt.sql` - Prompt 示例
+7. `backend/database/004_add_extraction_rules.sql` - 规则字段扩展
+8. `backend/database/005_insert_extraction_rules_examples.sql` - 规则示例
+9. `backend/docs/LLM_PROCESSING.md` - LLM 系统文档
+
+### 修改文件
+1. `backend/app/config.py` - 添加 OpenAI 配置
+2. `backend/app/models.py` - 添加 `DocumentAIResultRequest` 模型
+3. `backend/app/main.py` - 添加 `/api/receipt/llm-process` 端点
+4. `backend/app/documentai_client.py` - 修复导入错误
+5. `backend/app/receipt_parser.py` - 添加 TODO 注释
+6. `backend/requirements.txt` - 添加 `openai` 和 `google-cloud-documentai`
+7. `backend/README.md` - 更新文档
+
+---
+
+## 十、下一步计划
+
+### 阶段 1: 准确率提升（优先级：高）
+
+#### 1.1 LLM Prompt 校准 ⚠️ **中等**
+- 基于实际测试结果优化 prompt
+- 针对不同商店格式调整 prompt 模板
+- 工作量：2-3 天
+
+#### 1.2 引入第二套 OCR 服务 ⚠️ **中等**
+- **必须完成**：避免单套 OCR 输入串行或有问题导致 LLM 无法解决
+- 实现 OCR Fallback Pipeline
+  - 逻辑：如果第一套 OCR 完全 pass，使用第一套结果
+  - 如果第一套失败或置信度低，使用第二套 OCR
+- 能使得 LLM 解析路径刷新
+- 错配 FP 和 amount 时，第二份来做 fallback
+- 工作量：3-4 天
+
+#### 1.3 引入第二套 LLM 来增加正确率 ⚠️ **中等**
+- 使用不同的 LLM 模型或服务进行二次验证
+- 对比两套 LLM 的结果，选择更可靠的
+- 工作量：2-3 天
+
+#### 1.4 Python Validator 完善 ⚠️ **中等**
+- 用传统方式 validate：
+  - Multiset 验证（是否一一对应）
+  - 是否 sum to total
+  - 有没有重复 items
+  - 商品名和价格配对验证
+- 工作量：2-3 天
+
+**阶段 2 总计：9-13 天**
+
+### 阶段 2: 后端核心功能完善（优先级：高）
+
+#### 2.1 用户认证系统 ⚠️ **中等**
+- 集成 Supabase Auth（已有表结构）
+- JWT token 验证中间件
+- 从请求头获取 user_id
+- 工作量：2-3 天
+
+#### 2.2 映射表匹配逻辑 ⚠️ **中等**
+- 实现 `item_mappings` 表的查询逻辑
+- 商品名称标准化和匹配算法
+- 工作量：2-3 天
+
+#### 2.3 置信度判断系统 ⚠️ **中等**
+- 基于 Document AI confidence 和验证结果
+- 标记高/低置信度项目
+- 工作量：1-2 天
+
+#### 2.4 轻量级 LLM 调用（低置信度）⚠️ **中等**
+- 为低置信度项目调用 LLM + RAG
+- 生成建议和备选方案
+- 工作量：2-3 天
+
+#### 2.5 数据存储逻辑 ⚠️ **简单**
+- 高置信度 → 直接存储
+- 低置信度 → `pending_items` 表
+- 用户纠正 → `low_confidence_learning` 表
+- 工作量：1-2 天
+
+#### 2.6 离线批处理任务 ⚠️ **中等**
+- 定期聚合 `low_confidence_learning`
+- 模式识别和阈值判断
+- 自动提升到 `item_mappings`
+- 工作量：3-4 天
+
+**阶段 2 总计：11-17 天**
+
+---
+
+### 阶段 3: 前端开发（优先级：中）
+
+#### 3.1 基础前端框架 ⚠️ **中等**
+- React/Next.js 或 Vue/Nuxt 项目搭建
+- 路由和基础布局
+- 工作量：2-3 天
+
+#### 3.2 用户登录页面 ⚠️ **简单**
+- Supabase Auth UI 集成
+- 登录/注册/忘记密码
+- 工作量：1-2 天
+
+#### 3.3 收据上传页面 ⚠️ **中等**
+- 图片上传组件（支持相机）
+- 图片压缩（前端）
+- 上传进度显示
+- 工作量：2-3 天
+
+#### 3.4 收据处理结果页面 ⚠️ **中等**
+- 显示解析结果
+- 高置信度项目列表
+- 低置信度项目卡片（需要用户确认）
+- 工作量：3-4 天
+
+#### 3.5 用户确认/纠正界面 ⚠️ **中等**
+- **设计用户纠错 UI，矫正一次**
+- 低置信度项目编辑表单
+- 商品名称/类别/价格修正
+- 保存确认
+- 工作量：2-3 天
+
+#### 3.6 购买记录列表页面 ⚠️ **中等**
+- 收据列表展示
+- 筛选和搜索（按日期、商户、金额）
+- 分页
+- 工作量：2-3 天
+
+#### 3.7 收据详情页面 ⚠️ **简单**
+- 显示完整收据信息
+- 商品列表
+- 图片预览
+- 工作量：1-2 天
+
+**阶段 3 总计：13-20 天**
+
+---
+
+### 阶段 4: 历史数据导入（优先级：中）
+
+#### 4.1 批量导入功能 ⚠️ **中等**
+- 支持 CSV/JSON 批量导入
+- 3 个月历史记录处理
+- 数据验证和去重
+- 工作量：3-4 天
+
+#### 4.2 导入界面 ⚠️ **简单**
+- 文件上传
+- 导入进度显示
+- 错误报告
+- 工作量：1-2 天
+
+**阶段 4 总计：4-6 天**
+
+---
+
+### 阶段 5: 收费机制（优先级：低）
+
+#### 5.1 支付集成 ⚠️ **复杂**
+- Stripe/PayPal 集成
+- 订阅管理（月度/年度）
+- 工作量：4-5 天
+
+#### 5.2 权限控制 ⚠️ **中等**
+- 免费用户限制（如 3 个月）
+- 付费用户无限制
+- 工作量：2-3 天
+
+#### 5.3 计费页面 ⚠️ **简单**
+- 定价展示
+- 订阅管理
+- 工作量：1-2 天
+
+**阶段 5 总计：7-10 天**
+
+---
+
+### 阶段 6: 移动 APP（优先级：低）
+
+#### 6.1 技术选型 ⚠️ **简单**
+- React Native / Flutter / 原生
+- 工作量：1 天（决策）
+
+#### 6.2 iOS 开发 ⚠️ **复杂**
+- 相机集成
+- 图片处理
+- UI/UX 适配
+- App Store 上架
+- 工作量：15-20 天
+
+#### 6.3 Android 开发 ⚠️ **复杂**
+- 相机集成
+- 图片处理
+- UI/UX 适配
+- Google Play 上架
+- 工作量：15-20 天
+
+#### 6.4 跨平台优化 ⚠️ **中等**
+- API 集成
+- 状态管理
+- 离线支持
+- 工作量：5-7 天
+
+**阶段 6 总计：36-48 天**
+
+---
+
+## 十一、总结
+
+今天完成了从基础 OCR 到完整 LLM 处理流程的重大升级，建立了可扩展的架构基础。主要成就包括：
+
+1. **RAG 系统**：实现了数据库驱动的商店特定 prompt 管理
+2. **LLM 集成**：完整的 Document AI + LLM 处理流程
+3. **规则系统**：类似 RAG 的提取规则管理
+4. **验证系统**：自动数学验证，确保数据准确性
+5. **架构优化**：统一配置管理，清晰的职责划分
+
+**代码行数**：约 1500+ 行新增代码
+**数据库迁移**：4 个新 SQL 文件
+**新模块**：4 个核心模块
+**API 端点**：1 个新端点
+
+**项目进度**：从 25-30% 提升到约 35-40%
+
+**下一步重点**：
+1. 用户认证系统（解锁所有用户相关功能）
+2. 第二套 OCR 和 LLM（提升准确率到 99%）
+3. Python Validator 完善（传统方式验证）
+4. 用户纠错 UI（完成闭环）
+
+---
+
+*日志生成时间：2026-01-10*
