@@ -1,0 +1,11 @@
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+google-cloud-vision>=3.4.4
+google-cloud-documentai>=2.20.0
+python-dotenv>=1.0.0
+supabase>=2.0.0
+httpx>=0.25.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+openai>=1.12.0

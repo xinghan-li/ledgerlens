@@ -1,0 +1,1 @@
+# FastAPI Receipt OCR Backend
