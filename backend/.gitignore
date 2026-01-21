@@ -45,6 +45,8 @@ Thumbs.db
 service_account/
 *.json
 !package.json
+!tsconfig.json
+!*.config.json
 
 # Logs
 *.log

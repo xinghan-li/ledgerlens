@@ -27,7 +27,9 @@ from .supabase_client import save_receipt_ocr, save_parsed_receipt, get_or_creat
 from .models import ReceiptOCRResponse, ReceiptIngestRequest, ReceiptIngestResponse, ReceiptItemResponse
 from .receipt_parser import parse_receipt
 from .documentai_client import parse_receipt_documentai
-from .receipt_llm_processor import process_receipt_with_llm_from_docai
+from .textract_client import parse_receipt_textract
+from .receipt_llm_processor import process_receipt_with_llm_from_docai, process_receipt_with_llm_from_ocr
+from .workflow_processor import process_receipt_workflow
 from .models import DocumentAIResultRequest
 import logging
 
@@ -57,14 +59,14 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/api/receipts/ocr", response_model=ReceiptOCRResponse)
-async def ocr_receipt(file: UploadFile = File(...)):
+@app.post("/api/receipt/goog-ocr", response_model=ReceiptOCRResponse)
+async def ocr_receipt_google_vision(file: UploadFile = File(...)):
     """
-    Upload a receipt image and perform OCR.
+    使用 Google Cloud Vision API 进行 OCR。
     
-    - Accepts JPEG or PNG images
-    - Maximum file size: ~5MB (enforced by FastAPI)
-    - Returns extracted text and saves to Supabase
+    - 接受 JPEG 或 PNG 图片
+    - 最大文件大小：约 5MB
+    - 返回提取的文本并保存到 Supabase
     """
     # Basic validation: only allow jpg/png
     if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
@@ -214,7 +216,7 @@ async def ingest_receipt(request: ReceiptIngestRequest):
         )
 
 
-@app.post("/api/receipt/g-document-ai")
+@app.post("/api/receipt/goog-ocr-dai")
 async def parse_receipt_with_documentai(file: UploadFile = File(...)):
     """
     使用 Google Document AI Expense Parser 解析收据图片。
@@ -265,33 +267,115 @@ async def parse_receipt_with_documentai(file: UploadFile = File(...)):
         )
 
 
-@app.post("/api/receipt/llm-process")
-async def process_receipt_with_llm_endpoint(request: DocumentAIResultRequest):
+@app.post("/api/receipt/amzn-ocr")
+async def parse_receipt_with_textract(file: UploadFile = File(...)):
     """
-    使用 LLM 处理 Document AI 的输出结果。
+    使用 AWS Textract 解析收据图片。
     
-    输入：Document AI 返回的 JSON（来自 /api/receipt/g-document-ai 端点）
+    - 接受 JPEG 或 PNG 图片
+    - 使用 AWS Textract 的 detect_document_text 和 analyze_expense API
+    - 返回 Textract 提取的结构化数据（标准化格式，与 Document AI 兼容）
+    
+    注意：此端点只返回解析结果，不保存到数据库。
+    返回的格式已经标准化，可以直接用于 /api/receipt/llm-process 端点。
+    
+    配置要求：
+    - 需要配置 AWS 凭证（通过 ~/.aws/credentials 或环境变量）
+    - 需要 IAM 权限：AmazonTextractFullAccess 或至少 detect_document_text 和 analyze_expense 权限
+    """
+    # 基本验证：只允许 jpg/png
+    if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only JPEG/PNG images are supported."
+        )
+    
+    contents = await file.read()
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    
+    # 检查文件大小（约 5MB 限制）
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(
+            status_code=400,
+            detail="File size exceeds 5MB limit."
+        )
+    
+    try:
+        # 使用 Textract 解析
+        parsed_data = parse_receipt_textract(contents)
+        logger.info(f"Textract parsing completed for file: {file.filename}")
+        
+        return {
+            "filename": file.filename,
+            "success": True,
+            "data": parsed_data
+        }
+        
+    except Exception as e:
+        logger.error(f"Textract parsing failed for {file.filename}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Textract parsing failed: {str(e)}"
+        )
+
+
+@app.post("/api/receipt/openai-llm")
+async def process_receipt_with_openai_llm_endpoint(request: DocumentAIResultRequest):
+    """
+    使用 OpenAI LLM 处理 OCR 结果（支持多个 OCR 提供商）。
+    
+    输入：任何 OCR 服务返回的 JSON（来自 /api/receipt/goog-ocr-dai 或 /api/receipt/amzn-ocr）
+    
+    核心优势（统一处理）：
+    - 自动标准化不同 OCR 的输出格式
+    - 基于 raw_text 的统一提取（不依赖 OCR 特定格式）
+    - 统一的验证逻辑（不管 OCR 来源）
+    - 商店特定的规则只需一套（针对 raw_text，不针对 OCR）
     
     流程：
-    - 提取高置信度字段（confidence >= 0.95）作为 trusted_hints
-    - 根据商店名称获取对应的 RAG prompt
-    - 调用 OpenAI LLM 进行结构化重建和验证
-    - 返回结构化的 JSON，可以直接存储到数据库
+    1. 自动检测并标准化 OCR 结果（Google Document AI / AWS Textract）
+    2. 提取高置信度字段（confidence >= 0.95）作为 trusted_hints
+    3. 根据商店名称获取对应的 RAG prompt
+    4. 调用 OpenAI LLM 进行结构化重建
+    5. 基于 raw_text 的后端数学验证（不依赖 OCR）
+    6. 返回结构化的 JSON，可以直接存储到数据库
     
     注意：此端点返回完整的结构化数据，包括 tbd（待确认）字段。
     
     使用示例：
-    1. 先调用 POST /api/receipt/g-document-ai 上传图片，获取 Document AI 结果
-    2. 将返回的 JSON 作为 body 发送到此端点
+    1. 先调用 POST /api/receipt/goog-ocr-dai 或 POST /api/receipt/amzn-ocr 上传图片，获取 OCR 结果
+    2. 将返回的 JSON 中的 data 字段作为 body 的 data 发送到此端点
     """
     try:
-        # 调用 LLM 处理流程
-        result = process_receipt_with_llm_from_docai(
-            docai_result=request.data,
-            merchant_name=None  # 从 Document AI 结果中自动识别
+        # 检测 OCR 提供商（通过 metadata 或自动检测）
+        ocr_data = request.data
+        ocr_provider = "unknown"
+        
+        if isinstance(ocr_data, dict):
+            # 检查是否有 metadata 字段
+            if "metadata" in ocr_data and "ocr_provider" in ocr_data["metadata"]:
+                ocr_provider = ocr_data["metadata"]["ocr_provider"]
+            else:
+                # 自动检测：检查是否有特征字段
+                # 使用键检查而不是字符串转换，更高效且准确
+                if "ExpenseDocuments" in ocr_data and isinstance(ocr_data.get("ExpenseDocuments"), list):
+                    ocr_provider = "aws_textract"
+                elif "entities" in ocr_data and "line_items" in ocr_data:
+                    ocr_provider = "google_documentai"
+                elif "Blocks" in ocr_data and isinstance(ocr_data.get("Blocks"), list):
+                    # AWS Textract 的 detect_document_text 返回 Blocks
+                    ocr_provider = "aws_textract"
+        
+        # 调用统一的 LLM 处理流程（自动标准化，使用 OpenAI）
+        result = await process_receipt_with_llm_from_ocr(
+            ocr_result=ocr_data,
+            merchant_name=None,  # 从 OCR 结果中自动识别
+            ocr_provider=ocr_provider,
+            llm_provider="openai"
         )
         
-        logger.info(f"LLM processing completed for file: {request.filename}")
+        logger.info(f"OpenAI LLM processing completed for file: {request.filename} (OCR: {ocr_provider})")
         
         return {
             "filename": request.filename,
@@ -300,8 +384,143 @@ async def process_receipt_with_llm_endpoint(request: DocumentAIResultRequest):
         }
         
     except Exception as e:
-        logger.error(f"LLM processing failed for {request.filename}: {e}", exc_info=True)
+        logger.error(f"OpenAI LLM processing failed for {request.filename}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"LLM processing failed: {str(e)}"
+            detail=f"OpenAI LLM processing failed: {str(e)}"
+        )
+
+
+@app.post("/api/receipt/gemini-llm")
+async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequest):
+    """
+    使用 Google Gemini LLM 处理 OCR 结果（支持多个 OCR 提供商）。
+    
+    输入：任何 OCR 服务返回的 JSON（来自 /api/receipt/goog-ocr-dai 或 /api/receipt/amzn-ocr）
+    
+    核心优势（统一处理）：
+    - 自动标准化不同 OCR 的输出格式
+    - 基于 raw_text 的统一提取（不依赖 OCR 特定格式）
+    - 统一的验证逻辑（不管 OCR 来源）
+    - 商店特定的规则只需一套（针对 raw_text，不针对 OCR）
+    - 使用 Google Gemini LLM（暂时沿用 OpenAI 的 RAG prompt）
+    
+    流程：
+    1. 自动检测并标准化 OCR 结果（Google Document AI / AWS Textract）
+    2. 提取高置信度字段（confidence >= 0.95）作为 trusted_hints
+    3. 根据商店名称获取对应的 RAG prompt（沿用 OpenAI 的 prompt）
+    4. 调用 Google Gemini LLM 进行结构化重建
+    5. 基于 raw_text 的后端数学验证（不依赖 OCR）
+    6. 返回结构化的 JSON，可以直接存储到数据库
+    
+    注意：此端点返回完整的结构化数据，包括 tbd（待确认）字段。
+    
+    使用示例：
+    1. 先调用 POST /api/receipt/goog-ocr-dai 或 POST /api/receipt/amzn-ocr 上传图片，获取 OCR 结果
+    2. 将返回的 JSON 中的 data 字段作为 body 的 data 发送到此端点
+    """
+    try:
+        # 检测 OCR 提供商（通过 metadata 或自动检测）
+        ocr_data = request.data
+        ocr_provider = "unknown"
+        
+        if isinstance(ocr_data, dict):
+            # 检查是否有 metadata 字段
+            if "metadata" in ocr_data and "ocr_provider" in ocr_data["metadata"]:
+                ocr_provider = ocr_data["metadata"]["ocr_provider"]
+            else:
+                # 自动检测：检查是否有特征字段
+                # 使用键检查而不是字符串转换，更高效且准确
+                if "ExpenseDocuments" in ocr_data and isinstance(ocr_data.get("ExpenseDocuments"), list):
+                    ocr_provider = "aws_textract"
+                elif "entities" in ocr_data and "line_items" in ocr_data:
+                    ocr_provider = "google_documentai"
+                elif "Blocks" in ocr_data and isinstance(ocr_data.get("Blocks"), list):
+                    # AWS Textract 的 detect_document_text 返回 Blocks
+                    ocr_provider = "aws_textract"
+        
+        # 调用统一的 LLM 处理流程（自动标准化，使用 Gemini）
+        result = await process_receipt_with_llm_from_ocr(
+            ocr_result=ocr_data,
+            merchant_name=None,  # 从 OCR 结果中自动识别
+            ocr_provider=ocr_provider,
+            llm_provider="gemini"
+        )
+        
+        logger.info(f"Gemini LLM processing completed for file: {request.filename} (OCR: {ocr_provider})")
+        
+        return {
+            "filename": request.filename,
+            "success": True,
+            "data": result
+        }
+        
+    except Exception as e:
+        logger.error(f"Gemini LLM processing failed for {request.filename}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gemini LLM processing failed: {str(e)}"
+        )
+
+
+@app.post("/api/receipt/workflow")
+async def process_receipt_workflow_endpoint(file: UploadFile = File(...)):
+    """
+    完整的收据处理流程（workflow）。
+    
+    流程：
+    1. Google Document AI OCR
+    2. 根据 Gemini 限流决定使用 Gemini 还是 GPT-4o-mini
+    3. LLM 处理得到结构化 JSON
+    4. Sum check（容忍度 ±0.03）
+    5. 如果失败，引入 AWS OCR + GPT-4o-mini 二次处理
+    6. 文件存储和时间线记录
+    7. 统计更新
+    
+    返回：
+    - success: 是否成功
+    - receipt_id: 收据 ID（格式：001_mmyydd_hhmm）
+    - status: 状态（passed, passed_with_resolution, passed_after_backup, needs_manual_review, error）
+    - data: 结构化的收据数据
+    - sum_check: sum check 详情
+    - timeline: 时间线（可选）
+    """
+    # 基本验证
+    if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only JPEG/PNG images are supported."
+        )
+    
+    contents = await file.read()
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    
+    # 检查文件大小（约 5MB 限制）
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(
+            status_code=400,
+            detail="File size exceeds 5MB limit."
+        )
+    
+    try:
+        # 确定 MIME 类型
+        mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
+        
+        # 调用 workflow 处理器
+        result = await process_receipt_workflow(
+            image_bytes=contents,
+            filename=file.filename,
+            mime_type=mime_type
+        )
+        
+        logger.info(f"Workflow completed for {file.filename}: status={result.get('status')}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Workflow failed for {file.filename}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Workflow processing failed: {str(e)}"
         )
