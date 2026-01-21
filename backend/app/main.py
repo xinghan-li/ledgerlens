@@ -358,13 +358,17 @@ async def process_receipt_with_openai_llm_endpoint(request: DocumentAIResultRequ
                 ocr_provider = ocr_data["metadata"]["ocr_provider"]
             else:
                 # 自动检测：检查是否有特征字段
-                if "ExpenseDocuments" in str(ocr_data) or "Blocks" in ocr_data:
+                # 使用键检查而不是字符串转换，更高效且准确
+                if "ExpenseDocuments" in ocr_data and isinstance(ocr_data.get("ExpenseDocuments"), list):
                     ocr_provider = "aws_textract"
                 elif "entities" in ocr_data and "line_items" in ocr_data:
                     ocr_provider = "google_documentai"
+                elif "Blocks" in ocr_data and isinstance(ocr_data.get("Blocks"), list):
+                    # AWS Textract 的 detect_document_text 返回 Blocks
+                    ocr_provider = "aws_textract"
         
         # 调用统一的 LLM 处理流程（自动标准化，使用 OpenAI）
-        result = process_receipt_with_llm_from_ocr(
+        result = await process_receipt_with_llm_from_ocr(
             ocr_result=ocr_data,
             merchant_name=None,  # 从 OCR 结果中自动识别
             ocr_provider=ocr_provider,
@@ -426,13 +430,17 @@ async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequ
                 ocr_provider = ocr_data["metadata"]["ocr_provider"]
             else:
                 # 自动检测：检查是否有特征字段
-                if "ExpenseDocuments" in str(ocr_data) or "Blocks" in ocr_data:
+                # 使用键检查而不是字符串转换，更高效且准确
+                if "ExpenseDocuments" in ocr_data and isinstance(ocr_data.get("ExpenseDocuments"), list):
                     ocr_provider = "aws_textract"
                 elif "entities" in ocr_data and "line_items" in ocr_data:
                     ocr_provider = "google_documentai"
+                elif "Blocks" in ocr_data and isinstance(ocr_data.get("Blocks"), list):
+                    # AWS Textract 的 detect_document_text 返回 Blocks
+                    ocr_provider = "aws_textract"
         
         # 调用统一的 LLM 处理流程（自动标准化，使用 Gemini）
-        result = process_receipt_with_llm_from_ocr(
+        result = await process_receipt_with_llm_from_ocr(
             ocr_result=ocr_data,
             merchant_name=None,  # 从 OCR 结果中自动识别
             ocr_provider=ocr_provider,

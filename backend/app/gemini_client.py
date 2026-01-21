@@ -9,25 +9,33 @@ import json
 
 logger = logging.getLogger(__name__)
 
-# Singleton Gemini client (configured flag)
+# 线程安全的状态管理
+import asyncio
+_lock = asyncio.Lock()
 _client_configured = False
 
 
-def _configure_client():
-    """配置 Gemini 客户端（只需调用一次）。"""
+async def _configure_client():
+    """
+    配置 Gemini 客户端（只需调用一次）。
+    
+    注意：此函数是异步的，使用锁确保线程安全。
+    """
     global _client_configured
-    if not _client_configured:
-        if not settings.gemini_api_key:
-            raise ValueError(
-                "GEMINI_API_KEY environment variable must be set"
-            )
-        
-        genai.configure(api_key=settings.gemini_api_key)
-        _client_configured = True
-        logger.info("Google Gemini client configured")
+    
+    async with _lock:
+        if not _client_configured:
+            if not settings.gemini_api_key:
+                raise ValueError(
+                    "GEMINI_API_KEY environment variable must be set"
+                )
+            
+            genai.configure(api_key=settings.gemini_api_key)
+            _client_configured = True
+            logger.info("Google Gemini client configured")
 
 
-def parse_receipt_with_gemini(
+async def parse_receipt_with_gemini(
     system_message: str,
     user_message: str,
     model: str = None,
@@ -35,6 +43,8 @@ def parse_receipt_with_gemini(
 ) -> Dict[str, Any]:
     """
     使用 Google Gemini LLM 解析收据。
+    
+    注意：此函数是异步的，使用锁确保客户端配置的线程安全。
     
     Args:
         system_message: 系统消息
@@ -45,7 +55,7 @@ def parse_receipt_with_gemini(
     Returns:
         解析后的 JSON 数据
     """
-    _configure_client()
+    await _configure_client()
     model = model or settings.gemini_model
     
     # 添加调试日志，确认使用的模型

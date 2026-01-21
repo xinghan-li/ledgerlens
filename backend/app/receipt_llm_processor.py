@@ -45,7 +45,7 @@ def process_receipt_with_llm_from_docai(
     return process_receipt_with_llm_from_ocr(normalized, merchant_name=merchant_name, llm_provider="openai")
 
 
-def process_receipt_with_llm_from_ocr(
+async def process_receipt_with_llm_from_ocr(
     ocr_result: Dict[str, Any],
     merchant_name: Optional[str] = None,
     ocr_provider: str = "unknown",
@@ -109,7 +109,7 @@ def process_receipt_with_llm_from_ocr(
         model = settings.gemini_model
         logger.info(f"Using Gemini model from settings: {model}")
         logger.info(f"Settings.gemini_model value: {settings.gemini_model}")
-        llm_result = parse_receipt_with_gemini(
+        llm_result = await parse_receipt_with_gemini(
             system_message=system_message,
             user_message=user_message,
             model=model,
@@ -132,7 +132,7 @@ def process_receipt_with_llm_from_ocr(
     line_items = unified_info.get("line_items", [])
     extracted_line_totals = extract_line_totals_from_raw_text(
         raw_text=raw_text,
-        docai_line_items=line_items,  # 如果有，使用；没有也没关系，会 fallback 到 regex
+        unified_line_items=line_items,  # 标准化的 line_items（来自任何 OCR），如果有则使用；没有也没关系，会 fallback 到 regex
         merchant_name=merchant_name
     )
     
@@ -341,14 +341,14 @@ def _validate_llm_result(
 
 def extract_line_totals_from_raw_text(
     raw_text: str,
-    docai_line_items: Optional[List[Dict[str, Any]]] = None,
+    unified_line_items: Optional[List[Dict[str, Any]]] = None,
     merchant_name: Optional[str] = None
 ) -> List[float]:
     """
     从 raw_text 中提取所有商品的行总计（line_total），不依赖 LLM。
     
     策略（按优先级）：
-    1. 优先使用 Document AI 的 line_items（如果可用且置信度高）
+    1. 优先使用标准化的 line_items（如果可用且置信度高）
     2. 使用正则表达式匹配多种价格模式
     3. 通过上下文过滤排除非商品价格（total, tax, subtotal 等）
     
@@ -360,7 +360,7 @@ def extract_line_totals_from_raw_text(
     
     Args:
         raw_text: 原始收据文本
-        docai_line_items: Document AI 提取的 line_items（可选）
+        unified_line_items: 标准化的 line_items（来自任何 OCR，可选）
         merchant_name: 商店名称（可用于格式优化）
         
     Returns:
@@ -368,9 +368,9 @@ def extract_line_totals_from_raw_text(
     """
     line_totals = []
     
-    # 策略 1: 优先使用 Document AI 的 line_items
-    if docai_line_items:
-        for item in docai_line_items:
+    # 策略 1: 优先使用标准化的 line_items
+    if unified_line_items:
+        for item in unified_line_items:
             line_total = item.get("line_total")
             if line_total is not None:
                 try:
@@ -378,9 +378,9 @@ def extract_line_totals_from_raw_text(
                 except (ValueError, TypeError):
                     continue
     
-    # 如果 Document AI 提取的数量足够，直接返回
+    # 如果标准化的 line_items 提取的数量足够，直接返回
     if len(line_totals) >= 3:  # 至少 3 个商品才认为可信
-        logger.info(f"Using Document AI line_items: found {len(line_totals)} items")
+        logger.info(f"Using unified line_items: found {len(line_totals)} items")
         return line_totals
     
     # 策略 2: 从 raw_text 中使用正则表达式提取（使用商店特定的规则）

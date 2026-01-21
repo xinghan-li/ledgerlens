@@ -128,12 +128,13 @@ async def process_receipt_workflow(
         google_ocr_data = google_ocr_result
         
         # Step 2: 决定使用哪个 LLM
-        gemini_available, gemini_reason = check_gemini_available()
+        gemini_available, gemini_reason = await check_gemini_available()
         
         if gemini_available:
             # 使用 Gemini
             llm_provider = "gemini"
-            logger.info(f"Using Gemini LLM (request {record_gemini_request()['count_this_minute']} this minute)")
+            request_info = await record_gemini_request()
+            logger.info(f"Using Gemini LLM (request {request_info['count_this_minute']} this minute)")
         else:
             # 使用 GPT-4o-mini
             llm_provider = "openai"
@@ -247,8 +248,12 @@ async def _backup_check_with_aws_ocr(
         logger.error(f"AWS OCR failed: {e}")
         # AWS OCR 也失败，标记为需要人工检查
         return await _mark_for_manual_review(
-            receipt_id, timeline, google_ocr_data, first_llm_result,
-            sum_check_details, error=f"AWS OCR failed: {e}"
+            receipt_id=receipt_id,
+            timeline=timeline,
+            google_ocr_data=google_ocr_data,
+            first_llm_result=first_llm_result,
+            sum_check_details=sum_check_details,
+            error=f"AWS OCR failed: {e}"
         )
     
     # Step 2: GPT-4o-mini 二次处理
@@ -262,8 +267,13 @@ async def _backup_check_with_aws_ocr(
         timeline.end("gpt_backup_llm")
         logger.error(f"GPT backup processing failed: {e}")
         return await _mark_for_manual_review(
-            receipt_id, timeline, google_ocr_data, aws_ocr_result,
-            first_llm_result, sum_check_details, error=f"GPT backup failed: {e}"
+            receipt_id=receipt_id,
+            timeline=timeline,
+            google_ocr_data=google_ocr_data,
+            aws_ocr_data=aws_ocr_result,
+            first_llm_result=first_llm_result,
+            sum_check_details=sum_check_details,
+            error=f"GPT backup failed: {e}"
         )
     
     # Step 3: 再次 sum check
@@ -301,9 +311,15 @@ async def _backup_check_with_aws_ocr(
         update_statistics("openai", sum_check_passed=False, is_manual_review=True)
         
         return await _mark_for_manual_review(
-            receipt_id, timeline, google_ocr_data, aws_ocr_result,
-            first_llm_result, backup_llm_result, sum_check_details,
-            backup_sum_check_details, error="Backup sum check also failed"
+            receipt_id=receipt_id,
+            timeline=timeline,
+            google_ocr_data=google_ocr_data,
+            aws_ocr_data=aws_ocr_result,
+            first_llm_result=first_llm_result,
+            backup_llm_result=backup_llm_result,
+            sum_check_details=sum_check_details,
+            backup_sum_check_details=backup_sum_check_details,
+            error="Backup sum check also failed"
         )
 
 
@@ -324,7 +340,7 @@ async def _gpt_backup_processing(
     # 调用 GPT-4o-mini（同步调用，因为已经在 async 函数中）
     # 注意：这里使用 run_in_executor 来避免阻塞事件循环
     import asyncio
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
         None,
         lambda: parse_receipt_with_llm(
@@ -403,7 +419,7 @@ async def _fallback_to_aws_ocr(
         # 使用 GPT-4o-mini 处理 AWS OCR 结果
         timeline.start("gpt_llm_fallback")
         try:
-            llm_result = process_receipt_with_llm_from_ocr(
+            llm_result = await process_receipt_with_llm_from_ocr(
                 ocr_result=aws_ocr_result,
                 merchant_name=None,
                 ocr_provider="aws_textract",
@@ -438,8 +454,12 @@ async def _fallback_to_aws_ocr(
                 update_statistics("openai", sum_check_passed=False, is_manual_review=True)
                 
                 return await _mark_for_manual_review(
-                    receipt_id, timeline, aws_ocr_result, llm_result,
-                    sum_check_details, error=f"Google OCR failed, AWS OCR sum check also failed. Original error: {error}"
+                    receipt_id=receipt_id,
+                    timeline=timeline,
+                    aws_ocr_data=aws_ocr_result,
+                    first_llm_result=llm_result,
+                    sum_check_details=sum_check_details,
+                    error=f"Google OCR failed, AWS OCR sum check also failed. Original error: {error}"
                 )
         except Exception as e:
             timeline.end("gpt_llm_fallback")
@@ -447,7 +467,9 @@ async def _fallback_to_aws_ocr(
             update_statistics("openai", sum_check_passed=False, is_error=True)
             
             return await _mark_for_manual_review(
-                receipt_id, timeline, aws_ocr_result, None, None,
+                receipt_id=receipt_id,
+                timeline=timeline,
+                aws_ocr_data=aws_ocr_result,
                 error=f"Google OCR failed, GPT LLM also failed: {e}"
             )
     except Exception as e:
@@ -456,7 +478,8 @@ async def _fallback_to_aws_ocr(
         update_statistics("openai", sum_check_passed=False, is_error=True)
         
         return await _mark_for_manual_review(
-            receipt_id, timeline, None, None, None,
+            receipt_id=receipt_id,
+            timeline=timeline,
             error=f"Both OCRs failed. Google: {error}, AWS: {e}"
         )
 
@@ -474,7 +497,7 @@ async def _fallback_to_other_llm(
     
     timeline.start(f"{other_provider}_llm_fallback")
     try:
-        llm_result = process_receipt_with_llm_from_ocr(
+        llm_result = await process_receipt_with_llm_from_ocr(
             ocr_result=google_ocr_data,
             merchant_name=None,
             ocr_provider="google_documentai",
@@ -509,8 +532,12 @@ async def _fallback_to_other_llm(
             update_statistics(other_provider, sum_check_passed=False, is_manual_review=True)
             
             return await _mark_for_manual_review(
-                receipt_id, timeline, google_ocr_data, llm_result,
-                sum_check_details, error=f"{failed_provider.upper()} failed, {other_provider.upper()} sum check also failed"
+                receipt_id=receipt_id,
+                timeline=timeline,
+                google_ocr_data=google_ocr_data,
+                first_llm_result=llm_result,
+                sum_check_details=sum_check_details,
+                error=f"{failed_provider.upper()} failed, {other_provider.upper()} sum check also failed"
             )
     except Exception as e:
         timeline.end(f"{other_provider}_llm_fallback")
@@ -518,7 +545,9 @@ async def _fallback_to_other_llm(
         update_statistics(other_provider, sum_check_passed=False, is_error=True)
         
         return await _mark_for_manual_review(
-            receipt_id, timeline, google_ocr_data, None, None,
+            receipt_id=receipt_id,
+            timeline=timeline,
+            google_ocr_data=google_ocr_data,
             error=f"Both LLMs failed. {failed_provider.upper()}: {error}, {other_provider.upper()}: {e}"
         )
 
