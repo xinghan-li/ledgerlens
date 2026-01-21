@@ -15,8 +15,11 @@ import re
 from .documentai_client import parse_receipt_documentai
 from .prompt_manager import get_merchant_prompt, format_prompt
 from .llm_client import parse_receipt_with_llm
+from .gemini_client import parse_receipt_with_gemini
 from .supabase_client import get_or_create_merchant
 from .extraction_rule_manager import get_merchant_extraction_rules, apply_extraction_rules
+from .ocr_normalizer import normalize_ocr_result, extract_unified_info
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +29,7 @@ def process_receipt_with_llm_from_docai(
     merchant_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    使用 LLM 处理 Document AI 的结果。
+    使用 LLM 处理 Document AI 的结果（向后兼容的包装函数）。
     
     Args:
         docai_result: Document AI 返回的完整 JSON 结果
@@ -35,13 +38,52 @@ def process_receipt_with_llm_from_docai(
     Returns:
         结构化的收据数据
     """
-    # Step 1: 提取高置信度字段（confidence >= 0.95）
-    logger.info("Step 2: Extracting trusted hints...")
-    trusted_hints = _extract_trusted_hints(docai_result)
+    # 标准化 OCR 结果
+    normalized = normalize_ocr_result(docai_result, provider="google_documentai")
     
-    # 如果没有提供 merchant_name，尝试从 Document AI 结果中获取
+    # 调用统一的处理函数（默认使用 OpenAI）
+    return process_receipt_with_llm_from_ocr(normalized, merchant_name=merchant_name, llm_provider="openai")
+
+
+def process_receipt_with_llm_from_ocr(
+    ocr_result: Dict[str, Any],
+    merchant_name: Optional[str] = None,
+    ocr_provider: str = "unknown",
+    llm_provider: str = "openai"
+) -> Dict[str, Any]:
+    """
+    统一的 LLM 处理函数，接受任何标准化后的 OCR 结果。
+    
+    核心优势：
+    1. 基于 raw_text 的统一提取（不依赖 OCR 特定格式）
+    2. 统一的验证逻辑（不管 OCR 来源）
+    3. 商店特定的规则只需一套（针对 raw_text）
+    4. 支持多个 LLM 提供商（OpenAI, Gemini）
+    
+    Args:
+        ocr_result: OCR 结果（可以是任何格式，会自动标准化）
+        merchant_name: 可选的商店名称（如果已知）
+        ocr_provider: OCR 提供商（用于自动检测，如 "google_documentai", "aws_textract"）
+        llm_provider: LLM 提供商（"openai" 或 "gemini"）
+        
+    Returns:
+        结构化的收据数据
+    """
+    # Step 1: 标准化 OCR 结果（如果还没标准化）
+    if "metadata" not in ocr_result or "ocr_provider" not in ocr_result.get("metadata", {}):
+        normalized = normalize_ocr_result(ocr_result, provider=ocr_provider)
+    else:
+        normalized = ocr_result
+    
+    # Step 2: 提取统一信息
+    unified_info = extract_unified_info(normalized)
+    
+    raw_text = unified_info["raw_text"]
+    trusted_hints = unified_info["trusted_hints"]
+    
+    # 如果没有提供 merchant_name，尝试从标准化结果中获取
     if not merchant_name:
-        merchant_name = docai_result.get("merchant_name")
+        merchant_name = unified_info.get("merchant_name")
     
     # 获取或创建 merchant
     merchant_id = None
@@ -49,49 +91,66 @@ def process_receipt_with_llm_from_docai(
         merchant_id = get_or_create_merchant(merchant_name)
         logger.info(f"Merchant: {merchant_name} (ID: {merchant_id})")
     
-    # Step 3: 获取商店特定的 prompt
+    # Step 3: 获取商店特定的 prompt（只用于 prompt 内容，不用于模型选择）
     logger.info(f"Step 3: Loading prompt for merchant: {merchant_name}")
     prompt_config = get_merchant_prompt(merchant_name or "default", merchant_id)
     
     # Step 4: 格式化 prompt
-    raw_text = docai_result.get("raw_text", "")
     system_message, user_message = format_prompt(
         raw_text=raw_text,
         trusted_hints=trusted_hints,
         prompt_config=prompt_config
     )
     
-    # Step 5: 调用 LLM
-    logger.info("Step 4: Calling OpenAI LLM...")
-    llm_result = parse_receipt_with_llm(
-        system_message=system_message,
-        user_message=user_message,
-        model=prompt_config.get("model_name"),
-        temperature=prompt_config.get("temperature", 0.0)
-    )
+    # Step 5: 调用 LLM（根据 llm_provider 从环境变量读取对应配置）
+    logger.info(f"Step 4: Calling {llm_provider.upper()} LLM...")
+    if llm_provider.lower() == "gemini":
+        # 从环境变量读取 Gemini 模型配置
+        model = settings.gemini_model
+        logger.info(f"Using Gemini model from settings: {model}")
+        logger.info(f"Settings.gemini_model value: {settings.gemini_model}")
+        llm_result = parse_receipt_with_gemini(
+            system_message=system_message,
+            user_message=user_message,
+            model=model,
+            temperature=prompt_config.get("temperature", 0.0)
+        )
+    else:
+        # 默认使用 OpenAI，从环境变量读取 OpenAI 模型配置
+        model = settings.openai_model
+        logger.info(f"Using OpenAI model from .env: {model}")
+        llm_result = parse_receipt_with_llm(
+            system_message=system_message,
+            user_message=user_message,
+            model=model,
+            temperature=prompt_config.get("temperature", 0.0)
+        )
     
-    # Step 6: 从 raw_text 提取价格用于验证（不依赖 LLM）
-    logger.info("Step 5: Extracting prices from raw_text for validation...")
-    docai_line_items = docai_result.get("line_items", [])
+    # Step 6: 从 raw_text 提取价格用于验证（不依赖 LLM，不依赖 OCR 来源）
+    # 关键：这个函数已经是基于 raw_text 的，可以用于任何 OCR！
+    logger.info("Step 5: Extracting prices from raw_text for validation (OCR-agnostic)...")
+    line_items = unified_info.get("line_items", [])
     extracted_line_totals = extract_line_totals_from_raw_text(
         raw_text=raw_text,
-        docai_line_items=docai_line_items,
+        docai_line_items=line_items,  # 如果有，使用；没有也没关系，会 fallback 到 regex
         merchant_name=merchant_name
     )
     
-    # Step 7: 后端数学验证（不依赖 LLM）
+    # Step 7: 后端数学验证（统一的验证逻辑，不依赖 OCR）
     logger.info("Step 6: Performing backend mathematical validation...")
     llm_result = _validate_llm_result(llm_result, extracted_line_totals=extracted_line_totals)
     
-    # Step 7: 添加元数据
+    # Step 8: 添加元数据
     llm_result["_metadata"] = {
         "merchant_name": merchant_name,
         "merchant_id": merchant_id,
-        "docai_entities": docai_result.get("entities", {}),
+        "ocr_provider": normalized.get("metadata", {}).get("ocr_provider", "unknown"),
+        "llm_provider": llm_provider.lower(),
+        "entities": normalized.get("entities", {}),
         "validation_status": llm_result.get("_metadata", {}).get("validation_status", "unknown")
     }
     
-    logger.info("Receipt processing completed successfully")
+    logger.info(f"Receipt processing completed successfully (OCR: {normalized.get('metadata', {}).get('ocr_provider', 'unknown')}, LLM: {llm_provider})")
     return llm_result
 
 

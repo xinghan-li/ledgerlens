@@ -5,9 +5,20 @@ from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import Optional
 from dotenv import load_dotenv
+from pathlib import Path
+
+# 确定 .env 文件路径（backend/.env）
+_env_path = Path(__file__).parent.parent / ".env"
 
 # Load environment variables from .env file
-load_dotenv()
+# 使用 override=True 确保环境变量优先于默认值
+load_dotenv(dotenv_path=_env_path, override=True)
+
+# 调试：打印加载的环境变量（仅用于调试）
+import os
+_gemini_model_env = os.getenv("GEMINI_MODEL")
+if _gemini_model_env:
+    print(f"[DEBUG] GEMINI_MODEL from environment: {_gemini_model_env}")
 
 
 class Settings(BaseSettings):
@@ -83,11 +94,39 @@ class Settings(BaseSettings):
         description="OpenAI model to use (e.g., gpt-4o-mini, gpt-4o, gpt-4-turbo)"
     )
     
+    # AWS settings
+    aws_region: str = Field(
+        default="us-west-2",
+        alias="AWS_REGION",
+        description="AWS region for Textract service (e.g., us-west-2, us-east-1)"
+    )
+    
+    # Google Gemini settings
+    gemini_api_key: Optional[str] = Field(
+        default=None,
+        alias="GEMINI_API_KEY",
+        description="Google Gemini API key for LLM processing"
+    )
+    gemini_model: str = Field(
+        default="gemini-1.5-flash",
+        alias="GEMINI_MODEL",
+        description=(
+            "Google Gemini model to use. "
+            "Free tier: gemini-1.5-flash (recommended), gemini-1.5-pro. "
+            "Paid tier: gemini-2.0-flash-exp (experimental, requires paid plan)"
+        )
+    )
+    
     model_config = {
-        "env_file": ".env",
+        "env_file": str(_env_path),  # 使用明确的 .env 文件路径
         "case_sensitive": False,
+        "env_file_encoding": "utf-8",
     }
 
 
 # Create a singleton settings instance
 settings = Settings()
+
+# 调试：打印最终加载的配置（仅用于调试）
+print(f"[DEBUG] Final Gemini model from settings: {settings.gemini_model}")
+print(f"[DEBUG] Gemini API key set: {bool(settings.gemini_api_key)}")

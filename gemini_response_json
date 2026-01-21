@@ -1,0 +1,172 @@
+{
+  "filename": "receipt.jpg",
+  "success": true,
+  "data": {
+    "receipt": {
+      "merchant_name": "T&T Supermarket US",
+      "merchant_address": "19630 Huy 99, Lynnwood, WA 98036",
+      "merchant_phone": "(425) 648-2648",
+      "country": "USA",
+      "currency": "USD",
+      "purchase_date": "2026-01-10",
+      "purchase_time": "13:45:58",
+      "subtotal": 22.77,
+      "tax": 0,
+      "total": 22.77,
+      "payment_method": "Visa",
+      "card_last4": "9463"
+    },
+    "items": [
+      {
+        "raw_text": "EGG TRAY BUN SC-1 $0.00 FP $6.50",
+        "product_name": "EGG TRAY BUN",
+        "quantity": 1,
+        "unit": null,
+        "unit_price": 6.5,
+        "line_total": 6.5,
+        "is_on_sale": false,
+        "category": "FOOD"
+      },
+      {
+        "raw_text": "GREEN ONION FP $1.29",
+        "product_name": "GREEN ONION",
+        "quantity": 1,
+        "unit": null,
+        "unit_price": 1.29,
+        "line_total": 1.29,
+        "is_on_sale": false,
+        "category": "PRODUCE"
+      },
+      {
+        "raw_text": "SHANGHAI BOK CHOY 1.20 lb @ $1.38/lb FP $1.66",
+        "product_name": "SHANGHAI BOK CHOY",
+        "quantity": 1.2,
+        "unit": "lb",
+        "unit_price": 1.38,
+        "line_total": 1.66,
+        "is_on_sale": false,
+        "category": "PRODUCE"
+      },
+      {
+        "raw_text": "YU CHOY-JR. 0.85 lb @ $2.29/lb FP $1.95",
+        "product_name": "YU CHOY-JR.",
+        "quantity": 0.85,
+        "unit": "lb",
+        "unit_price": 2.29,
+        "line_total": 1.95,
+        "is_on_sale": false,
+        "category": "PRODUCE"
+      },
+      {
+        "raw_text": "(SALE) SHANGHAI BOK CHOY SPROUT 1.38 lb @ $1.88/1b FP $2.59",
+        "product_name": "SHANGHAI BOK CHOY SPROUT",
+        "quantity": 1.38,
+        "unit": "lb",
+        "unit_price": 1.88,
+        "line_total": 2.59,
+        "is_on_sale": true,
+        "category": "PRODUCE"
+      },
+      {
+        "raw_text": "DARIGOLD 2% MILK FP $4.79",
+        "product_name": "DARIGOLD 2% MILK",
+        "quantity": 1,
+        "unit": null,
+        "unit_price": 4.79,
+        "line_total": 4.79,
+        "is_on_sale": false,
+        "category": "DELI"
+      },
+      {
+        "raw_text": "(SALE) NS UNSWEETENED SOYMILK Points 20 FP $3.99",
+        "product_name": "NS UNSWEETENED SOYMILK",
+        "quantity": 1,
+        "unit": null,
+        "unit_price": 3.99,
+        "line_total": 3.99,
+        "is_on_sale": true,
+        "category": "DELI"
+      }
+    ],
+    "tbd": {
+      "items_with_inconsistent_price": [],
+      "field_conflicts": {
+        "merchant_name": {
+          "from_raw_text": "T&T Supermarket US",
+          "from_trusted_hints": "T&T Supermarket Lynnwood",
+          "reason": "Raw text includes 'US' which is not present in the trusted hint's name."
+        },
+        "merchant_address": {
+          "from_raw_text": "19630 Huy 99, Lynnwood, WA 98036",
+          "from_trusted_hints": "19630 Hwy 99\nLynnwood, WA 98036\nUSA",
+          "reason": "Raw text has 'Huy 99' while trusted hints has 'Hwy 99'. Raw text also omits 'USA'."
+        },
+        "purchase_time": {
+          "from_raw_text": "13:45:58",
+          "from_trusted_hints": null,
+          "reason": "Multiple times found in raw text: '1:45:58 PM' on receipt header and '14:47:15' on credit card slip. The receipt header time was chosen. Trusted hints did not provide a time."
+        },
+        "line_item_value_hint": {
+          "from_raw_text": "Multiple line item totals (e.g., $6.50, $1.29, $1.66)",
+          "from_trusted_hints": "0.00",
+          "reason": "Trusted hint provides a generic '0.00' for a line item value, which conflicts with the actual calculated line totals derived from 'FP $X.XX' values that sum up to the receipt total. The '0.00' in raw text appears to be a discount or previous price, not the final line total."
+        }
+      },
+      "missing_info": [],
+      "total_mismatch": null
+    },
+    "_metadata": {
+      "merchant_name": "T&T Supermarket Lynnwood",
+      "merchant_id": 2,
+      "ocr_provider": "google_documentai",
+      "llm_provider": "gemini",
+      "entities": {
+        "credit_card_last_four_digits": {
+          "value": "9463",
+          "confidence": 1
+        },
+        "payment_type": {
+          "value": "Visa",
+          "confidence": 0.8564348816871643
+        },
+        "purchase_time": {
+          "value": "14:47:15",
+          "confidence": 0.8336414694786072
+        },
+        "currency": {
+          "value": "USD",
+          "confidence": 0.7996073365211487
+        },
+        "total_amount": {
+          "value": "22.77",
+          "confidence": 0.7649099230766296
+        },
+        "receipt_date": {
+          "value": "01/10/2026",
+          "confidence": 0.7592129707336426
+        },
+        "total_tax_amount": {
+          "value": "22.77",
+          "confidence": 0.4826115369796753
+        },
+        "supplier_name": {
+          "value": "T&T Supermarket Lynnwood",
+          "confidence": 1
+        },
+        "supplier_address": {
+          "value": "19630 Hwy 99\nLynnwood, WA 98036\nUSA",
+          "confidence": 1
+        },
+        "line_item": {
+          "value": "0.00",
+          "confidence": 1
+        },
+        "supplier_city": {
+          "value": "Lynnwood",
+          "confidence": 1
+        }
+      },
+      "validation_status": "pass"
+    }
+  }
+}
