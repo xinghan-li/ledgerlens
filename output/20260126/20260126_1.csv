@@ -1,0 +1,63 @@
+UserID,Date,Time,Class1,Class2,Class3,Amount,OnSale,Payment Type,Vendor
+dummy,2026/1/10,13:45:58,FOOD,,,6.5,No,Visa,"T&T Supermarket US Lynnwood Store | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/10,13:45:58,PRODUCE,,,1.29,No,Visa,"T&T Supermarket US Lynnwood Store | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/10,13:45:58,PRODUCE,,,1.66,No,Visa,"T&T Supermarket US Lynnwood Store | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/10,13:45:58,PRODUCE,,,1.95,No,Visa,"T&T Supermarket US Lynnwood Store | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/10,13:45:58,PRODUCE,,,2.59,Yes,Visa,"T&T Supermarket US Lynnwood Store | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/10,13:45:58,DELI,,,4.79,No,Visa,"T&T Supermarket US Lynnwood Store | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/10,13:45:58,DELI,,,3.99,Yes,Visa,"T&T Supermarket US Lynnwood Store | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/2,13:53:29,GROCERY,,,6,Yes,Visa,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/2,13:53:29,PRODUCE,,,1.29,No,Visa,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/2,13:53:29,PRODUCE,,,2.04,No,Visa,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/2,13:53:29,PRODUCE,,,1.49,No,Visa,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/2,13:53:29,PRODUCE,,,3.99,No,Visa,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/2,13:53:29,PRODUCE,,,2.31,No,Visa,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/2,13:53:29,DELI,,,5.99,Yes,Visa,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/2,13:53:29,DELI,,,5.99,Yes,Visa,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:46:58,PRODUCE,,,7.72,Yes,Unknown,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:46:58,PRODUCE,,,1.83,No,Unknown,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:46:58,DELI,,,4.99,No,Unknown,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:46:58,DELI,,,5.99,Yes,Unknown,"T&T Supermarket US | 19630 Hwy 99, Lynnwood, WA 98036"
+dummy,2020/1/25,13:00,,,,7.98,No,Unknown,"TRADER JOE'S | 19715 Highway 99, Suite-101
+Lynnwood, WA
+98036"
+dummy,2020/1/25,13:00,,,,2.49,No,Unknown,"TRADER JOE'S | 19715 Highway 99, Suite-101
+Lynnwood, WA
+98036"
+dummy,2020/1/25,13:00,,,,3.99,No,Unknown,"TRADER JOE'S | 19715 Highway 99, Suite-101
+Lynnwood, WA
+98036"
+dummy,2026/1/25,12:38:37,PRODUCE,,,0.99,No,Visa,"T&T Supermarket US | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:38:37,PRODUCE,,,1.98,No,Visa,"T&T Supermarket US | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:38:37,PRODUCE,,,1.53,Yes,Visa,"T&T Supermarket US | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:38:37,PRODUCE,,,4.74,No,Visa,"T&T Supermarket US | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:38:37,DELI,,,6.49,No,Visa,"T&T Supermarket US | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:38:37,DELI,,,6.49,No,Visa,"T&T Supermarket US | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:38:37,DELI,,,4.69,No,Visa,"T&T Supermarket US | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/25,12:38:37,,,,0,No,Visa,"T&T Supermarket US | 19630 Huy 99, Lynnwood, WA 98036"
+dummy,2026/1/24,13:14:00,,,,13,No,Unknown,IN-N-OUT BURGER
+dummy,2026/1/24,13:14:00,,,,13,No,Unknown,IN-N-OUT BURGER
+dummy,2026/1/24,13:14:00,,,,19.5,No,Unknown,IN-N-OUT BURGER
+dummy,2026/1/24,13:14:00,,,,,No,Unknown,IN-N-OUT BURGER
+dummy,2026/1/25,11:00:21,,,,1.72,No,Unknown,"99 Ranch Market | 34444 Fremont Blvd
+Fremont, CA 94555
+USA"
+dummy,2026/1/25,11:00:21,,,,10.55,No,Unknown,"99 Ranch Market | 34444 Fremont Blvd
+Fremont, CA 94555
+USA"
+dummy,2026/1/25,11:00:21,,,,3.99,No,Unknown,"99 Ranch Market | 34444 Fremont Blvd
+Fremont, CA 94555
+USA"
+dummy,2026/1/25,11:00:21,,,,2.04,No,Unknown,"99 Ranch Market | 34444 Fremont Blvd
+Fremont, CA 94555
+USA"
+dummy,2026/1/25,11:00:21,,,,1.2,No,Unknown,"99 Ranch Market | 34444 Fremont Blvd
+Fremont, CA 94555
+USA"
+dummy,2026/1/25,11:00:21,,,,5.5,No,Unknown,"99 Ranch Market | 34444 Fremont Blvd
+Fremont, CA 94555
+USA"
+dummy,2026/1/24,13:14:00,,,,13,No,Unknown,IN-N-OUT BURGER
+dummy,2026/1/24,13:14:00,,,,13,No,Unknown,IN-N-OUT BURGER
+dummy,2026/1/24,13:14:00,,,,19.5,No,Unknown,IN-N-OUT BURGER
+dummy,2026/1/24,13:14:00,,,,,No,Unknown,IN-N-OUT BURGER

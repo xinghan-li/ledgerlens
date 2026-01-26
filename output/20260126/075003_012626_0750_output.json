@@ -1,0 +1,151 @@
+{
+  "receipt_id": "075003_012626_0750",
+  "timestamp": "2026-01-26T07:50:39.482408+00:00",
+  "data": {
+    "receipt": {
+      "merchant_name": "99 Ranch Market",
+      "merchant_address": "34444 Fremont Blvd\nFremont, CA 94555\nUSA",
+      "merchant_phone": "(510) 791-8899",
+      "country": "USA",
+      "currency": "USD",
+      "purchase_date": "2026-01-25",
+      "purchase_time": "11:00:21",
+      "subtotal": 25.0,
+      "tax": null,
+      "total": 25.0,
+      "payment_method": "AMERICAN EXPRESS",
+      "card_last4": "1000"
+    },
+    "items": [
+      {
+        "raw_text": "GROUND PORK",
+        "product_name": "GROUND PORK",
+        "quantity": null,
+        "unit": null,
+        "unit_price": null,
+        "line_total": 1.72,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "GREEN BELL PEPPER 298 10.55€\n0.96 NET lb @ $1.79/lb",
+        "product_name": "GREEN BELL PEPPER",
+        "quantity": 0.96,
+        "unit": "lb",
+        "unit_price": 1.79,
+        "line_total": 10.55,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "MCVITIES DIGESTIVE 101163.99 C",
+        "product_name": "MCVITIES DIGESTIVE",
+        "quantity": 1,
+        "unit": null,
+        "unit_price": 3.99,
+        "line_total": 3.99,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "BANANA 2.04 FC\n2.06 NET lb @ $0.99/lb",
+        "product_name": "BANANA",
+        "quantity": 2.06,
+        "unit": "lb",
+        "unit_price": 0.99,
+        "line_total": 2.04,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "GINGER 1.20 FC\n0.40 NET lb @ $2.99/ib",
+        "product_name": "GINGER",
+        "quantity": 0.4,
+        "unit": "lb",
+        "unit_price": 2.99,
+        "line_total": 1.2,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "RED BEAN TOAST-SPECIAL 5.50 C",
+        "product_name": "RED BEAN TOAST-SPECIAL",
+        "quantity": 1,
+        "unit": null,
+        "unit_price": 5.5,
+        "line_total": 5.5,
+        "is_on_sale": false,
+        "category": null
+      }
+    ],
+    "tbd": {
+      "items_with_inconsistent_price": [
+        {
+          "raw_text": "GREEN BELL PEPPER 298 10.55€\n0.96 NET lb @ $1.79/lb",
+          "product_name": "GREEN BELL PEPPER",
+          "reason": "quantity × unit_price (1.7184) does not equal line_total (10.55)"
+        }
+      ],
+      "field_conflicts": {},
+      "missing_info": [
+        "tax",
+        "quantity for GROUND PORK",
+        "unit for GROUND PORK",
+        "unit_price for GROUND PORK",
+        "unit for MCVITIES DIGESTIVE",
+        "unit for RED BEAN TOAST-SPECIAL",
+        "category for all items"
+      ],
+      "total_mismatch": null
+    },
+    "_metadata": {
+      "merchant_name": "99 Ranch Market",
+      "merchant_id": 7,
+      "ocr_provider": "google_documentai",
+      "llm_provider": "gemini",
+      "entities": {
+        "net_amount": {
+          "value": "25.00",
+          "confidence": 0.9809576272964478
+        },
+        "payment_type": {
+          "value": "AMERICAN EXPRESS",
+          "confidence": 0.9102181792259216
+        },
+        "purchase_time": {
+          "value": "11:01:14",
+          "confidence": 0.9024428129196167
+        },
+        "currency": {
+          "value": "USD",
+          "confidence": 0.8806188106536865
+        },
+        "total_amount": {
+          "value": "25.00",
+          "confidence": 0.6820542216300964
+        },
+        "receipt_date": {
+          "value": "1/25/2026 11:00:21 AM ",
+          "confidence": 1.0
+        },
+        "line_item": {
+          "value": "RED BEAN TOAST-SPECIAL 5.50",
+          "confidence": 1.0
+        },
+        "supplier_name": {
+          "value": "99 Ranch Market",
+          "confidence": 1.0
+        },
+        "supplier_address": {
+          "value": "34444 Fremont Blvd\nFremont, CA 94555\nUSA",
+          "confidence": 1.0
+        },
+        "supplier_city": {
+          "value": "Fremont",
+          "confidence": 1.0
+        }
+      },
+      "validation_status": "unknown"
+    }
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "filename": "receipt.jpg",
+  "success": true,
+  "data": {
+    "raw_text": "Not A Member Yet? Download & Join Now!\nINFORM\nApp\nGet Exclusive Offers\n& Earn Reawards\nEnjoy Online\nGrocery Delivery\n&\nT&T Supermarket US\nLynnwood Store\n19630 Huy 99, Lynnuood, WA 98036\nPh: (425) 648-2648\n01/10/26 1:45:58 PM\nSC-1\n***600032371\n$0.00\nFOOD\nEGG TRAY BUN\nFP $6.50\nPRODUCE\nGREEN ONION\nFP $1.29\nSHANGHAI BOK CHOY\n1.20 1b @ $1.38/1b\nFP $1.66\nYU CHOY-JR.\n0.85 1b @ $2.29/1b\nFP $1.95\n(SALE) SHANGHAI BOK CHOY SPROUT\n1.38 1b @ $1.88/1b\nFP $2.59\nDELI\nDARIGOLD 2% MILK\nFP $4.79\n(SALE) NS UNSWEETENED SOYMILK\nFP $3.99\nPoints 20\n$0.00\nTOTAL\n$22.77\nVisa\n$22.77\nReference# 601051137921\nTotal points in this transaction: 20\nPoints balance\n: 420\nItem count: 7\n01/10/26 1:45:58 PM\nSC-1\nTrans:148318\nTerminal:050108013-002051\nTransaction Receipt\nT&T Supermarket US\nLynnwood Store\n19630 Huy 99, Lynnwood. WA 98036\nCLERK ID: 51\nCREDIT CARD\nSALE\nVISA\n************9463\nENTRY LEGEND/MODE: CHIP READ/CONTACTLESS\nDATE: 01/10/2026 TIME: 14:47:15\nINVOICE: 148318\nREFERENCE: 601051137921\nAUTH CODE: 510164\nAMOUNT\nUSD$ 22.77\nTOTAL\nUSD$ 22.77\nAPPROVED THANK YOU\nAPPLICATION LABEL: VISA CREDIT\nAID: A0000000031010\nATC: 009F\nAC: 5F3091C8CD2A77A9\nTVR: 0000000000\nIAD: 06011203A00000\nARC: 00\nNO SIGNATURE REQUIRED\nCustomer Copy\nSTORE: 20002\nCODE: 011026 134651 1483 20002\nTELL US HOW WE DID TODAY!\nVISIT 000 SHAREFEEDBACK.US\nFULL DETAILS OF T&T SUPERMARKET'S REFUND POLICY ARE\nAVAILABLE AT IN-STORE.\nT&T US Customer Service Line:1-833-636-1616\nwww.tntsupermarket.us\nTotal Sales amount with tax: $22.77\nEligible amount for point calculation: $22.77",
+    "entities": {
+      "total_amount": {
+        "value": "$22.77",
+        "confidence": 0.4975505065917969
+      },
+      "supplier_name": {
+        "value": "T&T Supermarket US",
+        "confidence": 0.778374252319336
+      }
+    },
+    "line_items": [
+      {
+        "raw_text": "***600032371",
+        "product_name": "***600032371",
+        "quantity": null,
+        "unit": null,
+        "unit_price": 0,
+        "line_total": null,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "PRODUCE\nGREEN ONION",
+        "product_name": "PRODUCE\nGREEN ONION",
+        "quantity": null,
+        "unit": null,
+        "unit_price": null,
+        "line_total": null,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "SHANGHAI BOK CHOY",
+        "product_name": "SHANGHAI BOK CHOY",
+        "quantity": 1.2,
+        "unit": null,
+        "unit_price": null,
+        "line_total": null,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "VII CHOY-JR.",
+        "product_name": "VII CHOY-JR.",
+        "quantity": null,
+        "unit": null,
+        "unit_price": null,
+        "line_total": null,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "(SALE) SHANGHAI BOK CHOY SPROUT\n1.38 1b @ $1.88/1b",
+        "product_name": "(SALE) SHANGHAI BOK CHOY SPROUT\n1.38 1b @ $1.88/1b",
+        "quantity": null,
+        "unit": null,
+        "unit_price": null,
+        "line_total": null,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "DELI",
+        "product_name": "DELI",
+        "quantity": null,
+        "unit": null,
+        "unit_price": null,
+        "line_total": null,
+        "is_on_sale": false,
+        "category": null
+      },
+      {
+        "raw_text": "(SALE) NS UNSWEETENED SOYMILK",
+        "product_name": "(SALE) NS UNSWEETENED SOYMILK",
+        "quantity": null,
+        "unit": null,
+        "unit_price": 0,
+        "line_total": null,
+        "is_on_sale": false,
+        "category": null
+      }
+    ],
+    "merchant_name": "T&T Supermarket US",
+    "total": 22.77
+  }
+}

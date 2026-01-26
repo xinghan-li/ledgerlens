@@ -1,0 +1,105 @@
+{
+  "raw_text": "Not A Member Yet? Download & Join Now!\n立即下載 App,加入大統積分獎勵計劃!\n⚫ Get Exclusive Offers\n•\n& Earn Reawards\n⚫ Enjoy Online\nGrocery Delivery\n- 獨家優惠 & 積分獎助\n9\n生鮮商品快速配送到家\nT&T Supermarket US\nLynnwood Store\n19630 Hwy 99, Lynnwood, WA 98036\n01/25/26 12:46:58 PM\n***600089152\nPRODUCE\nPh: (425) 648-2648\n(SALE) GOLDEN DEW PEAR\n2.68 lb @ $2.88/1b\nJAPANESE SWEET POTATO\n0.92 lb @ $1.99\n/lb\nDELI\nAFC SOYNILK ORIG UNSWEETENED L\n(SALE) GYG NINGBO GLUTINOUS RICE BALL\nPoints 20\nTOTAL\nAmerican Express\nReference# 602521563491\nTotal points in this transaction: 20\nPoints \nbalance\nIten count: 4\nTransaction resumed: 2779\n01/25/26 12:46:58 PM\nTrans:167163\n: 20\nMeichen\n$0.00\nFP $7.72\nFP $1.83\nFP $4.99\nFP $5.99\n$0.00\n$20.53\n$20.53\nMeichen\nTerminal:050108013-002004\nCLERK ID: 4\nTransaction Receipt\nT&T Supermarket US\nLynnwood Store\n19630 Hwy 99, Lynnwood, WA 98036\n",
+  "entities": {
+    "purchase_time": {
+      "value": "12:46:58 PM",
+      "confidence": 0.9905208349227905
+    },
+    "receipt_date": {
+      "value": "01/25/26",
+      "confidence": 0.9466052651405334
+    },
+    "payment_type": {
+      "value": "American Express",
+      "confidence": 0.8222867250442505
+    },
+    "currency": {
+      "value": "$",
+      "confidence": 0.7409910559654236
+    },
+    "supplier_name": {
+      "value": "T&T Supermarket",
+      "confidence": 0.6763829588890076
+    },
+    "total_amount": {
+      "value": "20.53",
+      "confidence": 0.6094845533370972
+    },
+    "supplier_address": {
+      "value": "19630 Hwy 99\nLynnwood, WA 98036\nUSA",
+      "confidence": 1.0
+    },
+    "line_item": {
+      "value": "0.00",
+      "confidence": 1.0
+    },
+    "supplier_city": {
+      "value": "Lynnwood",
+      "confidence": 1.0
+    }
+  },
+  "properties": {},
+  "line_items": [
+    {
+      "raw_text": "生鮮商",
+      "product_name": "生鮮商",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "7.72",
+      "product_name": null,
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": 7.72,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "1.83",
+      "product_name": null,
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": 1.83,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "4.99",
+      "product_name": null,
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": 4.99,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "5.99",
+      "product_name": null,
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": 5.99,
+      "is_on_sale": false,
+      "category": null
+    }
+  ],
+  "merchant_name": "T&T Supermarket",
+  "purchase_time": "01/25/26",
+  "subtotal": 20.53,
+  "tax": 0.0,
+  "total": 20.53,
+  "currency": "USD",
+  "payment_method": "American Express",
+  "card_last4": null,
+  "item_count": 5,
+  "needs_review": [],
+  "validation_status": "pass"
+}

@@ -1,0 +1,100 @@
+{
+  "raw_text": "Not A Member Yet? Download & Join Now!\nILBOT App be\nGet Exclusive Offers\n& Earn Reawards\nEnjoy Online\nGrocery Delivery\n& -\nT&T Supermarket US\nLynnwood Store\n19630 Hwy 99, Lynnwood, WA 98036\nPh: (425) 648-2648\n01/02/26 1:53:29 PM\nMeiChen\nGROCERY\n(SALE) INDOMIE FRIED NOODLE MIEGORENG\n173605 2 @2/$6.00\nFP $6.00\nPRODUCE\nGREEN ONION\nFP $1.29\nSHANGHAI BOK CHOY\n1.48 1b @ $1.38/1b\nFP $2.04\nCROWN BROCCOLI\n0.75 1b @ $1.99/1b\nFP $1.49\nENGLISH CUCUMBER(3PC)\nFP $3.99\nSHANGHAI BOK CHOY SPROUT\n1.16 1b @ $1.99/1b\nFP $2.31\nDELI\n(SALE) T&T GRN ONION PANCAKE VALUE PK\nFP $5.99\n(SALE) T&T BEEF STUFFED BUN\nFP $5.99\nTOTAL\n$29.10\nVisa\n$29.10\nReference# 600285139565\nItem count: 9\n01/02/26 1:53:29 PM\nMeiChen\nTrans:148782\nTerminal:050108013-002007\nTransaction Receipt\nT&T Supermarket US\nLynnwood Store\n19630 Hwy 99, Lynnwood, WA 98036\nCLERK ID: 07\nCREDIT CARD\nSALE\nVISA\n************9463\nENTRY LEGEND/MODE: CHIP READ/CONTACTLESS\nDATE: 01/02/2026 TIME: 14:55:25\nINVOICE: 148782\nREFERENCE: 600285139565\nAUTH CODE: 512045\nAMOUNT\nUSD$ 29.10\nTOTAL\nUSD$ 29.10\nAPPROVED THANK YOU\nAPPLICATION LABEL: VISA CREDIT\nAID: A0000000031010\nATC: 009A\nAC: FFA850D7FA5BF0B1\nTVR: 0000000000\nIAD: 06011203A00000\nARC: 00\nNO SIGNATURE REQUIRED\nCustomer Copy\nSTORE: 20002\nCODE: 010226 135407 1487 20002\nTELL US HOW WE DID TODAY!\nVISIT WWW.SHAREFEEDBACK.US\nFULL DETAILS OF T&T SUPERMARKET'S REFUND POLICY ARE\nAVAILABLE AT IN-STORE.\nT&T US Customer Service Line:1-833-636-1616\nwww.tntsupermarket.us\nTotal Sales amount with tax: $29.10",
+  "entities": {
+    "total_amount": {
+      "value": "$29.10",
+      "confidence": 0.9977859497070313
+    },
+    "supplier_name": {
+      "value": "T&T Supermarket US",
+      "confidence": 0.991185302734375
+    }
+  },
+  "line_items": [
+    {
+      "raw_text": "(SALE) INDOMIE FRIED NOODLE MIEGORENG",
+      "product_name": "(SALE) INDOMIE FRIED NOODLE MIEGORENG",
+      "quantity": 2.0,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "GREEN ONION",
+      "product_name": "GREEN ONION",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "SHANGHAI BOK CHOY",
+      "product_name": "SHANGHAI BOK CHOY",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "CROWN BROCCOLI",
+      "product_name": "CROWN BROCCOLI",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "ENGLISH CUCUMBER (3PC)",
+      "product_name": "ENGLISH CUCUMBER (3PC)",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "SHANGHAI BOK CHOY SPROUT",
+      "product_name": "SHANGHAI BOK CHOY SPROUT",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "(SALE) T&T GRN ONION PANCAKE VALUE PK",
+      "product_name": "(SALE) T&T GRN ONION PANCAKE VALUE PK",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "(SALE) T&T BEEF STUFFED BUN",
+      "product_name": "(SALE) T&T BEEF STUFFED BUN",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    }
+  ],
+  "merchant_name": "T&T Supermarket US",
+  "metadata": {
+    "ocr_provider": "aws_textract"
+  },
+  "total": 29.1
+}

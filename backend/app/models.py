@@ -57,7 +57,7 @@ class DocumentAIResultRequest(BaseModel):
     filename: str
     data: dict = Field(
         ...,
-        description="Document AI 返回的完整 JSON 数据（包含 raw_text, entities, line_items 等）"
+        description="Complete JSON data returned by Document AI (contains raw_text, entities, line_items, etc.)"
     )
     
     class Config:

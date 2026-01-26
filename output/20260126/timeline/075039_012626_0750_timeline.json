@@ -1,0 +1,40 @@
+{
+  "receipt_id": "075039_012626_0750",
+  "timeline": [
+    {
+      "step": "google_ocr_start",
+      "timestamp": "2026-01-26T07:50:39.483409+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "google_ocr_end",
+      "timestamp": "2026-01-26T07:50:41.130389+00:00",
+      "duration_ms": 1646.98
+    },
+    {
+      "step": "gemini_llm_start",
+      "timestamp": "2026-01-26T07:50:41.130389+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "gemini_llm_end",
+      "timestamp": "2026-01-26T07:51:03.945981+00:00",
+      "duration_ms": 22815.59
+    },
+    {
+      "step": "sum_check_start",
+      "timestamp": "2026-01-26T07:51:03.945981+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "sum_check_end",
+      "timestamp": "2026-01-26T07:51:03.945981+00:00",
+      "duration_ms": 0.0
+    },
+    {
+      "step": "save_output_start",
+      "timestamp": "2026-01-26T07:51:03.945981+00:00",
+      "duration_ms": null
+    }
+  ]
+}

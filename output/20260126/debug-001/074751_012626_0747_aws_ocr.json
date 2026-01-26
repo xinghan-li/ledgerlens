@@ -1,0 +1,60 @@
+{
+  "raw_text": "Not A Member Yet? Download & Join Now!\nINTO App'\nGet Exclusive Offers\n& Earn Reawards\n.\nEnjoy Online\nGrocery Delivery\n- BREE & BARD\n**********\nT&T Supermarket US\nLynnwood Store\n19630 Hwy 99, Lynnwood, WA 98036\nPh: (425) 648-2648\n01/25/26 12:46:58 PM\nMeiChen\n***600089152\n$0.00\nPRODUCE\n(SALE) GOLDEN DEW PEAR\n2.68 1b @ $2.88/lb\nFP $7.72\nJAPANESE SWEET POTATO\n0.92 1b @ $1.99/1b\nFP $1.83\nDELI SOYMILK ORIG UNSWEETENED GLUTINOUS L\nFP $4.99\nAFC (SALE) GYG NINGBO RICE BALL\nFP $5.99\n$0.00\nPoints 20\n$20.53\na a TOTAL\n$20.53\nTotal 20\nPoints balance\n: 20\n01/25/26.12:46:58 PM\nItemsaction: resumed: 4\n2779\nMeiChen\nTrans:167163\nTerminal:050108013-002004\nTransaction Receipt\nT&T Supermarket US\nLynnwood Store\n19630 Hwy 99, Lynnwood, WA 98036\nCLERK ID: 4\nCREDIT CARD",
+  "entities": {
+    "total_amount": {
+      "value": "$20.53",
+      "confidence": 0.9997251892089843
+    },
+    "supplier_name": {
+      "value": "T&T Supermarket US",
+      "confidence": 0.7870852661132812
+    }
+  },
+  "line_items": [
+    {
+      "raw_text": "(SALE) GOLDEN DEV PEAR",
+      "product_name": "(SALE) GOLDEN DEV PEAR",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "JAPANESE SWEET POTATO",
+      "product_name": "JAPANESE SWEET POTATO",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "DELI ORIG UNSWEETENED L\nSOYMILK\nAFC GLUTINOUS",
+      "product_name": "DELI ORIG UNSWEETENED L\nSOYMILK\nAFC GLUTINOUS",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "SOYMILK\nAFC NINGBO GLUTINOUS RICE BALL\nGYG\n(SALE)\n20",
+      "product_name": "SOYMILK\nAFC NINGBO GLUTINOUS RICE BALL\nGYG\n(SALE)\n20",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    }
+  ],
+  "merchant_name": "T&T Supermarket US",
+  "metadata": {
+    "ocr_provider": "aws_textract"
+  },
+  "total": 20.53
+}

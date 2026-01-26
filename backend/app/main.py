@@ -22,14 +22,16 @@ curl -X POST "http://127.0.0.1:8000/api/receipts/ocr" \
 """
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from .vision_client import ocr_document_bytes
-from .supabase_client import save_receipt_ocr, save_parsed_receipt, get_or_create_merchant, get_test_user_id
+from typing import List
+from .services.ocr.vision_client import ocr_document_bytes
+from .services.database.supabase_client import save_receipt_ocr, save_parsed_receipt, get_or_create_merchant, get_test_user_id
 from .models import ReceiptOCRResponse, ReceiptIngestRequest, ReceiptIngestResponse, ReceiptItemResponse
-from .receipt_parser import parse_receipt
-from .documentai_client import parse_receipt_documentai
-from .textract_client import parse_receipt_textract
-from .receipt_llm_processor import process_receipt_with_llm_from_docai, process_receipt_with_llm_from_ocr
-from .workflow_processor import process_receipt_workflow
+from .core.receipt_parser import parse_receipt
+from .services.ocr.documentai_client import parse_receipt_documentai
+from .services.ocr.textract_client import parse_receipt_textract
+from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_docai, process_receipt_with_llm_from_ocr
+from .core.workflow_processor import process_receipt_workflow
+from .core.bulk_processor import process_bulk_receipts
 from .models import DocumentAIResultRequest
 import logging
 
@@ -43,10 +45,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Allow localhost frontends during development
+# CORS configuration - allow all origins in development
+# In production, should restrict to specific domains
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["*"],  # Allow all origins in development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,11 +65,11 @@ async def health():
 @app.post("/api/receipt/goog-ocr", response_model=ReceiptOCRResponse)
 async def ocr_receipt_google_vision(file: UploadFile = File(...)):
     """
-    使用 Google Cloud Vision API 进行 OCR。
+    Perform OCR using Google Cloud Vision API.
     
-    - 接受 JPEG 或 PNG 图片
-    - 最大文件大小：约 5MB
-    - 返回提取的文本并保存到 Supabase
+    - Accepts JPEG or PNG images
+    - Maximum file size: approximately 5MB
+    - Returns extracted text and saves to Supabase
     """
     # Basic validation: only allow jpg/png
     if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
@@ -121,18 +124,18 @@ async def ocr_receipt_google_vision(file: UploadFile = File(...)):
 @app.post("/api/ingest/receipt", response_model=ReceiptIngestResponse)
 async def ingest_receipt(request: ReceiptIngestRequest):
     """
-    接收 OCR 文本，解析收据信息并保存到数据库。
+    Receive OCR text, parse receipt information and save to database.
     
-    - 解析商户名称、日期时间、总金额、商品项等
-    - 保存到 receipts 和 receipt_items 表
-    - 返回解析后的结构化数据
+    - Parse merchant name, date/time, total amount, items, etc.
+    - Save to receipts and receipt_items tables
+    - Return parsed structured data
     
-    注意：需要一个有效的 user_id（必须在 auth.users 表中存在）。
-    可以通过以下方式提供：
-    1. 从请求头中的认证信息获取（推荐，待实现）
-    2. 设置 TEST_USER_ID 环境变量用于开发测试
+    Note: A valid user_id is required (must exist in auth.users table).
+    Can be provided in the following ways:
+    1. Get from authentication information in request headers (recommended, to be implemented)
+    2. Set TEST_USER_ID environment variable for development testing
     """
-    # 获取用户 ID
+    # Get user ID
     user_id = get_test_user_id()
     
     if not user_id:
@@ -147,16 +150,16 @@ async def ingest_receipt(request: ReceiptIngestRequest):
         )
     
     try:
-        # 解析收据
+        # Parse receipt
         parsed = parse_receipt(request.text)
         
-        # 如果识别到商户，获取或创建 merchant 记录
+        # If merchant identified, get or create merchant record
         if parsed.merchant_name:
             merchant_id = get_or_create_merchant(parsed.merchant_name)
             parsed.merchant_id = merchant_id
             logger.info(f"Merchant: {parsed.merchant_name} (ID: {merchant_id})")
         
-        # 保存到数据库
+        # Save to database
         saved = save_parsed_receipt(
             user_id=user_id,
             parsed_receipt=parsed,
@@ -167,18 +170,18 @@ async def ingest_receipt(request: ReceiptIngestRequest):
         receipt_id = saved["receipt_id"]
         logger.info(f"Receipt ingested successfully: ID={receipt_id}, Items={len(saved['items'])}")
         
-        # 构建响应 - 从原始解析中获取 is_on_sale 信息
+        # Build response - get is_on_sale information from original parsing
         items_response = []
         for idx, db_item in enumerate(saved["items"]):
-            # 从原始解析的商品列表中查找对应的商品
+            # Find corresponding item from original parsed item list
             original_item = None
             if idx < len(parsed.items):
                 original_item = parsed.items[idx]
             
             normalized_text = db_item.get("normalized_text") or db_item.get("raw_text", "")
-            # 检查是否包含 [SALE] 标记
+            # Check if contains [SALE] marker
             is_on_sale = "[SALE]" in normalized_text or (original_item and original_item.is_on_sale)
-            # 移除 [SALE] 标记以获取纯商品名
+            # Remove [SALE] marker to get pure product name
             product_name = normalized_text.replace("[SALE] ", "").strip() if normalized_text else ""
             
             items_response.append(
@@ -187,7 +190,7 @@ async def ingest_receipt(request: ReceiptIngestRequest):
                     line_index=db_item["line_index"],
                     product_name=product_name,
                     quantity=db_item.get("quantity"),
-                    unit=None,  # 数据库中暂时没有单独存储 unit
+                    unit=None,  # Database doesn't store unit separately for now
                     unit_price=db_item.get("unit_price"),
                     line_total=db_item.get("line_total"),
                     is_on_sale=is_on_sale,
@@ -219,15 +222,15 @@ async def ingest_receipt(request: ReceiptIngestRequest):
 @app.post("/api/receipt/goog-ocr-dai")
 async def parse_receipt_with_documentai(file: UploadFile = File(...)):
     """
-    使用 Google Document AI Expense Parser 解析收据图片。
+    Parse receipt image using Google Document AI Expense Parser.
     
-    - 接受 JPEG 或 PNG 图片
-    - 使用 Google Document AI 的 Expense Parser processor
-    - 返回 Document AI 提取的结构化数据
+    - Accepts JPEG or PNG images
+    - Uses Google Document AI's Expense Parser processor
+    - Returns structured data extracted by Document AI
     
-    注意：此端点只返回解析结果，不保存到数据库。
+    Note: This endpoint only returns parsing results, does not save to database.
     """
-    # 基本验证：只允许 jpg/png
+    # Basic validation: only allow jpg/png
     if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
         raise HTTPException(
             status_code=400,
@@ -238,7 +241,7 @@ async def parse_receipt_with_documentai(file: UploadFile = File(...)):
     if len(contents) == 0:
         raise HTTPException(status_code=400, detail="Empty file.")
     
-    # 检查文件大小（约 5MB 限制）
+    # Check file size (approximately 5MB limit)
     if len(contents) > 5 * 1024 * 1024:
         raise HTTPException(
             status_code=400,
@@ -246,10 +249,10 @@ async def parse_receipt_with_documentai(file: UploadFile = File(...)):
         )
     
     try:
-        # 确定 MIME 类型
+        # Determine MIME type
         mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
         
-        # 使用 Document AI 解析
+        # Parse using Document AI
         parsed_data = parse_receipt_documentai(contents, mime_type=mime_type)
         logger.info(f"Document AI parsing completed for file: {file.filename}")
         
@@ -270,20 +273,20 @@ async def parse_receipt_with_documentai(file: UploadFile = File(...)):
 @app.post("/api/receipt/amzn-ocr")
 async def parse_receipt_with_textract(file: UploadFile = File(...)):
     """
-    使用 AWS Textract 解析收据图片。
+    Parse receipt image using AWS Textract.
     
-    - 接受 JPEG 或 PNG 图片
-    - 使用 AWS Textract 的 detect_document_text 和 analyze_expense API
-    - 返回 Textract 提取的结构化数据（标准化格式，与 Document AI 兼容）
+    - Accepts JPEG or PNG images
+    - Uses AWS Textract's detect_document_text and analyze_expense APIs
+    - Returns structured data extracted by Textract (normalized format, compatible with Document AI)
     
-    注意：此端点只返回解析结果，不保存到数据库。
-    返回的格式已经标准化，可以直接用于 /api/receipt/llm-process 端点。
+    Note: This endpoint only returns parsing results, does not save to database.
+    The returned format is already normalized and can be directly used with /api/receipt/llm-process endpoint.
     
-    配置要求：
-    - 需要配置 AWS 凭证（通过 ~/.aws/credentials 或环境变量）
-    - 需要 IAM 权限：AmazonTextractFullAccess 或至少 detect_document_text 和 analyze_expense 权限
+    Configuration requirements:
+    - Need to configure AWS credentials (via ~/.aws/credentials or environment variables)
+    - Need IAM permissions: AmazonTextractFullAccess or at least detect_document_text and analyze_expense permissions
     """
-    # 基本验证：只允许 jpg/png
+    # Basic validation: only allow jpg/png
     if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
         raise HTTPException(
             status_code=400,
@@ -294,7 +297,7 @@ async def parse_receipt_with_textract(file: UploadFile = File(...)):
     if len(contents) == 0:
         raise HTTPException(status_code=400, detail="Empty file.")
     
-    # 检查文件大小（约 5MB 限制）
+    # Check file size (approximately 5MB limit)
     if len(contents) > 5 * 1024 * 1024:
         raise HTTPException(
             status_code=400,
@@ -302,7 +305,7 @@ async def parse_receipt_with_textract(file: UploadFile = File(...)):
         )
     
     try:
-        # 使用 Textract 解析
+        # Parse using Textract
         parsed_data = parse_receipt_textract(contents)
         logger.info(f"Textract parsing completed for file: {file.filename}")
         
@@ -323,54 +326,54 @@ async def parse_receipt_with_textract(file: UploadFile = File(...)):
 @app.post("/api/receipt/openai-llm")
 async def process_receipt_with_openai_llm_endpoint(request: DocumentAIResultRequest):
     """
-    使用 OpenAI LLM 处理 OCR 结果（支持多个 OCR 提供商）。
+    Process OCR results using OpenAI LLM (supports multiple OCR providers).
     
-    输入：任何 OCR 服务返回的 JSON（来自 /api/receipt/goog-ocr-dai 或 /api/receipt/amzn-ocr）
+    Input: JSON returned by any OCR service (from /api/receipt/goog-ocr-dai or /api/receipt/amzn-ocr)
     
-    核心优势（统一处理）：
-    - 自动标准化不同 OCR 的输出格式
-    - 基于 raw_text 的统一提取（不依赖 OCR 特定格式）
-    - 统一的验证逻辑（不管 OCR 来源）
-    - 商店特定的规则只需一套（针对 raw_text，不针对 OCR）
+    Core advantages (unified processing):
+    - Automatically normalize different OCR output formats
+    - Unified extraction based on raw_text (not dependent on OCR-specific format)
+    - Unified validation logic (regardless of OCR source)
+    - Merchant-specific rules only need one set (targeting raw_text, not OCR)
     
-    流程：
-    1. 自动检测并标准化 OCR 结果（Google Document AI / AWS Textract）
-    2. 提取高置信度字段（confidence >= 0.95）作为 trusted_hints
-    3. 根据商店名称获取对应的 RAG prompt
-    4. 调用 OpenAI LLM 进行结构化重建
-    5. 基于 raw_text 的后端数学验证（不依赖 OCR）
-    6. 返回结构化的 JSON，可以直接存储到数据库
+    Workflow:
+    1. Automatically detect and normalize OCR results (Google Document AI / AWS Textract)
+    2. Extract high-confidence fields (confidence >= 0.95) as trusted_hints
+    3. Get corresponding RAG prompt based on merchant name
+    4. Call OpenAI LLM for structured reconstruction
+    5. Backend mathematical validation based on raw_text (not dependent on OCR)
+    6. Return structured JSON that can be directly stored to database
     
-    注意：此端点返回完整的结构化数据，包括 tbd（待确认）字段。
+    Note: This endpoint returns complete structured data, including tbd (to be determined) fields.
     
-    使用示例：
-    1. 先调用 POST /api/receipt/goog-ocr-dai 或 POST /api/receipt/amzn-ocr 上传图片，获取 OCR 结果
-    2. 将返回的 JSON 中的 data 字段作为 body 的 data 发送到此端点
+    Usage example:
+    1. First call POST /api/receipt/goog-ocr-dai or POST /api/receipt/amzn-ocr to upload image and get OCR result
+    2. Send the data field from returned JSON as body's data to this endpoint
     """
     try:
-        # 检测 OCR 提供商（通过 metadata 或自动检测）
+        # Detect OCR provider (via metadata or auto-detection)
         ocr_data = request.data
         ocr_provider = "unknown"
         
         if isinstance(ocr_data, dict):
-            # 检查是否有 metadata 字段
+            # Check if has metadata field
             if "metadata" in ocr_data and "ocr_provider" in ocr_data["metadata"]:
                 ocr_provider = ocr_data["metadata"]["ocr_provider"]
             else:
-                # 自动检测：检查是否有特征字段
-                # 使用键检查而不是字符串转换，更高效且准确
+                # Auto-detection: check for characteristic fields
+                # Use key check instead of string conversion, more efficient and accurate
                 if "ExpenseDocuments" in ocr_data and isinstance(ocr_data.get("ExpenseDocuments"), list):
                     ocr_provider = "aws_textract"
                 elif "entities" in ocr_data and "line_items" in ocr_data:
                     ocr_provider = "google_documentai"
                 elif "Blocks" in ocr_data and isinstance(ocr_data.get("Blocks"), list):
-                    # AWS Textract 的 detect_document_text 返回 Blocks
+                    # AWS Textract's detect_document_text returns Blocks
                     ocr_provider = "aws_textract"
         
-        # 调用统一的 LLM 处理流程（自动标准化，使用 OpenAI）
+        # Call unified LLM processing workflow (auto-normalize, use OpenAI)
         result = await process_receipt_with_llm_from_ocr(
             ocr_result=ocr_data,
-            merchant_name=None,  # 从 OCR 结果中自动识别
+            merchant_name=None,  # Auto-identify from OCR result
             ocr_provider=ocr_provider,
             llm_provider="openai"
         )
@@ -394,55 +397,55 @@ async def process_receipt_with_openai_llm_endpoint(request: DocumentAIResultRequ
 @app.post("/api/receipt/gemini-llm")
 async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequest):
     """
-    使用 Google Gemini LLM 处理 OCR 结果（支持多个 OCR 提供商）。
+    Process OCR results using Google Gemini LLM (supports multiple OCR providers).
     
-    输入：任何 OCR 服务返回的 JSON（来自 /api/receipt/goog-ocr-dai 或 /api/receipt/amzn-ocr）
+    Input: JSON returned by any OCR service (from /api/receipt/goog-ocr-dai or /api/receipt/amzn-ocr)
     
-    核心优势（统一处理）：
-    - 自动标准化不同 OCR 的输出格式
-    - 基于 raw_text 的统一提取（不依赖 OCR 特定格式）
-    - 统一的验证逻辑（不管 OCR 来源）
-    - 商店特定的规则只需一套（针对 raw_text，不针对 OCR）
-    - 使用 Google Gemini LLM（暂时沿用 OpenAI 的 RAG prompt）
+    Core advantages (unified processing):
+    - Automatically normalize different OCR output formats
+    - Unified extraction based on raw_text (not dependent on OCR-specific format)
+    - Unified validation logic (regardless of OCR source)
+    - Merchant-specific rules only need one set (targeting raw_text, not OCR)
+    - Uses Google Gemini LLM (temporarily reuses OpenAI's RAG prompt)
     
-    流程：
-    1. 自动检测并标准化 OCR 结果（Google Document AI / AWS Textract）
-    2. 提取高置信度字段（confidence >= 0.95）作为 trusted_hints
-    3. 根据商店名称获取对应的 RAG prompt（沿用 OpenAI 的 prompt）
-    4. 调用 Google Gemini LLM 进行结构化重建
-    5. 基于 raw_text 的后端数学验证（不依赖 OCR）
-    6. 返回结构化的 JSON，可以直接存储到数据库
+    Workflow:
+    1. Automatically detect and normalize OCR results (Google Document AI / AWS Textract)
+    2. Extract high-confidence fields (confidence >= 0.95) as trusted_hints
+    3. Get corresponding RAG prompt based on merchant name (reuses OpenAI's prompt)
+    4. Call Google Gemini LLM for structured reconstruction
+    5. Backend mathematical validation based on raw_text (not dependent on OCR)
+    6. Return structured JSON that can be directly stored to database
     
-    注意：此端点返回完整的结构化数据，包括 tbd（待确认）字段。
+    Note: This endpoint returns complete structured data, including tbd (to be determined) fields.
     
-    使用示例：
-    1. 先调用 POST /api/receipt/goog-ocr-dai 或 POST /api/receipt/amzn-ocr 上传图片，获取 OCR 结果
-    2. 将返回的 JSON 中的 data 字段作为 body 的 data 发送到此端点
+    Usage example:
+    1. First call POST /api/receipt/goog-ocr-dai or POST /api/receipt/amzn-ocr to upload image and get OCR result
+    2. Send the data field from returned JSON as body's data to this endpoint
     """
     try:
-        # 检测 OCR 提供商（通过 metadata 或自动检测）
+        # Detect OCR provider (via metadata or auto-detection)
         ocr_data = request.data
         ocr_provider = "unknown"
         
         if isinstance(ocr_data, dict):
-            # 检查是否有 metadata 字段
+            # Check if has metadata field
             if "metadata" in ocr_data and "ocr_provider" in ocr_data["metadata"]:
                 ocr_provider = ocr_data["metadata"]["ocr_provider"]
             else:
-                # 自动检测：检查是否有特征字段
-                # 使用键检查而不是字符串转换，更高效且准确
+                # Auto-detection: check for characteristic fields
+                # Use key check instead of string conversion, more efficient and accurate
                 if "ExpenseDocuments" in ocr_data and isinstance(ocr_data.get("ExpenseDocuments"), list):
                     ocr_provider = "aws_textract"
                 elif "entities" in ocr_data and "line_items" in ocr_data:
                     ocr_provider = "google_documentai"
                 elif "Blocks" in ocr_data and isinstance(ocr_data.get("Blocks"), list):
-                    # AWS Textract 的 detect_document_text 返回 Blocks
+                    # AWS Textract's detect_document_text returns Blocks
                     ocr_provider = "aws_textract"
         
-        # 调用统一的 LLM 处理流程（自动标准化，使用 Gemini）
+        # Call unified LLM processing workflow (auto-normalize, use Gemini)
         result = await process_receipt_with_llm_from_ocr(
             ocr_result=ocr_data,
-            merchant_name=None,  # 从 OCR 结果中自动识别
+            merchant_name=None,  # Auto-identify from OCR result
             ocr_provider=ocr_provider,
             llm_provider="gemini"
         )
@@ -466,26 +469,26 @@ async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequ
 @app.post("/api/receipt/workflow")
 async def process_receipt_workflow_endpoint(file: UploadFile = File(...)):
     """
-    完整的收据处理流程（workflow）。
+    Complete receipt processing workflow.
     
-    流程：
+    Workflow:
     1. Google Document AI OCR
-    2. 根据 Gemini 限流决定使用 Gemini 还是 GPT-4o-mini
-    3. LLM 处理得到结构化 JSON
-    4. Sum check（容忍度 ±0.03）
-    5. 如果失败，引入 AWS OCR + GPT-4o-mini 二次处理
-    6. 文件存储和时间线记录
-    7. 统计更新
+    2. Decide whether to use Gemini or GPT-4o-mini based on Gemini rate limiting
+    3. LLM processing to get structured JSON
+    4. Sum check (tolerance ±0.03)
+    5. If failed, introduce AWS OCR + GPT-4o-mini secondary processing
+    6. File storage and timeline recording
+    7. Statistics update
     
-    返回：
-    - success: 是否成功
-    - receipt_id: 收据 ID（格式：001_mmyydd_hhmm）
-    - status: 状态（passed, passed_with_resolution, passed_after_backup, needs_manual_review, error）
-    - data: 结构化的收据数据
-    - sum_check: sum check 详情
-    - timeline: 时间线（可选）
+    Returns:
+    - success: Whether successful
+    - receipt_id: Receipt ID (format: 001_mmyydd_hhmm)
+    - status: Status (passed, passed_with_resolution, passed_after_backup, needs_manual_review, error)
+    - data: Structured receipt data
+    - sum_check: Sum check details
+    - timeline: Timeline (optional)
     """
-    # 基本验证
+    # Basic validation
     if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
         raise HTTPException(
             status_code=400,
@@ -496,7 +499,7 @@ async def process_receipt_workflow_endpoint(file: UploadFile = File(...)):
     if len(contents) == 0:
         raise HTTPException(status_code=400, detail="Empty file.")
     
-    # 检查文件大小（约 5MB 限制）
+    # Check file size (approximately 5MB limit)
     if len(contents) > 5 * 1024 * 1024:
         raise HTTPException(
             status_code=400,
@@ -504,10 +507,10 @@ async def process_receipt_workflow_endpoint(file: UploadFile = File(...)):
         )
     
     try:
-        # 确定 MIME 类型
+        # Determine MIME type
         mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
         
-        # 调用 workflow 处理器
+        # Call workflow processor
         result = await process_receipt_workflow(
             image_bytes=contents,
             filename=file.filename,
@@ -523,4 +526,66 @@ async def process_receipt_workflow_endpoint(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=500,
             detail=f"Workflow processing failed: {str(e)}"
+        )
+
+
+@app.post("/api/receipt/workflow-bulk")
+async def process_receipt_workflow_bulk_endpoint(files: List[UploadFile] = File(...)):
+    """
+    Bulk receipt processing workflow endpoint.
+    
+    Accepts multiple receipt images and processes them with rate limiting.
+    
+    Features:
+    - Processes multiple JPEG/PNG images in one request
+    - Respects Gemini API rate limit (15 requests/minute)
+    - Automatically queues files when rate limit is reached
+    - Waits for next minute when Gemini limit is exceeded
+    
+    Args:
+        files: List of image files (JPEG/PNG)
+    
+    Returns:
+        Dictionary containing:
+        - success: Overall success status
+        - total: Total number of files received
+        - processed: Number of files processed
+        - successful: Number of successful processing
+        - failed: Number of failed processing
+        - results: List of individual processing results
+    
+    Example:
+        curl -X POST "http://127.0.0.1:8000/api/receipt/workflow-bulk" \
+          -F "files=@receipt1.jpg" \
+          -F "files=@receipt2.jpg" \
+          -F "files=@receipt3.jpg"
+    """
+    if not files:
+        raise HTTPException(
+            status_code=400,
+            detail="No files provided"
+        )
+    
+    if len(files) > 100:  # Reasonable limit for bulk upload
+        raise HTTPException(
+            status_code=400,
+            detail="Too many files. Maximum 100 files per request."
+        )
+    
+    try:
+        # Process bulk receipts
+        result = await process_bulk_receipts(files, max_concurrent=3)
+        
+        logger.info(
+            f"Bulk processing completed: {result.get('successful', 0)} successful, "
+            f"{result.get('failed', 0)} failed out of {result.get('processed', 0)} files"
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Bulk workflow failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Bulk workflow processing failed: {str(e)}"
         )

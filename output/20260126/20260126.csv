@@ -1,0 +1,42 @@
+UserID,Date,Time,Class1,Class2,Class3,ItemName,Amount,Currency,OnSale,Payment Type,Vendor,Address1,Address2,City,State,Country,ZipCode
+dummy,"01-25-20
+01-25-2026 
+13:00
+",13:00:00,,,,CHICKEN FRIED RICE,3.99,USD,No,American Express,TRADER JOE'S,19715 Hwy 99 Ste 101,,Lynnwood,WA,USA,98036
+dummy,"01-25-20
+01-25-2026 
+13:00
+",13:00:00,,,,CHICKEN FRIED RICE,3.99,USD,No,American Express,TRADER JOE'S,19715 Hwy 99 Ste 101,,Lynnwood,WA,USA,98036
+dummy,"01-25-20
+01-25-2026 
+13:00
+",13:00:00,,,,SLICED WHOLE WHEAT BREAD,2.49,USD,No,American Express,TRADER JOE'S,19715 Hwy 99 Ste 101,,Lynnwood,WA,USA,98036
+dummy,"01-25-20
+01-25-2026 
+13:00
+",13:00:00,,,,KIMBAP KOREAN SEAWEED RI,3.99,USD,No,American Express,TRADER JOE'S,19715 Hwy 99 Ste 101,,Lynnwood,WA,USA,98036
+dummy,2026/1/25,11:00:21,,,,GROUND PORK,1.72,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,GREEN BELL PEPPER,10.55,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,MCVITIES DIGESTIVE,3.99,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,BANANA,2.04,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,GINGER,1.2,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,RED BEAN TOAST-SPECIAL,5.5,USD,Yes,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,GROUND PORK,1.72,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,GREEN BELL PEPPER,10.55,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,MCVITIES DIGESTIVE,3.99,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,BANANA,2.04,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,GINGER,1.2,USD,No,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/25,11:00:21,,,,RED BEAN TOAST-SPECIAL,5.5,USD,Yes,American Express,99 Ranch Market,34444 Fremont Blvd.,,Fremont,CA,,94555
+dummy,2026/1/22,18:25:01,GROCERY,,,HEINZ TOMATO KETCHUP 375ML,4.49,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,GROCERY,,,T&T SLICED RUOQIANG RED DATES,3.99,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,GROCERY,,,WJ SHREDDED PSUD VEGETABLE,2.27,CAD,Yes,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,FOOD,,,HOUSE NOODLE FLAT (RAW),3.99,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,FOOD,,,SAKURA PRMIUM PORK BELLY SLICE,17.98,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,PRODUCE,,,POTATO,1.07,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,PRODUCE,,,GREEN BEANS,2.27,CAD,Yes,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,DELI,,,DAIRYLAND 3.25% LACTOSE FREE,6.69,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,,,,Bottle deposit,0.1,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,,,,Env fee (CRF),0.01,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,,,,GOLD PLUM SALTED DUCK EGGS,5.99,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,,,,SYNEAR FRIED STICKS,5.25,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
+dummy,2026/1/22,18:25:01,,,,Points,0,CAD,No,Gift Card,TNT Supermarket - Osaka Branch,"#1000-3700 No.3 Rd., Richmond, B.C..V6X 3X2",,,,,
