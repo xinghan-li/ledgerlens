@@ -47,7 +47,10 @@ def _populate_merchant_cache():
             logger.warning("No merchant locations found in database")
     
     except Exception as e:
-        logger.error(f"Failed to load merchant locations: {e}")
+        logger.error(
+            f"Failed to load merchant locations from database: {type(e).__name__}: {e}",
+            exc_info=True
+        )
 
 
 def match_merchant(
@@ -107,7 +110,14 @@ def match_merchant(
         
         return matched_location
     
-    logger.warning(f"No match found for merchant: {merchant_name}")
+    # No match found - provide detailed context for debugging
+    num_candidates = len(searchable_names)
+    threshold_pct = threshold * 100
+    logger.warning(
+        f"No fuzzy match found for merchant '{merchant_name}'. "
+        f"Searched {num_candidates} candidates with threshold {threshold_pct:.1f}%. "
+        f"Consider adding this merchant to the database or adjusting the threshold."
+    )
     return None
 
 

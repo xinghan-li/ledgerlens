@@ -24,7 +24,7 @@ from ...config import settings
 logger = logging.getLogger(__name__)
 
 
-def process_receipt_with_llm_from_docai(
+async def process_receipt_with_llm_from_docai(
     docai_result: Dict[str, Any],
     merchant_name: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -42,7 +42,7 @@ def process_receipt_with_llm_from_docai(
     normalized = normalize_ocr_result(docai_result, provider="google_documentai")
     
     # Call unified processing function (default uses OpenAI)
-    return process_receipt_with_llm_from_ocr(normalized, merchant_name=merchant_name, llm_provider="openai")
+    return await process_receipt_with_llm_from_ocr(normalized, merchant_name=merchant_name, llm_provider="openai")
 
 
 async def process_receipt_with_llm_from_ocr(

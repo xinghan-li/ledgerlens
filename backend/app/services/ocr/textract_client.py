@@ -180,10 +180,17 @@ def parse_receipt_textract(image_bytes: bytes) -> Dict[str, Any]:
             
         except ClientError as e:
             error_code = e.response['Error']['Code']
+            error_message = e.response['Error'].get('Message', 'No error message provided')
             if error_code == 'AccessDeniedException':
-                logger.warning("Textract analyze_expense not available (missing permissions). Using detect_document_text only.")
+                logger.warning(
+                    f"Textract analyze_expense not available (missing permissions): {error_code}. "
+                    f"Error message: {error_message}. Using detect_document_text only."
+                )
             else:
-                logger.warning(f"Textract analyze_expense failed: {error_code}. Using detect_document_text only.")
+                logger.warning(
+                    f"Textract analyze_expense failed: {error_code}. "
+                    f"Error message: {error_message}. Using detect_document_text only."
+                )
         
         # If merchant_name not obtained from analyze_expense, try to extract from raw_text
         if not merchant_name:

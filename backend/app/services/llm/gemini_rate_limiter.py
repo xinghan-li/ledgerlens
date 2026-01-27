@@ -44,7 +44,11 @@ async def check_gemini_available() -> Tuple[bool, str]:
         
         # Check if exceeded limit
         if _counter >= _max_requests_per_minute:
-            reason = f"Gemini free tier limit exceeded: {_counter}/{_max_requests_per_minute} requests this minute"
+            reason = (
+                f"Gemini free tier rate limit exceeded: {_counter}/{_max_requests_per_minute} "
+                f"requests in the current minute. Request will be queued and retried after the "
+                f"rate limit window resets."
+            )
             logger.warning(reason)
             return False, reason
         

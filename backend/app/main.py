@@ -45,11 +45,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS configuration - allow all origins in development
+# CORS configuration - allow common development ports
 # In production, should restrict to specific domains
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:8000",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8080",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -584,8 +593,13 @@ async def process_receipt_workflow_bulk_endpoint(files: List[UploadFile] = File(
         return result
         
     except Exception as e:
-        logger.error(f"Bulk workflow failed: {e}", exc_info=True)
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logger.error(
+            f"Bulk workflow failed: {error_type}: {error_msg}",
+            exc_info=True
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Bulk workflow processing failed: {str(e)}"
+            detail=f"Bulk processing failed: {error_type}: {error_msg}"
         )

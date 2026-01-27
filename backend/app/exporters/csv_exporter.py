@@ -29,10 +29,9 @@ def parse_address(address_str: Optional[str]) -> Dict[str, str]:
     Parse address string into components.
     
     Expected format: "19630 Hwy 99, Lynnwood, WA 98036" or similar
-    Returns: {"name": "", "address": "", "state": "", "country": "", "zip": ""}
+    Returns: {"address": "", "state": "", "country": "", "zip": ""}
     """
     result = {
-        "name": "",
         "address": "",
         "state": "",
         "country": "",
@@ -118,6 +117,10 @@ def convert_receipt_to_csv_rows(
     # Parse address into components
     address_components = extract_address_components_from_string(merchant_address)
     
+    if address_components is None:
+        logger.error("address_components is None, cannot proceed with CSV conversion")
+        raise ValueError("address_components cannot be None")
+    
     # IMPORTANT: If receipt has country field set (e.g., from address_matcher),
     # use it to override the parsed country from address string
     if receipt.get("country"):
@@ -199,8 +202,11 @@ def append_to_daily_csv(
         
         logger.info(f"Appended {len(rows)} rows to CSV: {target_csv_path}")
     
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logger.error(f"Failed to append to CSV {target_csv_path}: {e} (Error type: {type(e).__name__})")
+        raise
     except Exception as e:
-        logger.error(f"Failed to append to CSV {target_csv_path}: {e}")
+        logger.error(f"Unexpected error while appending to CSV {target_csv_path}: {e} (Error type: {type(e).__name__})")
         raise
 
 

@@ -92,6 +92,9 @@ def generate_receipt_id(filename: Optional[str] = None) -> str:
     """
     Generate receipt ID (format: seq_mmyydd_hhmm_filename).
     
+    Uses timestamp with microseconds to ensure uniqueness even in high-concurrency scenarios.
+    For production, consider using database auto-increment or UUID for guaranteed uniqueness.
+    
     Args:
         filename: Optional original filename to include in receipt ID
     
@@ -99,8 +102,9 @@ def generate_receipt_id(filename: Optional[str] = None) -> str:
         Receipt ID string
     """
     now = datetime.now(timezone.utc)
-    # Use sequence number (temporarily use timestamp, can be changed to database auto-increment in the future)
-    seq = now.strftime("%H%M%S")[-6:]  # Use last 6 digits of seconds as sequence number
+    # Use microseconds to ensure uniqueness (6 digits from seconds + 2 digits from microseconds)
+    # Format: HHMMSS + last 2 digits of microseconds = 8 digits total
+    seq = now.strftime("%H%M%S") + str(now.microsecond)[-2:]  # 8 digits total
     date_time = now.strftime("%m%d%y_%H%M")
     
     # Include filename in receipt ID if provided
@@ -219,6 +223,7 @@ async def process_receipt_workflow(
             # Use GPT-4o-mini
             llm_provider = "openai"
             logger.info(f"Using GPT-4o-mini LLM (Gemini unavailable: {gemini_reason})")
+            logger.debug(f"Gemini unavailable reason: {gemini_reason}")
         
         # Step 3: LLM processing
         timeline.start(f"{llm_provider}_llm")
@@ -238,6 +243,10 @@ async def process_receipt_workflow(
                 google_ocr_data, filename, receipt_id, timeline, 
                 failed_provider=llm_provider, error=str(e)
             )
+        
+        if first_llm_result is None:
+            logger.error("first_llm_result is None after LLM processing")
+            raise ValueError("first_llm_result cannot be None")
         
         # Step 4: Clean data fields (dates, times, etc.)
         timeline.start("data_cleaning")
@@ -372,6 +381,10 @@ async def _backup_check_with_aws_ocr(
         )
     
     # Step 3: Clean data fields
+    if backup_llm_result is None:
+        logger.error("backup_llm_result is None, cannot proceed with cleaning")
+        raise ValueError("backup_llm_result cannot be None")
+    
     timeline.start("data_cleaning_backup")
     backup_llm_result = clean_llm_result(backup_llm_result)
     timeline.end("data_cleaning_backup")
@@ -546,6 +559,10 @@ async def _fallback_to_aws_ocr(
             )
             timeline.end("gpt_llm_fallback")
             
+            if llm_result is None:
+                logger.error("llm_result is None after processing with GPT-4o-mini fallback")
+                raise ValueError("llm_result cannot be None")
+            
             # Sum check
             timeline.start("sum_check")
             sum_check_passed, sum_check_details = check_receipt_sums(llm_result)
@@ -624,6 +641,10 @@ async def _fallback_to_other_llm(
         )
         timeline.end(f"{other_provider}_llm_fallback")
         
+        if llm_result is None:
+            logger.error(f"llm_result is None after processing with {other_provider} fallback")
+            raise ValueError("llm_result cannot be None")
+        
         # Sum check
         timeline.start("sum_check")
         sum_check_passed, sum_check_details = check_receipt_sums(llm_result)
@@ -694,10 +715,21 @@ async def _mark_for_manual_review(
     # Save timeline
     timeline.start("save_timeline")
     paths = get_output_paths_for_receipt(receipt_id)
-    paths["timeline_dir"].mkdir(parents=True, exist_ok=True)
-    with open(paths["timeline_file"], "w", encoding="utf-8") as f:
-        json.dump(timeline.to_dict(), f, indent=2, ensure_ascii=False)
-    timeline.end("save_timeline")
+    try:
+        paths["timeline_dir"].mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as e:
+        logger.error(f"Failed to create timeline directory {paths['timeline_dir']}: {e}")
+        timeline.end("save_timeline", error=str(e))
+        raise
+    
+    try:
+        with open(paths["timeline_file"], "w", encoding="utf-8") as f:
+            json.dump(timeline.to_dict(), f, indent=2, ensure_ascii=False)
+        timeline.end("save_timeline")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logger.error(f"Failed to save timeline file to {paths['timeline_file']}: {e}")
+        timeline.end("save_timeline", error=str(e))
+        raise
     
     # Build manual review result
     manual_review_result = {
@@ -756,20 +788,33 @@ async def _save_output(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": llm_result
     }
-    with open(paths["json_file"], "w", encoding="utf-8") as f:
-        json.dump(output_data, f, indent=2, ensure_ascii=False)
-    logger.info(f"Saved output JSON: {paths['json_file']}")
+    try:
+        with open(paths["json_file"], "w", encoding="utf-8") as f:
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
+        logger.info(f"Saved output JSON: {paths['json_file']}")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logger.error(f"Failed to save output JSON to {paths['json_file']}: {e}")
+        raise
     
     # Save timeline
-    with open(paths["timeline_file"], "w", encoding="utf-8") as f:
-        json.dump(timeline.to_dict(), f, indent=2, ensure_ascii=False)
-    logger.info(f"Saved timeline: {paths['timeline_file']}")
+    try:
+        with open(paths["timeline_file"], "w", encoding="utf-8") as f:
+            json.dump(timeline.to_dict(), f, indent=2, ensure_ascii=False)
+        logger.info(f"Saved timeline: {paths['timeline_file']}")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logger.error(f"Failed to save timeline to {paths['timeline_file']}: {e}")
+        raise
     
     # Convert to CSV rows and append to daily CSV
-    csv_rows = convert_receipt_to_csv_rows(llm_result, user_id=user_id)
-    csv_headers = get_csv_headers()
-    append_to_daily_csv(paths["csv_file"], csv_rows, csv_headers)
-    logger.info(f"Appended {len(csv_rows)} rows to CSV: {paths['csv_file']}")
+    try:
+        csv_rows = convert_receipt_to_csv_rows(llm_result, user_id=user_id)
+        csv_headers = get_csv_headers()
+        append_to_daily_csv(paths["csv_file"], csv_rows, csv_headers)
+        logger.info(f"Appended {len(csv_rows)} rows to CSV: {paths['csv_file']}")
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logger.error(f"Failed to append CSV rows to {paths['csv_file']}: {e}")
+        # Don't raise - CSV export failure shouldn't break the workflow
+        logger.warning("Continuing workflow despite CSV export failure")
 
 
 async def _save_debug_files(
@@ -786,17 +831,29 @@ async def _save_debug_files(
     paths = get_output_paths_for_receipt(receipt_id)
     
     # Ensure debug directory exists
-    paths["debug_dir"].mkdir(parents=True, exist_ok=True)
+    try:
+        paths["debug_dir"].mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as e:
+        logger.error(f"Failed to create debug directory {paths['debug_dir']}: {e}")
+        raise
     
     if google_ocr_data:
         path = paths["debug_dir"] / f"{receipt_id}_google_ocr.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(google_ocr_data, f, indent=2, ensure_ascii=False)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(google_ocr_data, f, indent=2, ensure_ascii=False)
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            logger.error(f"Failed to save Google OCR debug file to {path}: {e}")
+            # Don't raise, continue with other files
     
     if aws_ocr_data:
         path = paths["debug_dir"] / f"{receipt_id}_aws_ocr.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(aws_ocr_data, f, indent=2, ensure_ascii=False)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(aws_ocr_data, f, indent=2, ensure_ascii=False)
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            logger.error(f"Failed to save AWS OCR debug file to {path}: {e}")
+            # Don't raise, continue with other files
     
     if first_llm_result:
         # Determine if it's Gemini or GPT
@@ -805,20 +862,32 @@ async def _save_debug_files(
             path = paths["debug_dir"] / f"{receipt_id}_gemini_llm.json"
         else:
             path = paths["debug_dir"] / f"{receipt_id}_gpt_llm.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(first_llm_result, f, indent=2, ensure_ascii=False)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(first_llm_result, f, indent=2, ensure_ascii=False)
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            logger.error(f"Failed to save first LLM result debug file to {path}: {e}")
+            # Don't raise, continue with other files
     
     if backup_llm_result:
         path = paths["debug_dir"] / f"{receipt_id}_gpt_llm.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(backup_llm_result, f, indent=2, ensure_ascii=False)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(backup_llm_result, f, indent=2, ensure_ascii=False)
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            logger.error(f"Failed to save backup LLM result debug file to {path}: {e}")
+            # Don't raise, continue with other files
     
     if image_bytes and filename:
         # Save original image
         ext = Path(filename).suffix or ".jpg"
         path = paths["debug_dir"] / f"{receipt_id}_original{ext}"
-        with open(path, "wb") as f:
-            f.write(image_bytes)
+        try:
+            with open(path, "wb") as f:
+                f.write(image_bytes)
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            logger.error(f"Failed to save original image to {path}: {e}")
+            # Don't raise, continue with other files
 
 
 async def _save_error(
@@ -831,7 +900,11 @@ async def _save_error(
     paths = get_output_paths_for_receipt(receipt_id)
     
     # Ensure error directory exists
-    paths["error_dir"].mkdir(parents=True, exist_ok=True)
+    try:
+        paths["error_dir"].mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as e:
+        logger.error(f"Failed to create error directory {paths['error_dir']}: {e}")
+        raise
     
     error_data = {
         "receipt_id": receipt_id,
@@ -842,11 +915,24 @@ async def _save_error(
     }
     
     error_path = paths["error_dir"] / f"{receipt_id}_error.json"
-    with open(error_path, "w", encoding="utf-8") as f:
-        json.dump(error_data, f, indent=2, ensure_ascii=False)
+    try:
+        with open(error_path, "w", encoding="utf-8") as f:
+            json.dump(error_data, f, indent=2, ensure_ascii=False)
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logger.error(f"Failed to save error file to {error_path}: {e}")
+        raise
     
     # Save timeline
-    paths["timeline_dir"].mkdir(parents=True, exist_ok=True)
+    try:
+        paths["timeline_dir"].mkdir(parents=True, exist_ok=True)
+    except (PermissionError, OSError) as e:
+        logger.error(f"Failed to create timeline directory {paths['timeline_dir']}: {e}")
+        raise
+    
     timeline_path = paths["timeline_dir"] / f"{receipt_id}_timeline.json"
-    with open(timeline_path, "w", encoding="utf-8") as f:
-        json.dump(timeline.to_dict(), f, indent=2, ensure_ascii=False)
+    try:
+        with open(timeline_path, "w", encoding="utf-8") as f:
+            json.dump(timeline.to_dict(), f, indent=2, ensure_ascii=False)
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logger.error(f"Failed to save timeline file to {timeline_path}: {e}")
+        raise
