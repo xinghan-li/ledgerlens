@@ -1,0 +1,138 @@
+{
+  "receipt": {
+    "merchant_name": "TRADER JOE'S",
+    "merchant_address": "19715 Highway 99, Suite-101\nLynnwood, WA\n98036",
+    "merchant_phone": "425-670-0623",
+    "country": "USA",
+    "currency": "USD",
+    "purchase_date": "2020-01-25",
+    "purchase_time": "13:00",
+    "subtotal": null,
+    "tax": null,
+    "total": 14.46,
+    "payment_method": "AMEX",
+    "card_last4": "8885"
+  },
+  "items": [
+    {
+      "raw_text": "CHICKEN FRIED RICE\n$3.99",
+      "product_name": "CHICKEN FRIED RICE",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 3.99,
+      "line_total": 3.99,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "CHICKEN FRIED RICE\n$3.99",
+      "product_name": "CHICKEN FRIED RICE",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 3.99,
+      "line_total": 3.99,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "SLICED WHOLE WHEAT BREAD\n$2.49",
+      "product_name": "SLICED WHOLE WHEAT BREAD",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 2.49,
+      "line_total": 2.49,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "KIMBAP KOREAN SEAWEED RI\n$3.99",
+      "product_name": "KIMBAP KOREAN SEAWEED RI",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 3.99,
+      "line_total": 3.99,
+      "is_on_sale": false,
+      "category": null
+    }
+  ],
+  "tbd": {
+    "items_with_inconsistent_price": [],
+    "field_conflicts": {
+      "merchant_address": {
+        "from_raw_text": "19715 Highway 99, Suite-101\nLynnwood, WA\n98036",
+        "from_trusted_hints": "19715 Hwy 99 Ste 101\nLynnwood, WA 98036\nUSA",
+        "reason": "Minor formatting differences (e.g., 'Highway' vs 'Hwy', 'Suite-101' vs 'Ste 101') and addition of 'USA' in trusted hints. Raw text version preferred."
+      },
+      "purchase_date": {
+        "from_raw_text": "01-25-20 and 01-25-2026",
+        "from_trusted_hints": "01-25-20\n01-25-2026 \n13:00\n",
+        "reason": "Raw text contains two potential dates '01-25-20' and '01-25-2026'. Trusted hints also include both. '01-25-20' is chosen as the most likely purchase date, as it appears next to 'DATE'."
+      },
+      "card_last4": {
+        "from_raw_text": "8885",
+        "from_trusted_hints": "5030",
+        "reason": "Raw text clearly indicates '****8885' as the card number, while '*5030' is an authorization code. Trusted hints provided '5030' as the last four digits. Raw text value '8885' is preferred."
+      }
+    },
+    "missing_info": [
+      "Subtotal is not explicitly provided on the receipt.",
+      "Tax is not explicitly provided on the receipt.",
+      "Unit for line items is not available.",
+      "Category for line items is not available."
+    ],
+    "total_mismatch": null
+  },
+  "_metadata": {
+    "merchant_name": "TRADER",
+    "merchant_id": 4,
+    "ocr_provider": "google_documentai",
+    "llm_provider": "gemini",
+    "entities": {
+      "credit_card_last_four_digits": {
+        "value": "5030",
+        "confidence": 1.0
+      },
+      "payment_type": {
+        "value": "AMEX",
+        "confidence": 0.9410738348960876
+      },
+      "total_amount": {
+        "value": "14.46",
+        "confidence": 0.884239912033081
+      },
+      "purchase_time": {
+        "value": "13:00",
+        "confidence": 0.7828515768051147
+      },
+      "currency": {
+        "value": "$",
+        "confidence": 0.7758440971374512
+      },
+      "supplier_name": {
+        "value": "TRADER",
+        "confidence": 0.44666507840156555
+      },
+      "supplier_address": {
+        "value": "19715 Hwy 99 Ste 101\nLynnwood, WA 98036\nUSA",
+        "confidence": 1.0
+      },
+      "supplier_phone": {
+        "value": "425-670-0623",
+        "confidence": 0.11976711452007294
+      },
+      "receipt_date": {
+        "value": "01-25-20\n01-25-2026 \n13:00\n",
+        "confidence": 1.0
+      },
+      "line_item": {
+        "value": "4",
+        "confidence": 1.0
+      },
+      "supplier_city": {
+        "value": "Lynnwood",
+        "confidence": 1.0
+      }
+    },
+    "validation_status": "pass"
+  }
+}

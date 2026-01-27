@@ -1,0 +1,126 @@
+{
+  "raw_text": "Not A Member Yet? Download & Join Now!\n立即下載App,加入大統華積分獎勵計劃!\n• Get Exclusive Offers\n& Earn Reawards\nEnjoy Online\nGrocery Delivery\n、獨家優惠&積分獎勵\n·生鮮商品快速配送到家\nT&T Supermarket US\nLynnwood Store\n19630 Huy 99, Lynnwood, WA 98036\nPh: (425) 648-2648\n01/25/26 12:38:37 PM\nJacob\n***600032371\nPRODUCE\nGREEN ONION\nBANANA\n2.87 lb @ $0.69/lb\n(SALE) YU-CHOY\n1.55 lb @ $0.99/lb\nVO MANDARIN\n$0.00\nFP $0.99\nFP $1.98\nFP $1.53\n2.38 lb @ $1.99/lb\nFP $4.74\nDELI\nWILCOX CF LARGE BROWN EGG 18CT\nFP $6.49\nORG VALLEY 2% FAT LAC FREE MLK\nFP $6.49\nSYNEAR PORK&LEEK DUMPLING\nFP $4.69\nPoints 20\n$0.00\nTOTAL\n$26.91\nVisa\n$26.91\nReference# 602539601998\nTotal points in this transaction: 20\nPoints balance\nIten count: 7\n01/25/26 12:38:37 PM\nTrans: 153634\n: 460\nJacob\nTerminal: 050108013-002007\nTransaction Receipt\nT&T Supermarket US\nLynnwood Store\n19630 Huy 99, Lynnwood, WA 98036\nCLERK ID: 07\nCREDIT CARD\nSALE\nVISA\n************9463\nENTRY LEGEND/MODE: CHIP READ/CONTACTLESS\nDATE: 01/25/2026 TIME: 13:40:47\nINVOICE: 153634\nREFERENCE: 602539601998\nAUTH CODE: 415293\nAMOUNT\nTOTAL\nUSD$ 26.91\nUSD$ 26.91\nAPPROVED THANK YOU\nAPPLICATION LABEL: VISA CREDIT\nAID: A0000000031010\nATC: 00A7\nAC: FFC3201F43F97306\nTUR: 0000000000\nIAD: 06011203A00000\nARC: 00\nNO SIGNATURE REQUIRED\nSTORE: 20002\nCustomer Copy\nCODE: 012526 123907 1536 20002\nTELL US HOW WE DID TODAY!\nVISIT WWW.SHAREFEEDBACK.US\nFULL DETAILS OF T&T SUPERMARKET'S REFUND POLICY ARE\nAVAILABLE AT IN-STORE.\nT&T US Customer Service Line: 1-833-636-1616\nwww.tntsupermarket.us\nTotal Sales amount with tax: $26.91\nEligible amount for point calculation: $26.91\n",
+  "entities": {
+    "credit_card_last_four_digits": {
+      "value": "9463",
+      "confidence": 1.0
+    },
+    "purchase_time": {
+      "value": "12:38:37 PM",
+      "confidence": 0.9517558813095093
+    },
+    "payment_type": {
+      "value": "Visa",
+      "confidence": 0.8642553687095642
+    },
+    "currency": {
+      "value": "USD",
+      "confidence": 0.8133377432823181
+    },
+    "receipt_date": {
+      "value": "01/25/2026",
+      "confidence": 0.7644857168197632
+    },
+    "total_amount": {
+      "value": "26.91",
+      "confidence": 0.7232173085212708
+    },
+    "total_tax_amount": {
+      "value": "26.91",
+      "confidence": 0.6355763673782349
+    },
+    "supplier_name": {
+      "value": "T&T Supermarket Lynnwood",
+      "confidence": 1.0
+    },
+    "supplier_address": {
+      "value": "19630 Hwy 99\nLynnwood, WA 98036\nUSA",
+      "confidence": 1.0
+    },
+    "line_item": {
+      "value": "Points 20 0.00",
+      "confidence": 1.0
+    },
+    "supplier_city": {
+      "value": "Lynnwood",
+      "confidence": 1.0
+    }
+  },
+  "properties": {},
+  "line_items": [
+    {
+      "raw_text": "VO MANDARIN\nFP $0.99",
+      "product_name": "VO MANDARIN",
+      "line_total": 0.99,
+      "confidence": "medium",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "DELI\nFP $4.74",
+      "product_name": "DELI",
+      "line_total": 4.74,
+      "confidence": "medium",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "WILCOX CF LARGE BROWN EGG 18CT\nFP $6.49",
+      "product_name": "WILCOX CF LARGE BROWN EGG 18CT",
+      "line_total": 6.49,
+      "confidence": "medium",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "ORG VALLEY 2% FAT LAC FREE MLK\nFP $6.49",
+      "product_name": "ORG VALLEY 2% FAT LAC FREE MLK",
+      "line_total": 6.49,
+      "confidence": "medium",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "SYNEAR PORK&LEEK DUMPLING\nFP $4.69",
+      "product_name": "SYNEAR PORK&LEEK DUMPLING",
+      "line_total": 4.69,
+      "confidence": "medium",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "is_on_sale": false,
+      "category": null
+    }
+  ],
+  "merchant_name": "T&T Supermarket Lynnwood",
+  "purchase_time": "01/25/2026",
+  "subtotal": 0.0,
+  "tax": 26.91,
+  "total": 26.91,
+  "currency": "USD",
+  "payment_method": "Visa",
+  "card_last4": "9463",
+  "item_count": 5,
+  "needs_review": [
+    {
+      "field": "subtotal_validation",
+      "calculated_subtotal": 23.400000000000002,
+      "total": 26.91,
+      "difference": 3.509999999999998,
+      "reason": "Line items subtotal does not match total"
+    }
+  ],
+  "validation_status": "needs_review"
+}

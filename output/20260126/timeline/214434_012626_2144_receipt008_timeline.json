@@ -1,0 +1,60 @@
+{
+  "receipt_id": "214434_012626_2144_receipt008",
+  "timeline": [
+    {
+      "step": "google_ocr_start",
+      "timestamp": "2026-01-26T21:44:34.543836+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "google_ocr_end",
+      "timestamp": "2026-01-26T21:44:36.185817+00:00",
+      "duration_ms": 1641.98
+    },
+    {
+      "step": "gemini_llm_start",
+      "timestamp": "2026-01-26T21:44:36.185817+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "gemini_llm_end",
+      "timestamp": "2026-01-26T21:45:01.184961+00:00",
+      "duration_ms": 24999.14
+    },
+    {
+      "step": "tt_cleaning_start",
+      "timestamp": "2026-01-26T21:45:01.184961+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "tt_cleaning_end",
+      "timestamp": "2026-01-26T21:45:01.184961+00:00",
+      "duration_ms": 0.0
+    },
+    {
+      "step": "address_correction_start",
+      "timestamp": "2026-01-26T21:45:01.184961+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "address_correction_end",
+      "timestamp": "2026-01-26T21:45:01.356505+00:00",
+      "duration_ms": 171.54
+    },
+    {
+      "step": "sum_check_start",
+      "timestamp": "2026-01-26T21:45:01.356505+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "sum_check_end",
+      "timestamp": "2026-01-26T21:45:01.356505+00:00",
+      "duration_ms": 0.0
+    },
+    {
+      "step": "save_output_start",
+      "timestamp": "2026-01-26T21:45:01.356505+00:00",
+      "duration_ms": null
+    }
+  ]
+}

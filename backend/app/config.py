@@ -7,14 +7,14 @@ from typing import Optional
 from dotenv import load_dotenv
 from pathlib import Path
 
-# 确定 .env 文件路径（backend/.env）
+# Determine .env file path (backend/.env)
 _env_path = Path(__file__).parent.parent / ".env"
 
 # Load environment variables from .env file
-# 使用 override=True 确保环境变量优先于默认值
+# Use override=True to ensure environment variables take precedence over defaults
 load_dotenv(dotenv_path=_env_path, override=True)
 
-# 调试：打印加载的环境变量（仅用于调试）
+# Debug: Print loaded environment variables (for debugging only)
 import os
 _gemini_model_env = os.getenv("GEMINI_MODEL")
 if _gemini_model_env:
@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     )
     
     model_config = {
-        "env_file": str(_env_path),  # 使用明确的 .env 文件路径
+        "env_file": str(_env_path),  # Use explicit .env file path
         "case_sensitive": False,
         "env_file_encoding": "utf-8",
     }
@@ -127,6 +127,6 @@ class Settings(BaseSettings):
 # Create a singleton settings instance
 settings = Settings()
 
-# 调试：打印最终加载的配置（仅用于调试）
+# Debug: Print final loaded configuration (for debugging only)
 print(f"[DEBUG] Final Gemini model from settings: {settings.gemini_model}")
 print(f"[DEBUG] Gemini API key set: {bool(settings.gemini_api_key)}")

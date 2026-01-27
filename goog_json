@@ -1,0 +1,99 @@
+{
+  "filename": "receipt.jpg",
+  "success": true,
+  "data": {
+    "raw_text": "Not A Member Yet? Download & Join Now!\n立即下載App,加入大積分獎勵計劃!\nGet Exclusive Offers\n& Earn Reawards\nEnjoy Online\nGrocery Delivery\n.獨家優惠&積分獎勵\n、生鮮商品快速配送到家\nT&T Supermarket US\nLynnwood Store\n19630 Huy 99, Lynnwood, WA 98036\nPh: (425) 648-2648\nFOOD\n01/10/26 1:45:58 PM\n***600032371\nEGG TRAY BUN\nSC-1\n$0.00\nFP $6.50\nPRODUCE\nGREEN ONION\nSHANGHAI BOK CHOY\nFP $1.29\n1.20 lb @ $1.38/lb\nFP $1.66\nYU CHOY-JR.\n0.85 lb @ $2.29/lb\nFP $1.95\n(SALE) SHANGHAI BOK CHOY SPROUT\n1.38 lb @ $1.88/1b\nFP $2.59\nDELI\nDARIGOLD 2% MILK\nFP $4.79\n(SALE) NS UNSWEETENED SOYMILK\nPoints 20\nFP $3.99\n$0.00\nTOTAL\nVisa\n$22.77\n$22.77\nReference# 601051137921\nTotal points in this transaction: 20\nPoints balance\nIten count: 7\n01/10/26 1:45:58 PM\nTrans:148318\n: 420\nSC-1\nTerminal:050108013-002051\nTransaction Receipt\nT&T Supermarket US\nLynnwood Store\n19630 Huy 99, Lynnwood, WA 98036\nCLERK ID: 51\nCREDIT CARD\nSALE\n************9463\nVISA\nENTRY LEGEND/MODE: CHIP READ/CONTACTLESS\nDATE: 01/10/2026 TIME: 14:47:15\nINVOICE: 148318\nREFERENCE: 601051137921\nAUTH CODE: 510164\nAMOUNT\nTOTAL\nUSD$ 22.77\nUSD$ 22.77\nAPPROVED THANK YOU\nAPPLICATION LABEL: VISA CREDIT\nAID: A0000000031010\nATC: 009F\nAC: 5F3091C8CD2A77A9\nTUR: 0000000000\nIAD: 06011203A00000\nARC: 00\nNO SIGNATURE REQUIRED\nSTORE: 20002\nCustomer Copy\nCODE: 011026 134651 1483 20002\nTELL US HOW WE DID TODAY!\nVISIT WWW.SHAREFEEDBACK.US\nFULL DETAILS OF T&T SUPERMARKET'S REFUND POLICY ARE\nAVAILABLE AT IN-STORE.\nT&T US Customer Service Line:1-833-636-1616\nwww.tntsupermarket.us\nTotal Sales amount with tax: $22.77\nEligible amount for point calculation: $22.77\n",
+    "entities": {
+      "credit_card_last_four_digits": {
+        "value": "9463",
+        "confidence": 1
+      },
+      "payment_type": {
+        "value": "Visa",
+        "confidence": 0.8564348816871643
+      },
+      "purchase_time": {
+        "value": "14:47:15",
+        "confidence": 0.8336414694786072
+      },
+      "currency": {
+        "value": "USD",
+        "confidence": 0.7996073365211487
+      },
+      "total_amount": {
+        "value": "22.77",
+        "confidence": 0.7649099230766296
+      },
+      "receipt_date": {
+        "value": "01/10/2026",
+        "confidence": 0.7592129707336426
+      },
+      "total_tax_amount": {
+        "value": "22.77",
+        "confidence": 0.4826115369796753
+      },
+      "supplier_name": {
+        "value": "T&T Supermarket Lynnwood",
+        "confidence": 1
+      },
+      "supplier_address": {
+        "value": "19630 Hwy 99\nLynnwood, WA 98036\nUSA",
+        "confidence": 1
+      },
+      "line_item": {
+        "value": "0.00",
+        "confidence": 1
+      },
+      "supplier_city": {
+        "value": "Lynnwood",
+        "confidence": 1
+      }
+    },
+    "properties": {},
+    "line_items": [
+      {
+        "raw_text": "YU CHOY-JR.\nFP $1.66",
+        "product_name": "YU CHOY-JR.",
+        "line_total": 1.66,
+        "confidence": "medium",
+        "quantity": null,
+        "unit": null,
+        "unit_price": null,
+        "is_on_sale": false,
+        "category": null
+      }
+    ],
+    "merchant_name": "T&T Supermarket Lynnwood",
+    "purchase_time": "01/10/2026",
+    "subtotal": 22.77,
+    "tax": 0,
+    "total": 22.77,
+    "currency": "USD",
+    "payment_method": "Visa",
+    "card_last4": "9463",
+    "item_count": 1,
+    "needs_review": [
+      {
+        "field": "total_tax_amount",
+        "value": "22.77",
+        "confidence": 0.4826115369796753,
+        "reason": "Low confidence (0.48 < 0.6)"
+      },
+      {
+        "field": "tax_amount",
+        "original_value": 22.77,
+        "corrected_value": 0,
+        "confidence": 0.4826115369796753,
+        "reason": "Low confidence tax amount (0.48 < 0.6), set to 0 for grocery"
+      },
+      {
+        "field": "subtotal_validation",
+        "calculated_subtotal": 1.66,
+        "total": 22.77,
+        "difference": 21.11,
+        "reason": "Line items subtotal does not match total"
+      }
+    ],
+    "validation_status": "needs_review"
+  }
+}

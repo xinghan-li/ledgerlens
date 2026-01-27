@@ -1,0 +1,100 @@
+{
+  "raw_text": "Not A Member Yet? Download & Join Now!\nTHE\nApp\nhas\nGet Exclusive Offers\n& Earn Reawards\nEnjoy Online\nGrocery Delivery\n&\nT&T Supermarket US\nLynnwood Store\n19630 Hwy 99, Lynnwood, WA 98036\nPh: (425) 648-2648\n01/25/26 12:38:37 PM\nJacob\n***600032371\nPRODUCE\n$0.00\nGREEN ONION\nBANANA\nFP $0.99\n2.87 1b @ $0.69/1b\n(SALE) YU-CHOY\nFP $1.98\n1.55 1b @ $0.99/lb\nWO MANDARIN\nFP $1.53\n2.38 1b @ $1.99/1b\nDELI\nFP $4.74\nWILCOX CF LARGE BROWN EGG 18CT\nORG VALLEY 2% FAT LAC FREE MLK\nFP $6.49\nSYNEAR PORK&LEEK DUMPLING\nFP $6.49\nPoints 20\nFP $4.69\n$0.00\nTOTAL\nVisa\n$26.91\nReference# 602539601998\n$26.91\nTotal points in this transaction: 20\nPoints balance\n: 460\nItem count: 7\n01/25/26 12:38:37 PM\nTrans:153634\nJacob\nTerminal:050108013-002007\nTransaction Receipt\nT&T Supermarket US\nLynnwood Store\n19630 Hwy 99, Lynnwood, WA 98036\nCLERK ID: 07\nCREDIT CARD\nSALE\nVISA\n************9463\nENTRY LEGEND/MODE: CHIP READ/CONTACTLESS\nDATE: 01/25/2026 TIME: 13:40:47\nINVOICE: 153634\nREFERENCE: 602539601998\nAUTH CODE: 415293\nAMOUNT\nUSD$ 26.91\nTOTAL\nUSD$ 26.91\nAPPROVED - THANK YOU\nAPPLICATION LABEL: VISA CREDIT\nAID: A0000000031010\nATC: 00A7\nAC: FFC3201F43F973C6\nTVR: 0000000000\nIAD: 06011203A00000\nARC: 00\nNO SIGNATURE REQUIRED\nCustomer Copy\nSTORE: 20002\nCODE: 012526 123907 1536 20002\nTELL US HOW WE DID TODAY!\nVISIT WWW.SHAREFEEDBACK.US\nFULL DETAILS OF T&T SUPERMARKET'S REFUND POLICY ARE\nAVAILABLE AT IN-STORE.\nT&T US Customer www.tntsupermarket.us Service Line:1-833-636-1616\nTotal Sales amount with tax: $26.91\nEligible amount for point calculation: $26.91",
+  "entities": {
+    "total_amount": {
+      "value": "$26.91",
+      "confidence": 0.7713325500488282
+    },
+    "supplier_name": {
+      "value": "T&T Supermarket US",
+      "confidence": 0.9982952117919922
+    }
+  },
+  "line_items": [
+    {
+      "raw_text": "PRODUCE",
+      "product_name": "PRODUCE",
+      "quantity": null,
+      "unit": null,
+      "unit_price": 0.0,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "GREEN ONION",
+      "product_name": "GREEN ONION",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "BANANA",
+      "product_name": "BANANA",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "(SALE) YU-CHOY",
+      "product_name": "(SALE) YU-CHOY",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "WO MANDARIN",
+      "product_name": "WO MANDARIN",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "WILCOX CF LARGE BROWN EGG 18CT",
+      "product_name": "WILCOX CF LARGE BROWN EGG 18CT",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "ORG VALLEY 2% FAT LAC FREE MLK",
+      "product_name": "ORG VALLEY 2% FAT LAC FREE MLK",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "SYNEAR PORK&LEEK DUMPLING",
+      "product_name": "SYNEAR PORK&LEEK DUMPLING",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    }
+  ],
+  "merchant_name": "T&T Supermarket US",
+  "metadata": {
+    "ocr_provider": "aws_textract"
+  },
+  "total": 26.91
+}

@@ -1,0 +1,70 @@
+{
+  "receipt_id": "062332_012126_0623",
+  "timeline": [
+    {
+      "step": "google_ocr_start",
+      "timestamp": "2026-01-21T06:23:32.408972+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "google_ocr_end",
+      "timestamp": "2026-01-21T06:23:35.479005+00:00",
+      "duration_ms": 3070.03
+    },
+    {
+      "step": "gemini_llm_start",
+      "timestamp": "2026-01-21T06:23:35.479602+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "gemini_llm_end",
+      "timestamp": "2026-01-21T06:23:55.791390+00:00",
+      "duration_ms": 20311.79
+    },
+    {
+      "step": "sum_check_start",
+      "timestamp": "2026-01-21T06:23:55.791390+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "sum_check_end",
+      "timestamp": "2026-01-21T06:23:55.791390+00:00",
+      "duration_ms": 0.0
+    },
+    {
+      "step": "aws_ocr_start",
+      "timestamp": "2026-01-21T06:23:55.791390+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "aws_ocr_end",
+      "timestamp": "2026-01-21T06:23:59.836425+00:00",
+      "duration_ms": 4045.04
+    },
+    {
+      "step": "gpt_backup_llm_start",
+      "timestamp": "2026-01-21T06:23:59.836425+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "gpt_backup_llm_end",
+      "timestamp": "2026-01-21T06:24:30.238034+00:00",
+      "duration_ms": 30401.61
+    },
+    {
+      "step": "backup_sum_check_start",
+      "timestamp": "2026-01-21T06:24:30.238034+00:00",
+      "duration_ms": null
+    },
+    {
+      "step": "backup_sum_check_end",
+      "timestamp": "2026-01-21T06:24:30.238034+00:00",
+      "duration_ms": 0.0
+    },
+    {
+      "step": "save_output_start",
+      "timestamp": "2026-01-21T06:24:30.238034+00:00",
+      "duration_ms": null
+    }
+  ]
+}

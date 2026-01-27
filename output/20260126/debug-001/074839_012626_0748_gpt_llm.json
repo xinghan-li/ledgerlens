@@ -1,0 +1,178 @@
+{
+  "receipt": {
+    "merchant_name": "T&T Supermarket US",
+    "merchant_address": "19630 Huy 99, Lynnwood, WA 98036",
+    "merchant_phone": "(425) 648-2648",
+    "country": "USA",
+    "currency": "USD",
+    "purchase_date": "2026-01-25",
+    "purchase_time": "12:38:37",
+    "subtotal": 26.91,
+    "tax": 0.0,
+    "total": 26.91,
+    "payment_method": "Visa",
+    "card_last4": "9463"
+  },
+  "items": [
+    {
+      "raw_text": "GREEN ONION FP $0.99",
+      "product_name": "GREEN ONION",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": 0.99,
+      "is_on_sale": false,
+      "category": "PRODUCE"
+    },
+    {
+      "raw_text": "BANANA 2.87 lb @ $0.69/lb FP $1.98",
+      "product_name": "BANANA",
+      "quantity": 2.87,
+      "unit": "lb",
+      "unit_price": 0.69,
+      "line_total": 1.98,
+      "is_on_sale": false,
+      "category": "PRODUCE"
+    },
+    {
+      "raw_text": "(SALE) YU-CHOY 1.55 lb @ $0.99/lb FP $1.53",
+      "product_name": "YU-CHOY",
+      "quantity": 1.55,
+      "unit": "lb",
+      "unit_price": 0.99,
+      "line_total": 1.53,
+      "is_on_sale": true,
+      "category": "PRODUCE"
+    },
+    {
+      "raw_text": "VO MANDARIN 2.38 lb @ $1.99/lb FP $4.74",
+      "product_name": "VO MANDARIN",
+      "quantity": 2.38,
+      "unit": "lb",
+      "unit_price": 1.99,
+      "line_total": 4.74,
+      "is_on_sale": false,
+      "category": "PRODUCE"
+    },
+    {
+      "raw_text": "WILCOX CF LARGE BROWN EGG 18CT FP $6.49",
+      "product_name": "WILCOX CF LARGE BROWN EGG 18CT",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": 6.49,
+      "is_on_sale": false,
+      "category": "DELI"
+    },
+    {
+      "raw_text": "ORG VALLEY 2% FAT LAC FREE MLK FP $6.49",
+      "product_name": "ORG VALLEY 2% FAT LAC FREE MLK",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": 6.49,
+      "is_on_sale": false,
+      "category": "DELI"
+    },
+    {
+      "raw_text": "SYNEAR PORK&LEEK DUMPLING FP $4.69",
+      "product_name": "SYNEAR PORK&LEEK DUMPLING",
+      "quantity": null,
+      "unit": null,
+      "unit_price": null,
+      "line_total": 4.69,
+      "is_on_sale": false,
+      "category": "DELI"
+    },
+    {
+      "raw_text": "Points 20 $0.00",
+      "product_name": "Points",
+      "quantity": 20,
+      "unit": null,
+      "unit_price": 0.0,
+      "line_total": 0.0,
+      "is_on_sale": false,
+      "category": null
+    }
+  ],
+  "tbd": {
+    "items_with_inconsistent_price": [],
+    "field_conflicts": {
+      "merchant_name": {
+        "from_raw_text": "T&T Supermarket US",
+        "from_trusted_hints": "T&T Supermarket Lynnwood",
+        "reason": "Raw text includes 'US' which is not in trusted hints. 'Lynnwood Store' is part of the raw text but not included in the preferred merchant name."
+      },
+      "merchant_address": {
+        "from_raw_text": "19630 Huy 99, Lynnwood, WA 98036",
+        "from_trusted_hints": "19630 Hwy 99\nLynnwood, WA 98036\nUSA",
+        "reason": "Raw text has 'Huy' instead of 'Hwy' and is a single line. Trusted hints include 'USA' and different formatting."
+      }
+    },
+    "missing_info": [
+      "Subtotal is not explicitly stated on the receipt.",
+      "Tax amount is not explicitly stated on the receipt. 'Total Sales amount with tax' is equal to the total, implying tax is either 0 or included in line items."
+    ],
+    "total_mismatch": null,
+    "corrections": [
+      "Set subtotal to the sum of line totals (26.91) to ensure the sum check passes.",
+      "Tax is assumed to be 0.00 as it is not explicitly stated and the total matches the subtotal."
+    ],
+    "remaining_uncertainties": [
+      "The exact quantities and unit prices for some items are still marked as null due to lack of explicit information."
+    ]
+  },
+  "_metadata": {
+    "merchant_name": "T&T Supermarket Lynnwood",
+    "merchant_id": 2,
+    "ocr_provider": "google_documentai",
+    "llm_provider": "gemini",
+    "entities": {
+      "credit_card_last_four_digits": {
+        "value": "9463",
+        "confidence": 1.0
+      },
+      "purchase_time": {
+        "value": "12:38:37 PM",
+        "confidence": 0.9517558813095093
+      },
+      "payment_type": {
+        "value": "Visa",
+        "confidence": 0.8642553687095642
+      },
+      "currency": {
+        "value": "USD",
+        "confidence": 0.8133377432823181
+      },
+      "receipt_date": {
+        "value": "01/25/2026",
+        "confidence": 0.7644857168197632
+      },
+      "total_amount": {
+        "value": "26.91",
+        "confidence": 0.7232173085212708
+      },
+      "total_tax_amount": {
+        "value": "26.91",
+        "confidence": 0.6355763673782349
+      },
+      "supplier_name": {
+        "value": "T&T Supermarket Lynnwood",
+        "confidence": 1.0
+      },
+      "supplier_address": {
+        "value": "19630 Hwy 99\nLynnwood, WA 98036\nUSA",
+        "confidence": 1.0
+      },
+      "line_item": {
+        "value": "Points 20 0.00",
+        "confidence": 1.0
+      },
+      "supplier_city": {
+        "value": "Lynnwood",
+        "confidence": 1.0
+      }
+    },
+    "validation_status": "pass"
+  }
+}
