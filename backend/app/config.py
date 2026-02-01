@@ -2,8 +2,8 @@
 Configuration settings loaded from environment variables.
 """
 from pydantic_settings import BaseSettings
-from pydantic import Field
-from typing import Optional
+from pydantic import Field, field_validator
+from typing import Optional, Any
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -64,6 +64,15 @@ class Settings(BaseSettings):
         alias="SUPABASE_SERVICE_ROLE_KEY",
         description="Supabase service role key (optional, for server-side writes)"
     )
+    supabase_jwt_secret: Optional[str] = Field(
+        default=None,
+        alias="SUPABASE_JWT_SECRET",
+        description=(
+            "Supabase JWT secret for token verification. "
+            "Get it from Supabase Dashboard > Settings > API > JWT Keys > Legacy JWT Secret"
+        )
+    )
+
     
     # Application settings
     env: str = Field(
@@ -117,6 +126,27 @@ class Settings(BaseSettings):
         )
     )
     
+    # Debug settings
+    allow_duplicate_for_debug: bool = Field(
+        default=False,
+        alias="ALLOW_DUPLICATE_FOR_DEBUG",
+        description=(
+            "Allow duplicate file uploads for debugging. "
+            "When enabled, duplicate files will be processed with a modified file_hash "
+            "to allow comparison of results. Set to 'true', '1', 'yes', or 'on' to enable."
+        )
+    )
+    
+    @field_validator('allow_duplicate_for_debug', mode='before')
+    @classmethod
+    def parse_bool_from_string(cls, v: Any) -> bool:
+        """Parse boolean from string environment variable."""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() in ('true', '1', 'yes', 'on', 'y', 't')
+        return bool(v)
+    
     model_config = {
         "env_file": str(_env_path),  # Use explicit .env file path
         "case_sensitive": False,
@@ -130,3 +160,5 @@ settings = Settings()
 # Debug: Print final loaded configuration (for debugging only)
 print(f"[DEBUG] Final Gemini model from settings: {settings.gemini_model}")
 print(f"[DEBUG] Gemini API key set: {bool(settings.gemini_api_key)}")
+print(f"[DEBUG] ALLOW_DUPLICATE_FOR_DEBUG from env: {os.getenv('ALLOW_DUPLICATE_FOR_DEBUG', 'not set')}")
+print(f"[DEBUG] allow_duplicate_for_debug from settings: {settings.allow_duplicate_for_debug}")

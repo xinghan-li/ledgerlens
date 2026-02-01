@@ -1,7 +1,7 @@
 """
 Supabase client for storing receipt OCR data and parsed receipts.
 
-Note: The database schema is defined in database/001_schema_v0.sql
+Note: The database schema is defined in database/001_schema_v2.sql
 """
 from supabase import create_client, Client
 from ...config import settings
@@ -34,117 +34,234 @@ def _get_client() -> Client:
     return _supabase
 
 
-def save_receipt_ocr(user_id: Optional[str], filename: str, text: str) -> Dict[str, Any]:
+def check_duplicate_by_hash(
+    file_hash: str,
+    user_id: str
+) -> Optional[str]:
     """
-    Save receipt OCR data to Supabase (legacy function for old schema).
+    Check if a receipt with the same file hash already exists for this user.
     
     Args:
-        user_id: Optional user identifier
-        filename: Original filename of the uploaded image
-        text: Extracted OCR text
+        file_hash: SHA256 hash of the file
+        user_id: User ID (UUID string)
         
     Returns:
-        Dictionary containing the saved record (including generated id)
+        Existing receipt_id if duplicate found, None otherwise
     """
+    if not file_hash or not user_id:
+        return None
+    
+    supabase = _get_client()
+    
+    try:
+        res = supabase.table("receipts").select("id, uploaded_at, current_status").eq(
+            "user_id", user_id
+        ).eq("file_hash", file_hash).limit(1).execute()
+        
+        if res.data and len(res.data) > 0:
+            existing_receipt = res.data[0]
+            logger.info(
+                f"Duplicate receipt found: file_hash={file_hash[:16]}..., "
+                f"existing_receipt_id={existing_receipt['id']}, "
+                f"uploaded_at={existing_receipt.get('uploaded_at')}, "
+                f"status={existing_receipt.get('current_status')}"
+            )
+            return existing_receipt["id"]
+        
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to check duplicate by hash: {e}")
+        # Don't raise - allow processing to continue if check fails
+        return None
+
+
+def create_receipt(user_id: str, raw_file_url: Optional[str] = None, file_hash: Optional[str] = None) -> str:
+    """
+    Create a new receipt record in receipts table.
+    
+    Args:
+        user_id: User identifier (UUID string)
+        raw_file_url: Optional URL to the uploaded file
+        file_hash: Optional SHA256 hash of the file for duplicate detection
+        
+    Returns:
+        receipt_id (UUID string)
+    """
+    if not user_id:
+        raise ValueError("user_id is required")
+    
     supabase = _get_client()
     
     payload = {
         "user_id": user_id,
-        "filename": filename,
-        "raw_text": text,
+        "current_status": "failed",  # Start with "failed", will be updated to "success" when processing completes
+        "current_stage": "ocr_google",  # Start with ocr_google, will be updated during processing
+        "raw_file_url": raw_file_url,
+        "file_hash": file_hash,
     }
     
     try:
         res = supabase.table("receipts").insert(payload).execute()
-        return res.data[0] if res.data else payload
+        if not res.data:
+            raise ValueError("Failed to create receipt, no data returned")
+        receipt_id = res.data[0]["id"]
+        logger.info(f"Created receipt record: {receipt_id}")
+        return receipt_id
     except Exception as e:
-        logger.error(f"Failed to save receipt OCR: {e}")
+        error_msg = str(e)
+        # Check if it's a unique constraint violation (duplicate file_hash)
+        if "unique" in error_msg.lower() or "duplicate" in error_msg.lower():
+            logger.warning(
+                f"Duplicate receipt detected (unique constraint): file_hash={file_hash[:16] if file_hash else 'None'}..., "
+                f"user_id={user_id}. This receipt has already been uploaded."
+            )
+            # Try to find the existing receipt
+            if file_hash:
+                existing_id = check_duplicate_by_hash(file_hash, user_id)
+                if existing_id:
+                    raise ValueError(f"Duplicate receipt: This file has already been uploaded (receipt_id={existing_id})")
+        
+        logger.error(
+            f"Failed to create receipt: {type(e).__name__}: {error_msg}. "
+            f"user_id={user_id}. "
+            "Common causes: "
+            "1. user_id does not exist in users table (foreign key constraint violation), "
+            "2. user_id is not a valid UUID format, "
+            "3. Duplicate file_hash (same file uploaded twice), "
+            "4. Database connection or permission issue."
+        )
         raise
 
 
-def save_parsed_receipt(
-    user_id: str,
-    parsed_receipt: Any,  # ParsedReceipt from receipt_parser
-    ocr_text: str,
-    image_url: Optional[str] = None
-) -> Dict[str, Any]:
+def save_processing_run(
+    receipt_id: str,
+    stage: str,
+    model_provider: Optional[str],
+    model_name: Optional[str],
+    model_version: Optional[str],
+    input_payload: Dict[str, Any],
+    output_payload: Dict[str, Any],
+    output_schema_version: Optional[str],
+    status: str,
+    error_message: Optional[str] = None
+) -> str:
     """
-    Save parsed receipt to receipts table, and save items to receipt_items table.
+    Save a processing run to receipt_processing_runs table.
     
     Args:
-        user_id: User ID (UUID string)
-        parsed_receipt: ParsedReceipt object
-        ocr_text: Original OCR text
-        image_url: Optional image URL
+        receipt_id: Receipt ID (UUID string)
+        stage: Processing stage ('ocr', 'llm', 'manual')
+        model_provider: Model provider (e.g., 'google_documentai', 'gemini', 'openai')
+        model_name: Model name (e.g., 'gpt-4o-mini', 'gemini-1.5-flash')
+        model_version: Model version (e.g., '2024-01-01')
+        input_payload: Input data (JSONB)
+        output_payload: Output data (JSONB)
+        output_schema_version: Output schema version
+        status: Processing status ('pass' or 'fail')
+        error_message: Optional error message if status is 'fail'
         
     Returns:
-        Dictionary containing receipt_id and receipt_items information
+        run_id (UUID string)
     """
+    if stage not in ('ocr', 'llm', 'manual'):
+        raise ValueError(f"Invalid stage: {stage}")
+    if status not in ('pass', 'fail'):
+        raise ValueError(f"Invalid status: {status}")
+    
     supabase = _get_client()
     
-    # Prepare receipts table data
-    receipt_payload: Dict[str, Any] = {
-        "user_id": user_id,
-        "merchant_name_raw": parsed_receipt.merchant_name,
-        "merchant_id": parsed_receipt.merchant_id,
-        "purchase_time": parsed_receipt.purchase_time.isoformat() if parsed_receipt.purchase_time else None,
-        "currency_code": parsed_receipt.currency_code,
-        "subtotal": float(parsed_receipt.subtotal) if parsed_receipt.subtotal else None,
-        "tax": float(parsed_receipt.tax) if parsed_receipt.tax else None,
-        "total": float(parsed_receipt.total) if parsed_receipt.total else None,
-        "item_count": parsed_receipt.item_count,
-        "payment_method": parsed_receipt.payment_method,
-        "status": "pending",
-        "image_url": image_url,
-        "ocr_raw_json": {"text": ocr_text},  # Store as JSONB
+    # Extract validation_status from output_payload for LLM stage records
+    validation_status = None
+    if stage == "llm" and output_payload:
+        metadata = output_payload.get("_metadata", {})
+        validation_status = metadata.get("validation_status")
+        # Ensure validation_status is one of the valid values
+        if validation_status and validation_status not in ("pass", "needs_review", "unknown"):
+            logger.warning(f"Invalid validation_status '{validation_status}', setting to 'unknown'")
+            validation_status = "unknown"
+    
+    payload = {
+        "receipt_id": receipt_id,
+        "stage": stage,
+        "model_provider": model_provider,
+        "model_name": model_name,
+        "model_version": model_version,
+        "input_payload": input_payload,
+        "output_payload": output_payload,
+        "output_schema_version": output_schema_version,
+        "status": status,
+        "error_message": error_message,
+        "validation_status": validation_status,  # Add validation_status field
     }
     
     try:
-        # Insert receipt
-        receipt_res = supabase.table("receipts").insert(receipt_payload).execute()
-        if not receipt_res.data:
-            raise ValueError("Failed to insert receipt, no data returned")
-        
-        receipt_data = receipt_res.data[0]
-        receipt_id = receipt_data["id"]
-        logger.info(f"Receipt saved with ID: {receipt_id}")
-        
-        # Insert receipt_items
-        items_data = []
-        for item in parsed_receipt.items:
-            # If item is on sale, mark in normalized_text
-            normalized_text = item.product_name
-            if item.is_on_sale:
-                normalized_text = f"[SALE] {normalized_text}"
-            
-            item_payload = {
-                "receipt_id": receipt_id,
-                "line_index": item.line_index,
-                "raw_text": item.raw_text,
-                "normalized_text": normalized_text,
-                "quantity": float(item.quantity) if item.quantity else None,
-                "unit_price": float(item.unit_price) if item.unit_price else None,
-                "line_total": float(item.line_total) if item.line_total else None,
-                "is_taxable": None,  # Not parsing for now
-                "status": "unresolved",
-            }
-            items_data.append(item_payload)
-        
-        if items_data:
-            items_res = supabase.table("receipt_items").insert(items_data).execute()
-            logger.info(f"Inserted {len(items_data)} receipt items")
-        else:
-            items_res = type('obj', (object,), {'data': []})()
-        
-        return {
-            "receipt": receipt_data,
-            "receipt_id": receipt_id,
-            "items": items_res.data if hasattr(items_res, 'data') and items_res.data else [],
-        }
-        
+        res = supabase.table("receipt_processing_runs").insert(payload).execute()
+        if not res.data:
+            raise ValueError("Failed to save processing run, no data returned")
+        run_id = res.data[0]["id"]
+        logger.info(f"Saved processing run: {run_id} (stage={stage}, status={status})")
+        return run_id
     except Exception as e:
-        logger.error(f"Failed to save parsed receipt: {e}")
+        logger.error(f"Failed to save processing run: {e}")
         raise
+
+
+def update_receipt_status(
+    receipt_id: str,
+    current_status: str,
+    current_stage: str
+) -> None:
+    """
+    Update receipt current_status and current_stage.
+    
+    Args:
+        receipt_id: Receipt ID (UUID string)
+        current_status: New status ('success', 'failed', 'needs_review')
+        current_stage: New stage ('ocr', 'llm_primary', 'llm_fallback', 'manual')
+    """
+    if current_status not in ('success', 'failed', 'needs_review'):
+        raise ValueError(f"Invalid status: {current_status}")
+    if current_stage not in ('ocr', 'llm_primary', 'llm_fallback', 'manual'):
+        raise ValueError(f"Invalid stage: {current_stage}")
+    
+    supabase = _get_client()
+    
+    try:
+        supabase.table("receipts").update({
+            "current_status": current_status,
+            "current_stage": current_stage,
+        }).eq("id", receipt_id).execute()
+        logger.info(f"Updated receipt {receipt_id}: status={current_status}, stage={current_stage}")
+    except Exception as e:
+        logger.error(f"Failed to update receipt status: {e}")
+        raise
+
+
+def update_receipt_file_url(
+    receipt_id: str,
+    raw_file_url: str
+) -> None:
+    """
+    Update receipt raw_file_url.
+    
+    Args:
+        receipt_id: Receipt ID (UUID string)
+        raw_file_url: File URL or path
+    """
+    supabase = _get_client()
+    
+    try:
+        supabase.table("receipts").update({
+            "raw_file_url": raw_file_url,
+        }).eq("id", receipt_id).execute()
+        logger.info(f"Updated receipt {receipt_id}: raw_file_url={raw_file_url}")
+    except Exception as e:
+        logger.error(f"Failed to update receipt file URL: {e}")
+        raise
+
+
+# DEPRECATED: save_parsed_receipt is no longer used
+# Receipts are now saved via create_receipt + save_processing_run
 
 
 def get_test_user_id() -> Optional[str]:
@@ -155,8 +272,28 @@ def get_test_user_id() -> Optional[str]:
     Returns:
         User ID string or None
     """
+    # First, try to get from environment variable
     if settings.test_user_id:
+        logger.info(f"Using TEST_USER_ID from environment: {settings.test_user_id}")
         return settings.test_user_id
+    
+    logger.info("TEST_USER_ID not set in environment, attempting to get first user from database...")
+    # If not set, try to get the first user from database
+    try:
+        supabase = _get_client()
+        res = supabase.table("users").select("id, user_name, email").limit(1).execute()
+        if res.data and len(res.data) > 0:
+            user_id = res.data[0]["id"]
+            user_name = res.data[0].get("user_name", "N/A")
+            logger.info(f"✓ Auto-detected user_id from database: {user_id} (name: {user_name})")
+            return user_id
+        else:
+            logger.warning("No users found in users table")
+    except Exception as e:
+        logger.error(f"✗ Failed to get user from database: {type(e).__name__}: {e}")
+    
+    # Return None if nothing found
+    logger.warning("get_test_user_id() returning None - no user_id available")
     return None
 
 
@@ -184,43 +321,190 @@ def verify_user_exists(user_id: str) -> bool:
         return False
 
 
-def get_or_create_merchant(merchant_name: str) -> Optional[int]:
+def get_store_chain(
+    chain_name: str,
+    store_address: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    Get or create merchant record based on merchant name.
+    Get store chain by name using fuzzy matching.
+    Does NOT create candidate here - candidate should be created after LLM processing
+    with complete information.
     
     Args:
-        merchant_name: Merchant name
+        chain_name: Store chain name (e.g., "Costco", "T&T Supermarket")
+        store_address: Optional store address for better matching
         
     Returns:
-        merchant_id or None
+        Dict with:
+        - 'matched': bool - Whether a high confidence match was found
+        - 'chain_id': Optional[str] - Matched chain_id (if high confidence)
+        - 'location_id': Optional[str] - Matched location_id (if high confidence)
+        - 'suggested_chain_id': Optional[str] - Suggested chain_id (if low confidence)
+        - 'suggested_location_id': Optional[str] - Suggested location_id (if low confidence)
+        - 'confidence_score': Optional[float] - Confidence score (0.0-1.0)
     """
-    if not merchant_name:
+    if not chain_name:
+        return {
+            "matched": False,
+            "chain_id": None,
+            "location_id": None,
+            "suggested_chain_id": None,
+            "suggested_location_id": None,
+            "confidence_score": None
+        }
+    
+    # Import here to avoid circular dependency
+    from ...processors.enrichment.address_matcher import match_store
+    
+    # Try to match using address_matcher
+    match_result = match_store(chain_name, store_address)
+    
+    if match_result.get("matched"):
+        # High confidence match - return directly
+        result = {
+            "matched": True,
+            "chain_id": match_result.get("chain_id"),
+            "location_id": match_result.get("location_id"),
+            "suggested_chain_id": None,
+            "suggested_location_id": None,
+            "confidence_score": match_result.get("confidence_score")
+        }
+        logger.info(f"Matched store chain: {chain_name} -> chain_id={result['chain_id']}, location_id={result.get('location_id')}")
+        return result
+    
+    # Not matched - return suggestion info if available
+    result = {
+        "matched": False,
+        "chain_id": None,
+        "location_id": None,
+        "suggested_chain_id": match_result.get("suggested_chain_id"),
+        "suggested_location_id": match_result.get("suggested_location_id"),
+        "confidence_score": match_result.get("confidence_score")
+    }
+    
+    if result.get("suggested_chain_id"):
+        logger.info(f"Low confidence match for store chain: {chain_name} -> suggested_chain_id={result['suggested_chain_id']}, confidence={result.get('confidence_score', 0):.2f}")
+    else:
+        logger.info(f"Store chain not found: {chain_name}, will create candidate after LLM processing")
+    
+    return result
+
+
+def create_store_candidate(
+    chain_name: str,
+    receipt_id: Optional[str] = None,
+    source: str = "llm",
+    llm_result: Optional[Dict[str, Any]] = None,
+    suggested_chain_id: Optional[str] = None,
+    suggested_location_id: Optional[str] = None,
+    confidence_score: Optional[float] = None
+) -> Optional[str]:
+    """
+    Create a store candidate in store_candidates table with complete information.
+    
+    Args:
+        chain_name: Store chain name
+        receipt_id: Receipt ID that triggered this candidate
+        source: Source of the candidate ('ocr', 'llm', 'user')
+        llm_result: Optional LLM result to extract structured data (address, phone, currency, etc.)
+        suggested_chain_id: Optional suggested chain_id from fuzzy matching
+        suggested_location_id: Optional suggested location_id from fuzzy matching
+        confidence_score: Optional confidence score (0.00 - 1.00)
+        
+    Returns:
+        candidate_id (UUID string) or None
+    """
+    if not chain_name:
         return None
+    
+    if source not in ('ocr', 'llm', 'user'):
+        raise ValueError(f"Invalid source: {source}")
     
     supabase = _get_client()
     
-    # Normalize name (lowercase, remove special characters)
-    normalized_name = merchant_name.lower().strip()
+    normalized_name = chain_name.lower().strip()
+    
+    # Extract structured data from LLM result
+    metadata = {}
+    if llm_result:
+        receipt = llm_result.get("receipt", {})
+        
+        # Extract address information (structured)
+        address_info = {}
+        if receipt.get("merchant_address"):
+            address_info["full_address"] = receipt.get("merchant_address")
+        
+        # Try to get structured address fields
+        if receipt.get("address1"):
+            address_info["address1"] = receipt.get("address1")
+        if receipt.get("address2"):
+            address_info["address2"] = receipt.get("address2")
+        if receipt.get("city"):
+            address_info["city"] = receipt.get("city")
+        if receipt.get("state"):
+            address_info["state"] = receipt.get("state")
+        if receipt.get("country"):
+            address_info["country"] = receipt.get("country")
+        if receipt.get("zipcode"):
+            address_info["zipcode"] = receipt.get("zipcode")
+        
+        # If structured fields are missing but we have merchant_address, try to parse it
+        if not address_info.get("address1") and receipt.get("merchant_address"):
+            try:
+                from ...processors.enrichment.address_matcher import extract_address_components_from_string
+                parsed_components = extract_address_components_from_string(receipt.get("merchant_address"))
+                if parsed_components:
+                    if parsed_components.get("address1"):
+                        address_info["address1"] = parsed_components["address1"]
+                    if parsed_components.get("address2"):
+                        address_info["address2"] = parsed_components["address2"]
+                    if parsed_components.get("city"):
+                        address_info["city"] = parsed_components["city"]
+                    if parsed_components.get("state"):
+                        address_info["state"] = parsed_components["state"]
+                    if parsed_components.get("country"):
+                        address_info["country"] = parsed_components["country"]
+                    if parsed_components.get("zipcode"):
+                        address_info["zipcode"] = parsed_components["zipcode"]
+            except Exception as e:
+                logger.warning(f"Failed to parse address from merchant_address: {e}")
+        
+        if address_info:
+            metadata["address"] = address_info
+        
+        # Extract contact information
+        if receipt.get("merchant_phone"):
+            metadata["phone"] = receipt.get("merchant_phone")
+        
+        # Extract currency
+        if receipt.get("currency"):
+            metadata["currency"] = receipt.get("currency")
+        
+        # Extract purchase date/time (for reference)
+        if receipt.get("purchase_date"):
+            metadata["purchase_date"] = receipt.get("purchase_date")
+        if receipt.get("purchase_time"):
+            metadata["purchase_time"] = receipt.get("purchase_time")
+    
+    payload = {
+        "raw_name": chain_name,
+        "normalized_name": normalized_name,
+        "source": source,
+        "receipt_id": receipt_id,
+        "suggested_chain_id": suggested_chain_id,
+        "suggested_location_id": suggested_location_id,
+        "confidence_score": confidence_score,
+        "status": "pending",
+        "metadata": metadata if metadata else None,
+    }
     
     try:
-        # Try to find existing merchant
-        res = supabase.table("merchants").select("id").eq("normalized_name", normalized_name).execute()
-        
-        if res.data and len(res.data) > 0:
-            return res.data[0]["id"]
-        
-        # Create new merchant
-        insert_res = supabase.table("merchants").insert({
-            "name": merchant_name,
-            "normalized_name": normalized_name,
-        }).execute()
-        
-        if insert_res.data and len(insert_res.data) > 0:
-            logger.info(f"Created new merchant: {merchant_name} (ID: {insert_res.data[0]['id']})")
-            return insert_res.data[0]["id"]
-        
-        return None
-        
+        res = supabase.table("store_candidates").insert(payload).execute()
+        if not res.data:
+            raise ValueError("Failed to create store candidate, no data returned")
+        candidate_id = res.data[0]["id"]
+        logger.info(f"Created store candidate: {candidate_id} for '{chain_name}' (receipt_id={receipt_id})")
+        return candidate_id
     except Exception as e:
-        logger.error(f"Failed to get/create merchant: {e}")
+        logger.error(f"Failed to create store candidate: {e}")
         return None

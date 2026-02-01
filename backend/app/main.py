@@ -20,13 +20,20 @@ Example curl request:
 curl -X POST "http://127.0.0.1:8000/api/receipts/ocr" \
   -F "file=@/path/to/receipt.jpg"
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Security
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+from typing import List, Optional
 from .services.ocr.vision_client import ocr_document_bytes
-from .services.database.supabase_client import save_receipt_ocr, save_parsed_receipt, get_or_create_merchant, get_test_user_id
-from .models import ReceiptOCRResponse, ReceiptIngestRequest, ReceiptIngestResponse, ReceiptItemResponse
-from .core.receipt_parser import parse_receipt
+from .services.database.supabase_client import get_test_user_id
+from .services.auth.jwt_auth import get_current_user, get_current_user_optional
+from .services.rag.rag_manager import (
+    create_tag, get_tag, list_tags, update_tag,
+    create_snippet, list_snippets,
+    create_matching_rule, list_matching_rules
+)
+from .models import ReceiptOCRResponse
 from .services.ocr.documentai_client import parse_receipt_documentai
 from .services.ocr.textract_client import parse_receipt_textract
 from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_docai, process_receipt_with_llm_from_ocr
@@ -44,6 +51,59 @@ app = FastAPI(
     description="Minimal FastAPI backend for receipt OCR using Google Cloud Vision",
     version="1.0.0"
 )
+
+# Configure Swagger UI to show Authorize button
+app.openapi_schema = None  # Will be generated on first access
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    from fastapi.openapi.utils import get_openapi
+    
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    
+    # Add security scheme for Bearer token
+    # The key must match what HTTPBearer uses (default is "Bearer")
+    # But we need to check what HTTPBearer actually uses
+    openapi_schema["components"]["securitySchemes"] = {
+        "Bearer": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Enter your JWT token (without 'Bearer' prefix). Get it from /api/auth/authorization endpoint."
+        }
+    }
+    
+    # Add security requirement to protected routes
+    # Routes that use Depends(get_current_user) need security in OpenAPI schema
+    protected_paths = ["/api/receipt/workflow", "/api/receipt/workflow-bulk"]
+    
+    if "paths" in openapi_schema:
+        for path, methods in openapi_schema["paths"].items():
+            # Skip auth endpoint itself
+            if "/api/auth/" in path:
+                continue
+            
+            # Add security to protected routes
+            if path in protected_paths:
+                for method, details in methods.items():
+                    if isinstance(details, dict):
+                        # Force add security requirement
+                        details["security"] = [{"Bearer": []}]
+                        logger.warning(f"[DEBUG] Added security to {method.upper()} {path}")
+                        logger.warning(f"[DEBUG] Route details: {details}")
+    
+    logger.warning(f"[DEBUG] OpenAPI schema security schemes: {openapi_schema.get('components', {}).get('securitySchemes', {})}")
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
 
 # CORS configuration - allow common development ports
 # In production, should restrict to specific domains
@@ -69,6 +129,264 @@ app.add_middleware(
 async def health():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+# ==================== Auth Endpoints ====================
+
+class AuthorizationRequest(BaseModel):
+    """Request model for authorization endpoint."""
+    user_id: str  # Supabase user UID
+
+
+@app.post("/api/auth/authorization")
+async def get_authorization_token(request: AuthorizationRequest):
+    """
+    Generate JWT token for a user by UID (Development only).
+    
+    This endpoint uses Supabase Admin API to generate a session token for the user.
+    It's designed for development/testing purposes to avoid exposing email/password in Swagger UI.
+    
+    **Security Note**: This endpoint should be disabled or protected in production.
+    
+    Args:
+        request: AuthorizationRequest containing user_id (Supabase UID)
+    
+    Returns:
+        Dictionary containing:
+        - success: Whether the operation was successful
+        - token: JWT token that can be used in Authorization header
+        - user_id: The user ID
+        - usage: Instructions on how to use the token
+    
+    Example:
+        POST /api/auth/authorization
+        {
+            "user_id": "7981c0a1-6017-4a8c-b551-3fb4118cd798"
+        }
+    """
+    from .config import settings
+    
+    user_id = request.user_id.strip()
+    
+    if not user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id is required"
+        )
+    
+    # Validate UUID format (basic check)
+    if len(user_id) != 36 or user_id.count('-') != 4:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid user_id format. Expected UUID format (e.g., 7981c0a1-6017-4a8c-b551-3fb4118cd798)"
+        )
+    
+    try:
+        # Check if service role key is configured
+        if not settings.supabase_service_role_key:
+            raise HTTPException(
+                status_code=500,
+                detail="SUPABASE_SERVICE_ROLE_KEY is not configured. This endpoint requires admin access."
+            )
+        
+        # Verify user exists and generate session token using Supabase Admin API
+        import httpx
+        
+        logger.info(f"[DEBUG] Starting authorization for user_id: {user_id}")
+        logger.info(f"[DEBUG] SUPABASE_URL: {settings.supabase_url}")
+        logger.info(f"[DEBUG] SUPABASE_SERVICE_ROLE_KEY configured: {bool(settings.supabase_service_role_key)}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # First, verify the user exists by calling the Admin API
+                # GET /auth/v1/admin/users/{user_id}
+                user_url = f"{settings.supabase_url}/auth/v1/admin/users/{user_id}"
+                logger.info(f"[DEBUG] GET request to: {user_url}")
+                
+                get_user_response = await client.get(
+                    user_url,
+                    headers={
+                        "apikey": settings.supabase_service_role_key,
+                        "Authorization": f"Bearer {settings.supabase_service_role_key}",
+                        "Content-Type": "application/json"
+                    }
+                )
+                
+                logger.info(f"[DEBUG] GET user response status: {get_user_response.status_code}")
+                logger.info(f"[DEBUG] GET user response headers: {dict(get_user_response.headers)}")
+                
+                if get_user_response.status_code == 404:
+                    logger.error(f"[DEBUG] User not found (404). Response body: {get_user_response.text}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"User with ID {user_id} not found in Supabase Authentication. Please verify:\n"
+                               f"1. The user exists in Supabase Dashboard > Authentication > Users\n"
+                               f"2. SUPABASE_SERVICE_ROLE_KEY is correctly configured in .env\n"
+                               f"3. SUPABASE_URL is correct (should be https://YOUR-PROJECT.supabase.co)"
+                    )
+                elif get_user_response.status_code != 200:
+                    error_detail = get_user_response.text
+                    logger.error(f"[DEBUG] Failed to get user info: {get_user_response.status_code} - {error_detail}")
+                    raise HTTPException(
+                        status_code=get_user_response.status_code,
+                        detail=f"Failed to verify user: {error_detail}"
+                    )
+                
+                # User exists, extract email
+                user_data = get_user_response.json()
+                logger.info(f"[DEBUG] User data received: {user_data}")
+                user_email = user_data.get("email") or user_data.get("user", {}).get("email") or "N/A"
+                logger.info(f"[DEBUG] User verified: {user_id} ({user_email})")
+                
+                # Now try to generate a session token
+                # Supabase Admin API: POST /auth/v1/admin/users/{user_id}/sessions
+                # Note: This endpoint might not exist in all Supabase versions
+                # Alternative: Generate a custom JWT token using the JWT secret
+                session_url = f"{settings.supabase_url}/auth/v1/admin/users/{user_id}/sessions"
+                logger.info(f"[DEBUG] POST request to: {session_url}")
+                
+                response = await client.post(
+                    session_url,
+                    headers={
+                        "apikey": settings.supabase_service_role_key,
+                        "Authorization": f"Bearer {settings.supabase_service_role_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={}
+                )
+                
+                logger.info(f"[DEBUG] POST session response status: {response.status_code}")
+                logger.info(f"[DEBUG] POST session response body: {response.text[:500]}")  # First 500 chars
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    # The response might be a session object or just a token
+                    token = data.get("access_token") or data.get("session", {}).get("access_token")
+                    
+                    if not token:
+                        # Try to extract from the response structure
+                        if "session" in data:
+                            token = data["session"].get("access_token")
+                        elif isinstance(data, dict) and "access_token" in data:
+                            token = data["access_token"]
+                        else:
+                            logger.error(f"Unexpected response structure: {data}")
+                            raise HTTPException(
+                                status_code=500,
+                                detail="Failed to extract token from Supabase API response"
+                            )
+                    
+                    logger.info(f"[DEBUG] Successfully got token from Admin API session endpoint")
+                    return {
+                        "success": True,
+                        "token": token,
+                        "user_id": user_id,
+                        "user_email": user_email,
+                        "usage": {
+                            "swagger_ui": "Click 'Authorize' button in Swagger UI, then enter: Bearer <token>",
+                            "curl": f'curl -H "Authorization: Bearer {token[:50]}..." http://localhost:8000/api/auth/test-token',
+                            "note": "This token expires in 1 hour (or 7 days for super_admin). Generate a new one when needed."
+                        },
+                        "method": "admin_api_session"
+                    }
+                else:
+                    # Session endpoint not available or returned error, fallback to manual JWT generation
+                    error_detail = response.text
+                    logger.warning(f"[DEBUG] Session endpoint returned {response.status_code}: {error_detail}")
+                    
+                    # If the endpoint doesn't exist or returns error, fallback to generating a custom JWT token
+                    # This is actually the preferred method since Supabase Admin API session endpoint may not be available
+                    logger.info(f"[DEBUG] Falling back to manual JWT token generation")
+                    
+                    import jwt
+                    from datetime import datetime, timedelta, timezone
+                    
+                    if not settings.supabase_jwt_secret:
+                        logger.error("[DEBUG] SUPABASE_JWT_SECRET is not configured")
+                        raise HTTPException(
+                            status_code=500,
+                            detail="SUPABASE_JWT_SECRET is not configured. Cannot generate custom token."
+                        )
+                    
+                    # Check user class to determine token expiration
+                    # super_admin gets 7 days, others get 1 hour
+                    from .services.database.supabase_client import _get_client
+                    supabase = _get_client()
+                    user_class = None
+                    try:
+                        user_response = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
+                        if user_response.data and len(user_response.data) > 0:
+                            user_class = user_response.data[0].get("user_class")
+                            logger.info(f"[DEBUG] User class: {user_class}")
+                    except Exception as e:
+                        logger.warning(f"[DEBUG] Failed to get user class: {e}, defaulting to 1 hour")
+                    
+                    # Set expiration based on user class
+                    if user_class == "super_admin":
+                        expiration_hours = 24 * 7  # 7 days
+                        expiration_note = "7 days"
+                    else:
+                        expiration_hours = 1  # 1 hour
+                        expiration_note = "1 hour"
+                    
+                    # Create a JWT token manually
+                    # This is the standard way to generate tokens for Supabase
+                    now = datetime.now(timezone.utc)
+                    payload = {
+                        "sub": user_id,
+                        "email": user_email,
+                        "aud": "authenticated",
+                        "role": "authenticated",
+                        "exp": int((now + timedelta(hours=expiration_hours)).timestamp()),
+                        "iat": int(now.timestamp())
+                    }
+                    
+                    logger.info(f"[DEBUG] Generating JWT token with payload: {payload} (expires in {expiration_note})")
+                    token = jwt.encode(
+                        payload,
+                        settings.supabase_jwt_secret,
+                        algorithm="HS256"
+                    )
+                    
+                    logger.info(f"[DEBUG] JWT token generated successfully (length: {len(token)}, expires in {expiration_note})")
+                    
+                    return {
+                        "success": True,
+                        "token": token,
+                        "user_id": user_id,
+                        "user_email": user_email,
+                        "user_class": user_class,
+                        "expires_in": expiration_note,
+                        "usage": {
+                            "swagger_ui": "Click 'Authorize' button in Swagger UI, then enter: Bearer <token>",
+                            "curl": f'curl -H "Authorization: Bearer {token[:50]}..." http://localhost:8000/api/auth/test-token',
+                            "note": f"This token expires in {expiration_note}. Generate a new one when needed."
+                        },
+                        "method": "manual_jwt_generation"
+                    }
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to generate session token: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate session token: {str(e)}"
+            )
+        
+    except HTTPException:
+        raise
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="Request to Supabase API timed out"
+        )
+    except Exception as e:
+        logger.error(f"Authorization failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate authorization token: {str(e)}"
+        )
 
 
 @app.post("/api/receipt/goog-ocr", response_model=ReceiptOCRResponse)
@@ -109,123 +427,13 @@ async def ocr_receipt_google_vision(file: UploadFile = File(...)):
             detail=f"OCR failed: {str(e)}"
         )
     
-    # Save to Supabase
-    try:
-        # TODO: wire user_id from auth later; use None for now
-        saved = save_receipt_ocr(user_id=None, filename=file.filename, text=text)
-        logger.info(f"Receipt saved to Supabase: {saved.get('id')}")
-    except Exception as e:
-        logger.error(f"Failed to save receipt to Supabase: {e}")
-        # Still return the OCR result even if save fails
-        return ReceiptOCRResponse(
-            id=None,
-            filename=file.filename,
-            text=text,
-        )
-    
+    # Note: This endpoint only performs OCR and returns text
+    # For full receipt processing with database storage, use /api/receipt/workflow
     return ReceiptOCRResponse(
-        id=str(saved.get("id")) if saved.get("id") else None,
+        id=None,
         filename=file.filename,
         text=text,
     )
-
-
-@app.post("/api/ingest/receipt", response_model=ReceiptIngestResponse)
-async def ingest_receipt(request: ReceiptIngestRequest):
-    """
-    Receive OCR text, parse receipt information and save to database.
-    
-    - Parse merchant name, date/time, total amount, items, etc.
-    - Save to receipts and receipt_items tables
-    - Return parsed structured data
-    
-    Note: A valid user_id is required (must exist in auth.users table).
-    Can be provided in the following ways:
-    1. Get from authentication information in request headers (recommended, to be implemented)
-    2. Set TEST_USER_ID environment variable for development testing
-    """
-    # Get user ID
-    user_id = get_test_user_id()
-    
-    if not user_id:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "user_id is required. Please either:\n"
-                "1. Implement authentication to get user_id from request\n"
-                "2. Set TEST_USER_ID environment variable (must exist in auth.users table)\n"
-                "To create a test user, use Supabase Auth API or create one in Supabase dashboard."
-            )
-        )
-    
-    try:
-        # Parse receipt
-        parsed = parse_receipt(request.text)
-        
-        # If merchant identified, get or create merchant record
-        if parsed.merchant_name:
-            merchant_id = get_or_create_merchant(parsed.merchant_name)
-            parsed.merchant_id = merchant_id
-            logger.info(f"Merchant: {parsed.merchant_name} (ID: {merchant_id})")
-        
-        # Save to database
-        saved = save_parsed_receipt(
-            user_id=user_id,
-            parsed_receipt=parsed,
-            ocr_text=request.text,
-            image_url=None
-        )
-        
-        receipt_id = saved["receipt_id"]
-        logger.info(f"Receipt ingested successfully: ID={receipt_id}, Items={len(saved['items'])}")
-        
-        # Build response - get is_on_sale information from original parsing
-        items_response = []
-        for idx, db_item in enumerate(saved["items"]):
-            # Find corresponding item from original parsed item list
-            original_item = None
-            if idx < len(parsed.items):
-                original_item = parsed.items[idx]
-            
-            normalized_text = db_item.get("normalized_text") or db_item.get("raw_text", "")
-            # Check if contains [SALE] marker
-            is_on_sale = "[SALE]" in normalized_text or (original_item and original_item.is_on_sale)
-            # Remove [SALE] marker to get pure product name
-            product_name = normalized_text.replace("[SALE] ", "").strip() if normalized_text else ""
-            
-            items_response.append(
-                ReceiptItemResponse(
-                    id=db_item.get("id"),
-                    line_index=db_item["line_index"],
-                    product_name=product_name,
-                    quantity=db_item.get("quantity"),
-                    unit=None,  # Database doesn't store unit separately for now
-                    unit_price=db_item.get("unit_price"),
-                    line_total=db_item.get("line_total"),
-                    is_on_sale=is_on_sale,
-                    category=original_item.category if original_item else None,
-                )
-            )
-        
-        return ReceiptIngestResponse(
-            receipt_id=receipt_id,
-            merchant_name=parsed.merchant_name,
-            merchant_id=parsed.merchant_id,
-            purchase_time=parsed.purchase_time,
-            total=float(parsed.total) if parsed.total else None,
-            subtotal=float(parsed.subtotal) if parsed.subtotal else None,
-            tax=float(parsed.tax) if parsed.tax else None,
-            item_count=parsed.item_count,
-            payment_method=parsed.payment_method,
-            items=items_response,
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to ingest receipt: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Receipt ingestion failed: {str(e)}"
-        )
 
 
 @app.post("/api/receipt/goog-ocr-dai")
@@ -476,7 +684,10 @@ async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequ
 
 
 @app.post("/api/receipt/workflow")
-async def process_receipt_workflow_endpoint(file: UploadFile = File(...)):
+async def process_receipt_workflow_endpoint(
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user)
+):
     """
     Complete receipt processing workflow.
     
@@ -519,11 +730,12 @@ async def process_receipt_workflow_endpoint(file: UploadFile = File(...)):
         # Determine MIME type
         mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
         
-        # Call workflow processor
+        # Call workflow processor with authenticated user_id
         result = await process_receipt_workflow(
             image_bytes=contents,
             filename=file.filename,
-            mime_type=mime_type
+            mime_type=mime_type,
+            user_id=user_id  # Pass authenticated user_id
         )
         
         logger.info(f"Workflow completed for {file.filename}: status={result.get('status')}")
@@ -538,8 +750,11 @@ async def process_receipt_workflow_endpoint(file: UploadFile = File(...)):
         )
 
 
-@app.post("/api/receipt/workflow-bulk")
-async def process_receipt_workflow_bulk_endpoint(files: List[UploadFile] = File(...)):
+@app.post("/api/receipt/workflow-bulk", dependencies=[Depends(get_current_user)])
+async def process_receipt_workflow_bulk_endpoint(
+    files: List[UploadFile] = File(...),
+    user_id: str = Depends(get_current_user)
+):
     """
     Bulk receipt processing workflow endpoint.
     
@@ -582,8 +797,8 @@ async def process_receipt_workflow_bulk_endpoint(files: List[UploadFile] = File(
         )
     
     try:
-        # Process bulk receipts
-        result = await process_bulk_receipts(files, max_concurrent=3)
+        # Process bulk receipts with authenticated user_id
+        result = await process_bulk_receipts(files, user_id=user_id, max_concurrent=3)
         
         logger.info(
             f"Bulk processing completed: {result.get('successful', 0)} successful, "
@@ -603,3 +818,230 @@ async def process_receipt_workflow_bulk_endpoint(files: List[UploadFile] = File(
             status_code=500,
             detail=f"Bulk processing failed: {error_type}: {error_msg}"
         )
+
+
+# ==================== RAG Management Endpoints ====================
+
+def require_admin(user_id: str = Depends(get_current_user)) -> str:
+    """
+    Dependency to require admin or super_admin user class.
+    
+    Args:
+        user_id: User ID from JWT token
+        
+    Returns:
+        user_id if user is admin/super_admin
+        
+    Raises:
+        HTTPException: 403 if user is not admin/super_admin
+    """
+    from .services.database.supabase_client import _get_client
+    
+    try:
+        supabase = _get_client()
+        res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
+        if res.data:
+            user_class = res.data[0].get("user_class", "free")
+            if user_class in ("super_admin", "admin"):
+                return user_id
+            else:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Access denied. Required: admin or super_admin, got: {user_class}"
+                )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail="User not found in database"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to check user class: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to verify user permissions"
+        )
+
+
+# Tag Management
+@app.get("/api/rag/tags")
+async def list_rag_tags(
+    is_active: Optional[bool] = None,
+    user_id: str = Depends(require_admin)
+):
+    """
+    List all RAG tags.
+    
+    Requires: admin or super_admin
+    """
+    tags = list_tags(is_active=is_active)
+    return {"success": True, "tags": tags}
+
+
+@app.post("/api/rag/tags")
+async def create_rag_tag(
+    tag_name: str,
+    tag_type: str,
+    description: str,
+    priority: int = 50,
+    is_active: bool = True,
+    user_id: str = Depends(require_admin)
+):
+    """
+    Create a new RAG tag.
+    
+    Requires: admin or super_admin
+    """
+    try:
+        tag = create_tag(
+            tag_name=tag_name,
+            tag_type=tag_type,
+            description=description,
+            priority=priority,
+            is_active=is_active
+        )
+        return {"success": True, "tag": tag}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to create tag: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create tag: {str(e)}")
+
+
+@app.get("/api/rag/tags/{tag_name}")
+async def get_rag_tag(
+    tag_name: str,
+    user_id: str = Depends(require_admin)
+):
+    """
+    Get a RAG tag by name.
+    
+    Requires: admin or super_admin
+    """
+    tag = get_tag(tag_name)
+    if not tag:
+        raise HTTPException(status_code=404, detail=f"Tag '{tag_name}' not found")
+    return {"success": True, "tag": tag}
+
+
+@app.put("/api/rag/tags/{tag_name}")
+async def update_rag_tag(
+    tag_name: str,
+    description: Optional[str] = None,
+    priority: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    user_id: str = Depends(require_admin)
+):
+    """
+    Update a RAG tag.
+    
+    Requires: admin or super_admin
+    """
+    try:
+        tag = update_tag(
+            tag_name=tag_name,
+            description=description,
+            priority=priority,
+            is_active=is_active
+        )
+        return {"success": True, "tag": tag}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to update tag: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update tag: {str(e)}")
+
+
+# Snippet Management
+@app.get("/api/rag/tags/{tag_name}/snippets")
+async def list_rag_snippets(
+    tag_name: str,
+    user_id: str = Depends(require_admin)
+):
+    """
+    List all snippets for a tag.
+    
+    Requires: admin or super_admin
+    """
+    snippets = list_snippets(tag_name)
+    return {"success": True, "snippets": snippets}
+
+
+@app.post("/api/rag/tags/{tag_name}/snippets")
+async def create_rag_snippet(
+    tag_name: str,
+    snippet_type: str,
+    content: str,
+    priority: int = 10,
+    is_active: bool = True,
+    user_id: str = Depends(require_admin)
+):
+    """
+    Create a snippet for a tag.
+    
+    Requires: admin or super_admin
+    
+    snippet_type: "system_message", "prompt_addition", "extraction_rule", "validation_rule", "example"
+    """
+    try:
+        snippet = create_snippet(
+            tag_name=tag_name,
+            snippet_type=snippet_type,
+            content=content,
+            priority=priority,
+            is_active=is_active
+        )
+        return {"success": True, "snippet": snippet}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to create snippet: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create snippet: {str(e)}")
+
+
+# Matching Rule Management
+@app.get("/api/rag/tags/{tag_name}/matching-rules")
+async def list_rag_matching_rules(
+    tag_name: str,
+    user_id: str = Depends(require_admin)
+):
+    """
+    List all matching rules for a tag.
+    
+    Requires: admin or super_admin
+    """
+    rules = list_matching_rules(tag_name)
+    return {"success": True, "matching_rules": rules}
+
+
+@app.post("/api/rag/tags/{tag_name}/matching-rules")
+async def create_rag_matching_rule(
+    tag_name: str,
+    match_type: str,
+    match_pattern: str,
+    priority: int = 100,
+    is_active: bool = True,
+    user_id: str = Depends(require_admin)
+):
+    """
+    Create a matching rule for a tag.
+    
+    Requires: admin or super_admin
+    
+    match_type: "store_name", "fuzzy_store_name", "keyword", "regex", "ocr_pattern", "location_state", "location_country"
+    """
+    try:
+        rule = create_matching_rule(
+            tag_name=tag_name,
+            match_type=match_type,
+            match_pattern=match_pattern,
+            priority=priority,
+            is_active=is_active
+        )
+        return {"success": True, "matching_rule": rule}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to create matching rule: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create matching rule: {str(e)}")

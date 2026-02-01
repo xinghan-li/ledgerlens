@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 async def _process_single_receipt(
     file: UploadFile,
     result_list: List[Dict[str, Any]],
-    index: int
+    index: int,
+    user_id: str
 ) -> None:
     """
     Process a single receipt file.
@@ -56,7 +57,8 @@ async def _process_single_receipt(
         result = await process_receipt_workflow(
             image_bytes=contents,
             filename=file.filename,
-            mime_type=mime_type
+            mime_type=mime_type,
+            user_id=user_id
         )
         
         result_list[index] = {
@@ -92,6 +94,7 @@ async def _wait_for_next_minute() -> None:
 
 async def process_bulk_receipts(
     files: List[UploadFile],
+    user_id: str,
     max_concurrent: int = 3
 ) -> Dict[str, Any]:
     """

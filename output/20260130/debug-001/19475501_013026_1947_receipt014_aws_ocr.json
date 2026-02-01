@@ -1,0 +1,93 @@
+{
+  "raw_text": "MARKETS\nISLAND GOURMET MARKETS #77\nQUEEN'S MARKETPLACE 81/82\nWAIKOLDA H1 96738\nStore Phone (808) 886-3577\nCorporate Office (808) 591-2550\nKeep in Touch WWW.ISLANDGOURMETHAWAII.COM\n#077-001 9/2/2025 07:28:26 Oper 49508\nInv#:00217211 Trs# 147519\n1 @ $1 49 each (6/$5.99)\nALOHA LILIKOI 11.5 02\n$1.49 T1\nCode: 2063190\n+Deposit Single FST $0.05\nEnvironment fee: $0.01\nSKITTLES SOUR GUMMIES 5.8Z\n$4.29 T1F\nCode: 2090106\nMUSUBI-SPAM & EGG FURIKA\n$3.49 T1\nCode: 2032954\nMUSUBI-SPAM FURIKAKE\n$3.19 T1\nCode: 2032950\nMUSUBI-SPAM AND EGG\n$3.19 T1\nCode: 2032952\nMUSUBI-SPAM AND EGG\n$3.19 T1\nCode: 2032952\nMUSUBI-SPAM FURIKAKE\n$3.19 T1\nCode: 2032950\nSUB TOTAL\n$22.03\nTax [4 712%]\n$1.04\nBottle Deposit\n$0.05\nEnvironment fee\n$0.01\nTOTAL SALES\n$23.13\nVisa\n$23.13\n#\nItem count\n7\nNETWORK. ID:VISA\nMODE:Online(Issuer)\nTYPE Purchase\nTENDER Visa\nCARD : R************9463\nContactless EMV\nAMOUNT\nUSD$23.13\nRESULT 02 APPROVAL\nDATE/TIME SEP 02 2025 08:28\nSEQUENCE #: 001632\nAUTHOR # 212082\nLABEL: VISA CREDIT\nAID : A0000000031010\nScan QR code to learn more\nabout our Gold Card Program!\nMahale\n** Save your receipts for FREE GIFTS **\nMerchandise Return Policy\nAll returns must be accompanied by\nproof of purrhase, must be within\n7 days of purchase and in saleabl\ncondition For charge card purchas\nrefund will be by credit\nexchange only.\n97010077001147519",
+  "entities": {
+    "total_tax_amount": {
+      "value": "$1.04",
+      "confidence": 0.9989273834228516
+    },
+    "total_amount": {
+      "value": "USD$23.13",
+      "confidence": 0.64943603515625
+    },
+    "supplier_name": {
+      "value": "ISLAND &OURHET\nMARKETS",
+      "confidence": 0.9970330810546875
+    }
+  },
+  "line_items": [
+    {
+      "raw_text": "ALOHA LILIKOI 11.5 OZ",
+      "product_name": "ALOHA LILIKOI 11.5 OZ",
+      "quantity": 1.0,
+      "unit": null,
+      "unit_price": 1.49,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "SKIDTLES SOUR GUMMIES 5.82",
+      "product_name": "SKIDTLES SOUR GUMMIES 5.82",
+      "quantity": null,
+      "unit": null,
+      "unit_price": 4.29,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM & EGG FURIKA",
+      "product_name": "MUSUBI-SPAM & EGG FURIKA",
+      "quantity": null,
+      "unit": null,
+      "unit_price": 3.49,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM FURIKAKE",
+      "product_name": "MUSUBI-SPAM FURIKAKE",
+      "quantity": null,
+      "unit": null,
+      "unit_price": 3.19,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM AND EGG",
+      "product_name": "MUSUBI-SPAM AND EGG",
+      "quantity": null,
+      "unit": null,
+      "unit_price": 3.19,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM AND EGG",
+      "product_name": "MUSUBI-SPAM AND EGG",
+      "quantity": null,
+      "unit": null,
+      "unit_price": 3.19,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM FURIKAKE",
+      "product_name": "MUSUBI-SPAM FURIKAKE",
+      "quantity": null,
+      "unit": null,
+      "unit_price": 3.19,
+      "line_total": null,
+      "is_on_sale": false,
+      "category": null
+    }
+  ],
+  "merchant_name": "ISLAND &OURHET\nMARKETS",
+  "metadata": {
+    "ocr_provider": "aws_textract"
+  }
+}

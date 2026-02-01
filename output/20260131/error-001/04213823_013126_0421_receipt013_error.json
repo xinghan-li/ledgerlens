@@ -1,0 +1,71 @@
+{
+  "receipt_id": "04213823_013126_0421_receipt013",
+  "timestamp": "2026-01-31T04:22:13.606828+00:00",
+  "error": "name 'deposit_fee_sum' is not defined",
+  "filename": "receipt013.jpg",
+  "timeline": {
+    "receipt_id": "04213823_013126_0421_receipt013",
+    "timeline": [
+      {
+        "step": "google_ocr_start",
+        "timestamp": "2026-01-31T04:21:39.658359+00:00",
+        "duration_ms": null
+      },
+      {
+        "step": "google_ocr_end",
+        "timestamp": "2026-01-31T04:21:42.760413+00:00",
+        "duration_ms": 3102.05
+      },
+      {
+        "step": "gemini_llm_start",
+        "timestamp": "2026-01-31T04:21:43.120444+00:00",
+        "duration_ms": null
+      },
+      {
+        "step": "gemini_llm_end",
+        "timestamp": "2026-01-31T04:22:13.500331+00:00",
+        "duration_ms": 30379.89
+      },
+      {
+        "step": "data_cleaning_start",
+        "timestamp": "2026-01-31T04:22:13.582735+00:00",
+        "duration_ms": null
+      },
+      {
+        "step": "data_cleaning_end",
+        "timestamp": "2026-01-31T04:22:13.583737+00:00",
+        "duration_ms": 1.0
+      },
+      {
+        "step": "tt_cleaning_start",
+        "timestamp": "2026-01-31T04:22:13.583737+00:00",
+        "duration_ms": null
+      },
+      {
+        "step": "tt_cleaning_end",
+        "timestamp": "2026-01-31T04:22:13.583737+00:00",
+        "duration_ms": 0.0
+      },
+      {
+        "step": "address_correction_start",
+        "timestamp": "2026-01-31T04:22:13.583737+00:00",
+        "duration_ms": null
+      },
+      {
+        "step": "address_correction_end",
+        "timestamp": "2026-01-31T04:22:13.602689+00:00",
+        "duration_ms": 18.95
+      },
+      {
+        "step": "sum_check_start",
+        "timestamp": "2026-01-31T04:22:13.602689+00:00",
+        "duration_ms": null
+      },
+      {
+        "step": "save_error_start",
+        "timestamp": "2026-01-31T04:22:13.605825+00:00",
+        "duration_ms": null
+      }
+    ]
+  }
+}

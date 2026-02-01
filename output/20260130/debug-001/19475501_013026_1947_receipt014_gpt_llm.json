@@ -1,0 +1,188 @@
+{
+  "receipt": {
+    "merchant_name": "ISLAND GOURMET MARKETS",
+    "merchant_address": "69-201 Waikōloa Beach Dr #201\nWaikoloa Village, HI 96738\nUSA",
+    "merchant_phone": "(808) 886-3577",
+    "country": "USA",
+    "currency": "USD",
+    "purchase_date": "2025-09-02",
+    "purchase_time": "07:28:26",
+    "subtotal": 22.03,
+    "tax": 1.04,
+    "total": 23.13,
+    "payment_method": "Visa",
+    "card_last4": "9463"
+  },
+  "items": [
+    {
+      "raw_text": "1 @ $1.49 each (6/$5.99)\nALOHA LILIKOI 11.5 OZ\nCode: 2063190\n+Deposit Single FS $0.05\n$1.49 T16",
+      "product_name": "ALOHA LILIKOI 11.5 OZ",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 1.49,
+      "line_total": 1.49,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "+Deposit Single FS $0.05",
+      "product_name": "Deposit Single FS",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 0.05,
+      "line_total": 0.05,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "+Environment fee: $0.01",
+      "product_name": "Environment fee",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 0.01,
+      "line_total": 0.01,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "SKITTLES SOUR GUMMIES 5.8Z\n$4.29 T1F\nCode: 2090106",
+      "product_name": "SKITTLES SOUR GUMMIES 5.8Z",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 4.29,
+      "line_total": 4.29,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM & EGG FURIKA\n$3.49 T1\nCode: 2032954",
+      "product_name": "MUSUBI-SPAM & EGG FURIKA",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 3.49,
+      "line_total": 3.49,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM FURIKAKE\n$3.19 T1\nCode: 2032950",
+      "product_name": "MUSUBI-SPAM FURIKAKE",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 3.19,
+      "line_total": 3.19,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM AND EGG\n$3.19 T1\nCode: 2032952",
+      "product_name": "MUSUBI-SPAM AND EGG",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 3.19,
+      "line_total": 3.19,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM AND EGG\n$3.19 T1\nCode: 2032952",
+      "product_name": "MUSUBI-SPAM AND EGG",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 3.19,
+      "line_total": 3.19,
+      "is_on_sale": false,
+      "category": null
+    },
+    {
+      "raw_text": "MUSUBI-SPAM FURIKAKE\n$3.19 T1\nCode: 2032950",
+      "product_name": "MUSUBI-SPAM FURIKAKE",
+      "quantity": 1,
+      "unit": null,
+      "unit_price": 3.19,
+      "line_total": 3.19,
+      "is_on_sale": false,
+      "category": null
+    }
+  ],
+  "tbd": {
+    "items_with_inconsistent_price": [],
+    "field_conflicts": {
+      "merchant_name": {
+        "from_raw_text": "ISLAND GOURMET MARKETS",
+        "from_trusted_hints": "Island Gourmet Markets at The Queen's Marketplace",
+        "reason": "Raw text provides a more concise merchant name, while trusted hints include additional location details. Using raw text for merchant_name."
+      },
+      "merchant_address": {
+        "from_raw_text": "QUEEN'S MARKETPLACE 81/B2\nWAIKOLDA HI 96738",
+        "from_trusted_hints": "69-201 Waikōloa Beach Dr #201\nWaikoloa Village, HI 96738\nUSA",
+        "reason": "Trusted hints provide a more complete and structured address, including street number and country. Using trusted hints for merchant_address."
+      }
+    },
+    "missing_info": [],
+    "total_mismatch": {
+      "calculated_total": 23.13,
+      "documented_total": 23.13,
+      "difference": 0.0,
+      "reason": "Sum of line_totals (22.03 + 1.04) matches receipt total (23.13)."
+    }
+  },
+  "_metadata": {
+    "merchant_name": "Island Gourmet Markets at The Queen's Marketplace",
+    "chain_id": null,
+    "location_id": null,
+    "ocr_provider": "google_documentai",
+    "llm_provider": "gemini",
+    "entities": {
+      "credit_card_last_four_digits": {
+        "value": "9463",
+        "confidence": 1.0
+      },
+      "net_amount": {
+        "value": "22.03",
+        "confidence": 0.9625217318534851
+      },
+      "currency": {
+        "value": "USD",
+        "confidence": 0.9281711578369141
+      },
+      "payment_type": {
+        "value": "Visa",
+        "confidence": 0.8658573031425476
+      },
+      "total_amount": {
+        "value": "23.13",
+        "confidence": 0.8487746715545654
+      },
+      "total_tax_amount": {
+        "value": "1.04",
+        "confidence": 0.7689724564552307
+      },
+      "purchase_time": {
+        "value": "08:28",
+        "confidence": 0.6851150393486023
+      },
+      "supplier_name": {
+        "value": "Island Gourmet Markets at The Queen's Marketplace",
+        "confidence": 1.0
+      },
+      "receipt_date": {
+        "value": "9/2/2025 07:28:26 ",
+        "confidence": 1.0
+      },
+      "line_item": {
+        "value": "Environment fee 0.01",
+        "confidence": 1.0
+      },
+      "supplier_address": {
+        "value": "69-201 Waikōloa Beach Dr #201\nWaikoloa Village, HI 96738\nUSA",
+        "confidence": 1.0
+      },
+      "supplier_city": {
+        "value": "Waikoloa Village",
+        "confidence": 1.0
+      }
+    },
+    "validation_status": "validated"
+  }
+}
