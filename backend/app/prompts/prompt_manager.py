@@ -2,12 +2,14 @@
 Prompt Manager: Manage merchant-specific RAG prompts.
 
 Retrieve and cache merchant-specific prompts from Supabase.
+Now supports both legacy store_chain_prompts and new tag-based RAG system.
 """
 from supabase import create_client, Client
 from ..config import settings
 from typing import Optional, Dict, Any
 import logging
 import json
+from .tag_based_rag import detect_tags_from_ocr, combine_rag_into_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -34,54 +36,30 @@ def _get_client() -> Client:
     return _supabase
 
 
-def get_merchant_prompt(merchant_name: str, merchant_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+def get_merchant_prompt(
+    merchant_name: str, 
+    merchant_id: Optional[str] = None,
+    location_id: Optional[str] = None,
+    country_code: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     """
-    Get merchant-specific prompt.
+    Get default prompt configuration.
+    
+    NOTE: This function now returns default prompt only. Tag-based RAG system
+    (via format_prompt()) automatically enhances prompts based on detected tags.
     
     Args:
-        merchant_name: Merchant name
-        merchant_id: Optional merchant ID (if known)
+        merchant_name: Store chain name (for logging only)
+        merchant_id: Optional chain_id (for logging only)
+        location_id: Optional location_id (for logging only)
+        country_code: Optional country code (for logging only)
         
     Returns:
-        Prompt configuration dictionary, containing prompt_template, system_message, model_name, etc.
+        Default prompt configuration dictionary
     """
-    # Check cache
-    cache_key = merchant_name.lower().strip()
-    if cache_key in _prompt_cache:
-        logger.debug(f"Using cached prompt for merchant: {merchant_name}")
-        return _prompt_cache[cache_key]
-    
-    supabase = _get_client()
-    
-    try:
-        # First try to find by merchant_id
-        query = supabase.table("merchant_prompts").select("*").eq("is_active", True)
-        
-        if merchant_id:
-            query = query.eq("merchant_id", merchant_id)
-        else:
-            # Find by merchant_name
-            query = query.ilike("merchant_name", f"%{merchant_name}%")
-        
-        res = query.order("version", desc=True).limit(1).execute()
-        
-        if res.data and len(res.data) > 0:
-            prompt_data = res.data[0]
-            # If model_name not set in database, use default from environment variables
-            if not prompt_data.get("model_name"):
-                prompt_data["model_name"] = settings.openai_model
-            # Cache result
-            _prompt_cache[cache_key] = prompt_data
-            logger.info(f"Loaded prompt for merchant: {merchant_name} (ID: {prompt_data.get('id')})")
-            return prompt_data
-        
-        # If not found, return default prompt
-        logger.warning(f"No custom prompt found for merchant: {merchant_name}, using default")
-        return get_default_prompt()
-        
-    except Exception as e:
-        logger.error(f"Failed to load prompt for merchant {merchant_name}: {e}")
-        return get_default_prompt()
+    # Always return default prompt - tag-based RAG will enhance it
+    logger.debug(f"Using default prompt for merchant: {merchant_name} (tag-based RAG will enhance)")
+    return get_default_prompt()
 
 
 def get_default_prompt() -> Dict[str, Any]:
@@ -106,10 +84,11 @@ def _get_default_system_message() -> str:
 Key requirements:
 1. Output ONLY valid JSON, no additional text
 2. Follow the exact schema provided
-3. Perform validation: quantity × unit_price ≈ line_total (tolerance: ±0.01)
+3. Perform validation: quantity × unit_price ≈ line_total (tolerance: ±0.01) - **EXCEPT for package price discounts** (see tag-based instructions)
 4. Sum of all line_totals must ≈ total (tolerance: ±0.01)
 5. If information is missing or uncertain, set to null and document in tbd
-6. Do not hallucinate or guess values"""
+6. Do not hallucinate or guess values
+7. **IMPORTANT**: If you see package discount patterns (e.g., "2/$9.00"), follow the tag-based instructions - do NOT validate quantity × unit_price = line_total for those items"""
 
 
 def _get_default_prompt_template() -> str:
@@ -143,16 +122,30 @@ def _get_default_prompt_template() -> str:
    - product_name (cleaned, no extra formatting)
    - quantity and unit (if available)
    - unit_price (if available)
-   - line_total (must match quantity × unit_price if both are present)
-3. Important: Extract subtotal and tax ONLY if explicitly stated on the receipt
+   - line_total (must match quantity × unit_price if both are present, **EXCEPT for package price discounts** - see tag-based instructions)
+3. Important: Extract subtotal, tax, and ALL fees/deposits:
+   - Extract subtotal ONLY if explicitly stated (e.g., "SUB TOTAL", "Subtotal")
+   - Extract tax ONLY if explicitly stated (e.g., "Tax", "GST", "PST", "HST")
+   - Extract ALL deposits and fees as separate line items:
+     * "Bottle Deposit" → include as item with product_name="Bottle Deposit"
+     * "Environment fee", "Environmental fee", "Env fee" → include as item with product_name="Environment fee"
+     * "CRF", "Container fee", "Bag fee" → include as items
+   - DO NOT calculate or estimate tax by subtracting subtotal from total
+   - Deposits, fees, and other charges are NOT tax - they are separate line items
    - If subtotal is not shown: set subtotal to null
    - If tax is not shown: set tax to null
-   - DO NOT calculate or estimate tax by subtracting subtotal from total
-   - Deposits, fees, and other charges are NOT tax
-4. Validate calculations:
-   - For each item: if quantity and unit_price exist, verify: quantity × unit_price ≈ line_total (±0.01)
-   - Sum all line_totals should ≈ total (±0.03)
-   - If subtotal exists: sum of product line_totals should ≈ subtotal (may exclude deposits/fees)
+4. Validate calculations (CRITICAL - follow this exact order):
+   a) **Line items sum check**: Sum of all line_totals (including deposits, fees, etc.) should ≈ subtotal (±0.03)
+      - If subtotal is NOT shown on receipt, skip this check
+      - If subtotal IS shown, this MUST pass
+   b) **Total sum check**: Starting from subtotal, add each component in order:
+      - subtotal + tax + deposits + fees = total (±0.03)
+      - Example: If receipt shows "SUB TOTAL: $36.75, Tax: $1.73, Bottle Deposit: $0.05, Environment fee: $0.01, TOTAL: $38.54"
+        * Verify: $36.75 + $1.73 + $0.05 + $0.01 = $38.54
+      - Extract ALL fees/deposits as separate line items (Bottle Deposit, Environment fee, etc.)
+      - Include them in the items array with their exact names and amounts
+   c) **Item price validation**: For each item (if quantity and unit_price exist), verify: quantity × unit_price ≈ line_total (±0.01)
+      - **EXCEPTION**: If the item is part of a package price discount (e.g., "2/$9.00", "3 for $10"), **SKIP this validation** - use the actual line_total from receipt
 5. Document any issues in the "tbd" section:
    - Items with inconsistent price calculations
    - Field conflicts between raw_text and trusted_hints
@@ -231,23 +224,98 @@ def _get_default_output_schema() -> Dict[str, Any]:
 def format_prompt(
     raw_text: str,
     trusted_hints: Dict[str, Any],
-    prompt_config: Optional[Dict[str, Any]] = None
-) -> tuple[str, str]:
+    prompt_config: Optional[Dict[str, Any]] = None,
+    merchant_name: Optional[str] = None,
+    store_chain_id: Optional[str] = None,
+    location_id: Optional[str] = None,
+    state: Optional[str] = None,
+    country_code: Optional[str] = None
+) -> tuple[str, str, Dict[str, Any]]:
     """
     Format prompt, prepare to send to LLM.
+    Now supports tag-based RAG system.
     
     Args:
         raw_text: Original receipt text
         trusted_hints: High-confidence fields (confidence >= 0.95)
         prompt_config: Prompt configuration (if None, use default)
+        merchant_name: Merchant name for tag detection (optional)
+        store_chain_id: Store chain ID for tag detection (optional)
+        location_id: Store location ID for location-based tag detection (optional)
+        state: State/province code for location-based tag detection (optional)
+        country_code: Country code for location-based tag detection (optional)
         
     Returns:
-        (system_message, user_message) tuple
+        (system_message, user_message, rag_metadata) tuple
+        rag_metadata contains information about detected tags and loaded snippets
     """
     if prompt_config is None:
         prompt_config = get_default_prompt()
     
-    system_message = prompt_config.get("system_message") or _get_default_system_message()
+    base_system_message = prompt_config.get("system_message") or _get_default_system_message()
+    base_prompt_template = prompt_config.get("prompt_template") or _get_default_prompt_template()
+    
+    # Detect tags from OCR text, merchant name, and location
+    tag_names = []
+    rag_metadata = {
+        "detected_tags": [],
+        "tag_details": [],
+        "snippets_loaded": {
+            "system_messages": 0,
+            "prompt_additions": 0,
+            "extraction_rules": 0,
+            "validation_rules": 0,
+            "examples": 0
+        }
+    }
+    
+    if raw_text or merchant_name or location_id or state or country_code:
+        try:
+            tag_names = detect_tags_from_ocr(
+                raw_text=raw_text or "",
+                merchant_name=merchant_name,
+                store_chain_id=store_chain_id,
+                location_id=location_id,
+                state=state,
+                country_code=country_code
+            )
+            if tag_names:
+                logger.info(f"Detected tags for RAG: {tag_names}")
+                rag_metadata["detected_tags"] = tag_names
+        except Exception as e:
+            logger.warning(f"Failed to detect tags: {e}", exc_info=True)
+    
+    # Load RAG snippets and combine with base prompt
+    if tag_names:
+        snippets = load_rag_snippets(tag_names)
+        system_message, prompt_template = combine_rag_into_prompt(
+            base_system_message=base_system_message,
+            base_prompt_template=base_prompt_template,
+            tag_names=tag_names
+        )
+        
+        # Record snippet counts
+        rag_metadata["snippets_loaded"] = {
+            "system_messages": len(snippets.get("system_messages", [])),
+            "prompt_additions": len(snippets.get("prompt_additions", [])),
+            "extraction_rules": len(snippets.get("extraction_rules", [])),
+            "validation_rules": len(snippets.get("validation_rules", [])),
+            "examples": len(snippets.get("examples", []))
+        }
+        
+        # Record tag details
+        from .tag_based_rag import _tag_cache
+        for tag_name in tag_names:
+            tag = _tag_cache.get(tag_name)
+            if tag:
+                rag_metadata["tag_details"].append({
+                    "tag_name": tag_name,
+                    "tag_type": tag.get("tag_type"),
+                    "priority": tag.get("priority", 0)
+                })
+    else:
+        system_message = base_system_message
+        prompt_template = base_prompt_template
     
     # Format trusted_hints
     trusted_hints_str = json.dumps(trusted_hints, indent=2, ensure_ascii=False)
@@ -263,7 +331,7 @@ def format_prompt(
         output_schema_str = json.dumps(output_schema, indent=2, ensure_ascii=False)
     
     # Format user message
-    user_message = prompt_config.get("prompt_template", _get_default_prompt_template()).format(
+    user_message = prompt_template.format(
         raw_text=raw_text,
         trusted_hints=trusted_hints_str,
         output_schema=output_schema_str

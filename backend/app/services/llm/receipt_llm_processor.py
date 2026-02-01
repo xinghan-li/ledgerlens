@@ -16,7 +16,7 @@ from ...services.ocr.documentai_client import parse_receipt_documentai
 from ...prompts.prompt_manager import get_merchant_prompt, format_prompt
 from .llm_client import parse_receipt_with_llm
 from .gemini_client import parse_receipt_with_gemini
-from ...services.database.supabase_client import get_or_create_merchant
+from ...services.database.supabase_client import get_store_chain
 from ...prompts.extraction_rule_manager import get_merchant_extraction_rules, apply_extraction_rules
 from ...services.ocr.ocr_normalizer import normalize_ocr_result, extract_unified_info
 from ...config import settings
@@ -49,7 +49,8 @@ async def process_receipt_with_llm_from_ocr(
     ocr_result: Dict[str, Any],
     merchant_name: Optional[str] = None,
     ocr_provider: str = "unknown",
-    llm_provider: str = "openai"
+    llm_provider: str = "openai",
+    receipt_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Unified LLM processing function that accepts any normalized OCR result.
@@ -85,21 +86,100 @@ async def process_receipt_with_llm_from_ocr(
     if not merchant_name:
         merchant_name = unified_info.get("merchant_name")
     
-    # Get or create merchant
-    merchant_id = None
+    # Step 1: Try to match store from OCR result (first attempt)
+    # Don't create candidate yet - wait until after LLM processing
+    ocr_chain_id = None
+    ocr_location_id = None
+    ocr_suggested_chain_id = None
+    ocr_suggested_location_id = None
+    ocr_confidence_score = None
+    ocr_matched = False
+    
     if merchant_name:
-        merchant_id = get_or_create_merchant(merchant_name)
-        logger.info(f"Merchant: {merchant_name} (ID: {merchant_id})")
+        # Try to get store address from OCR result for better matching
+        store_address = unified_info.get("merchant_address")
+        ocr_store_match = get_store_chain(merchant_name, store_address)
+        
+        if ocr_store_match.get("matched"):
+            # High confidence match from OCR - use directly
+            ocr_chain_id = ocr_store_match.get("chain_id")
+            ocr_location_id = ocr_store_match.get("location_id")
+            ocr_matched = True
+            logger.info(f"OCR stage: Matched store: {merchant_name} -> chain_id={ocr_chain_id}, location_id={ocr_location_id}")
+        else:
+            # Not matched in OCR stage - save suggestion info for later
+            ocr_suggested_chain_id = ocr_store_match.get("suggested_chain_id")
+            ocr_suggested_location_id = ocr_store_match.get("suggested_location_id")
+            ocr_confidence_score = ocr_store_match.get("confidence_score")
+            
+            if ocr_suggested_chain_id:
+                logger.info(f"OCR stage: Low confidence match for store: {merchant_name} -> suggested_chain_id={ocr_suggested_chain_id}, confidence={ocr_confidence_score:.2f}")
+            else:
+                logger.info(f"OCR stage: Store not found: {merchant_name}, will retry after LLM processing")
+    
+    # Use OCR match results for prompt (if available)
+    chain_id = ocr_chain_id
+    location_id = ocr_location_id
     
     # Step 3: Get merchant-specific prompt (only for prompt content, not for model selection)
     logger.info(f"Step 3: Loading prompt for merchant: {merchant_name}")
-    prompt_config = get_merchant_prompt(merchant_name or "default", merchant_id)
+    # Extract country_code from merchant address if available (for country-specific prompts)
+    country_code = None
+    if unified_info.get("merchant_address"):
+        # Try to extract country from address (simple heuristic)
+        address = unified_info.get("merchant_address", "").upper()
+        if "CANADA" in address or "BC" in address or "ONTARIO" in address:
+            country_code = "CA"
+        elif "USA" in address or "US" in address or any(state in address for state in ["CA", "WA", "NY", "TX"]):
+            country_code = "US"
     
-    # Step 4: Format prompt
-    system_message, user_message = format_prompt(
+    prompt_config = get_merchant_prompt(
+        merchant_name or "default", 
+        merchant_id=chain_id,  # chain_id is passed as merchant_id
+        location_id=location_id,
+        country_code=country_code
+    )
+    
+    # Step 4: Format prompt (with tag-based RAG support)
+    # Extract location info for location-based RAG matching
+    location_state = None
+    location_country = None
+    if location_id:
+        # Try to get state and country from location_id
+        try:
+            from ..database.supabase_client import _get_client
+            supabase = _get_client()
+            location_response = supabase.table("store_locations").select("state, country_code").eq("id", location_id).limit(1).execute()
+            if location_response.data:
+                location_state = location_response.data[0].get("state")
+                location_country = location_response.data[0].get("country_code")
+        except Exception as e:
+            logger.warning(f"Failed to get location info for RAG: {e}")
+    
+    # Also try to extract from unified_info
+    if not location_state and unified_info.get("merchant_address"):
+        address = unified_info.get("merchant_address", "").upper()
+        # Try to extract state from address
+        us_states = ["CA", "WA", "NY", "TX", "HI", "FL", "OR", "NV", "AZ", "UT", "CO", "NM"]
+        ca_provinces = ["BC", "ON", "QC", "AB", "MB", "SK", "NS", "NB", "NL", "PE", "YT", "NT", "NU"]
+        for state in us_states + ca_provinces:
+            if state in address:
+                location_state = state
+                break
+        if any(state in address for state in us_states):
+            location_country = "US"
+        elif any(province in address for province in ca_provinces):
+            location_country = "CA"
+    
+    system_message, user_message, rag_metadata = format_prompt(
         raw_text=raw_text,
         trusted_hints=trusted_hints,
-        prompt_config=prompt_config
+        prompt_config=prompt_config,
+        merchant_name=merchant_name,
+        store_chain_id=chain_id,
+        location_id=location_id,
+        state=location_state,
+        country_code=location_country
     )
     
     # Step 5: Call LLM (read corresponding config from environment variables based on llm_provider)
@@ -133,22 +213,91 @@ async def process_receipt_with_llm_from_ocr(
     extracted_line_totals = extract_line_totals_from_raw_text(
         raw_text=raw_text,
         unified_line_items=line_items,  # Normalized line_items (from any OCR), use if available; otherwise fallback to regex
-        merchant_name=merchant_name
+        merchant_name=merchant_name,
+        chain_id=chain_id  # Pass chain_id for tag-based extraction rules
     )
     
     # Step 7: Backend mathematical validation (unified validation logic, not dependent on OCR)
     logger.info("Step 6: Performing backend mathematical validation...")
     llm_result = _validate_llm_result(llm_result, extracted_line_totals=extracted_line_totals)
     
-    # Step 8: Add metadata
+    # Step 8: Try to match store again using LLM-extracted data (second attempt)
+    # LLM may extract more accurate merchant_name and address
+    llm_chain_id = chain_id  # Start with OCR match result
+    llm_location_id = location_id
+    llm_suggested_chain_id = ocr_suggested_chain_id
+    llm_suggested_location_id = ocr_suggested_location_id
+    llm_confidence_score = ocr_confidence_score
+    llm_matched = ocr_matched
+    
+    # Extract merchant info from LLM result
+    llm_merchant_name = None
+    llm_merchant_address = None
+    if llm_result and "receipt" in llm_result:
+        receipt_data = llm_result["receipt"]
+        llm_merchant_name = receipt_data.get("merchant_name")
+        llm_merchant_address = receipt_data.get("merchant_address")
+    
+    # If LLM extracted merchant info, try matching again (LLM may be more accurate)
+    # Always retry with LLM data if available, even if OCR matched (LLM might have better info)
+    if llm_merchant_name:
+        llm_store_match = get_store_chain(llm_merchant_name, llm_merchant_address)
+        
+        if llm_store_match.get("matched"):
+            # High confidence match from LLM - use this instead (prefer LLM results)
+            llm_chain_id = llm_store_match.get("chain_id")
+            llm_location_id = llm_store_match.get("location_id")
+            llm_matched = True
+            llm_suggested_chain_id = None  # Clear suggestions if matched
+            llm_suggested_location_id = None
+            llm_confidence_score = llm_store_match.get("confidence_score")
+            logger.info(f"LLM stage: Matched store: {llm_merchant_name} -> chain_id={llm_chain_id}, location_id={llm_location_id}")
+        else:
+            # Not matched in LLM stage - update suggestion info from LLM attempt
+            llm_suggested_chain_id = llm_store_match.get("suggested_chain_id")
+            llm_suggested_location_id = llm_store_match.get("suggested_location_id")
+            llm_confidence_score = llm_store_match.get("confidence_score")
+            
+            if llm_suggested_chain_id:
+                logger.info(f"LLM stage: Low confidence match for store: {llm_merchant_name} -> suggested_chain_id={llm_suggested_chain_id}, confidence={llm_confidence_score:.2f}")
+            else:
+                logger.info(f"LLM stage: Store not found: {llm_merchant_name}")
+    
+    # Use LLM match results (prefer LLM results if matched)
+    final_chain_id = llm_chain_id
+    final_location_id = llm_location_id
+    final_merchant_name = llm_merchant_name or merchant_name
+    
+    # Step 9: Add metadata with final match results and RAG usage
     llm_result["_metadata"] = {
-        "merchant_name": merchant_name,
-        "merchant_id": merchant_id,
+        "merchant_name": final_merchant_name,
+        "chain_id": final_chain_id,
+        "location_id": final_location_id,
         "ocr_provider": normalized.get("metadata", {}).get("ocr_provider", "unknown"),
         "llm_provider": llm_provider.lower(),
         "entities": normalized.get("entities", {}),
-        "validation_status": llm_result.get("_metadata", {}).get("validation_status", "unknown")
+        "validation_status": llm_result.get("_metadata", {}).get("validation_status", "unknown"),
+        "rag_metadata": rag_metadata  # Add RAG usage statistics
     }
+    
+    # Step 10: Create store candidate ONLY if both OCR and LLM failed to match
+    if final_merchant_name and not final_chain_id and receipt_id:
+        from ..database.supabase_client import create_store_candidate
+        try:
+            create_store_candidate(
+                chain_name=final_merchant_name,
+                receipt_id=receipt_id,
+                source="llm",
+                llm_result=llm_result,
+                suggested_chain_id=llm_suggested_chain_id,
+                suggested_location_id=llm_suggested_location_id,
+                confidence_score=llm_confidence_score
+            )
+            logger.info(f"Created store candidate for '{final_merchant_name}' (OCR and LLM both failed to match) with receipt_id={receipt_id}, confidence={llm_confidence_score}")
+        except Exception as e:
+            logger.warning(f"Failed to create store candidate: {e}")
+    elif final_chain_id:
+        logger.info(f"Store matched successfully (chain_id={final_chain_id}, location_id={final_location_id}), no candidate created")
     
     logger.info(f"Receipt processing completed successfully (OCR: {normalized.get('metadata', {}).get('ocr_provider', 'unknown')}, LLM: {llm_provider})")
     return llm_result
@@ -342,7 +491,8 @@ def _validate_llm_result(
 def extract_line_totals_from_raw_text(
     raw_text: str,
     unified_line_items: Optional[List[Dict[str, Any]]] = None,
-    merchant_name: Optional[str] = None
+    merchant_name: Optional[str] = None,
+    chain_id: Optional[str] = None
 ) -> List[float]:
     """
     Extract all items' line_total from raw_text, not dependent on LLM.
@@ -387,7 +537,12 @@ def extract_line_totals_from_raw_text(
     logger.info("Falling back to regex extraction from raw_text with merchant-specific rules")
     
     # Get merchant-specific extraction rules (similar to RAG)
-    extraction_rules = get_merchant_extraction_rules(merchant_name=merchant_name)
+    # Note: chain_id might be None if store wasn't matched, that's okay
+    extraction_rules = get_merchant_extraction_rules(
+        merchant_name=merchant_name,
+        merchant_id=chain_id,
+        raw_text=raw_text
+    )
     
     # Apply rules to extract prices
     line_totals = apply_extraction_rules(raw_text, extraction_rules)

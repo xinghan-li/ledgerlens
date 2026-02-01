@@ -1,13 +1,15 @@
 """
 Extraction Rule Manager: Manage merchant-specific price extraction rules.
 
-Similar to RAG system, loads merchant-specific extraction rules from database for price extraction.
+Now uses tag-based RAG system to load extraction rules from prompt_snippets table.
 """
 from typing import Dict, Any, Optional, List
 import logging
 import re
+import json
 from ..services.database.supabase_client import _get_client
 from ..config import settings
+from .tag_based_rag import detect_tags_from_ocr, load_rag_snippets
 
 logger = logging.getLogger(__name__)
 
@@ -17,53 +19,75 @@ _rule_cache: Dict[str, Dict[str, Any]] = {}
 
 def get_merchant_extraction_rules(
     merchant_name: Optional[str] = None,
-    merchant_id: Optional[int] = None
+    merchant_id: Optional[str] = None,
+    location_id: Optional[str] = None,
+    country_code: Optional[str] = None,
+    raw_text: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Get merchant-specific extraction rules.
+    Get store chain extraction rules from tag-based RAG system.
     
     Args:
-        merchant_name: Merchant name
-        merchant_id: Optional merchant ID
+        merchant_name: Store chain name
+        merchant_id: Optional chain_id (UUID string)
+        location_id: Optional location_id (UUID string)
+        country_code: Optional country code
+        raw_text: Optional raw OCR text for tag detection
         
     Returns:
         Extraction rules dictionary, containing price_patterns, skip_patterns, special_rules
     """
     # Check cache
-    cache_key = (merchant_name or "").lower().strip()
+    cache_key = f"{merchant_name}_{merchant_id}_{location_id}_{country_code}".lower().strip()
     if cache_key in _rule_cache:
-        logger.debug(f"Using cached extraction rules for merchant: {merchant_name}")
+        logger.debug(f"Using cached extraction rules for: {cache_key}")
         return _rule_cache[cache_key]
     
-    supabase = _get_client()
-    
     try:
-        # Get rules from merchant_prompts table
-        query = supabase.table("merchant_prompts").select("extraction_rules, merchant_name").eq("is_active", True)
+        # Detect tags from OCR text and merchant name
+        tag_names = []
+        if raw_text or merchant_name:
+            tag_names = detect_tags_from_ocr(
+                raw_text=raw_text or "",
+                merchant_name=merchant_name,
+                store_chain_id=merchant_id
+            )
         
-        if merchant_id:
-            query = query.eq("merchant_id", merchant_id)
-        elif merchant_name:
-            query = query.ilike("merchant_name", f"%{merchant_name}%")
-        else:
-            return get_default_extraction_rules()
-        
-        res = query.order("version", desc=True).limit(1).execute()
-        
-        if res.data and len(res.data) > 0:
-            rules_data = res.data[0].get("extraction_rules")
-            if rules_data:
+        # Load RAG snippets for detected tags
+        if tag_names:
+            snippets = load_rag_snippets(tag_names)
+            extraction_rules = snippets.get("extraction_rules", [])
+            
+            # Combine all extraction rules (merge them)
+            if extraction_rules:
+                # If multiple rules, merge them (later rules override earlier ones)
+                merged_rules = get_default_extraction_rules()
+                for rule in extraction_rules:
+                    if isinstance(rule, str):
+                        try:
+                            rule = json.loads(rule)
+                        except:
+                            continue
+                    if isinstance(rule, dict):
+                        # Merge rules
+                        if "price_patterns" in rule:
+                            merged_rules["price_patterns"] = rule["price_patterns"]
+                        if "skip_patterns" in rule:
+                            merged_rules["skip_patterns"] = rule["skip_patterns"]
+                        if "special_rules" in rule:
+                            merged_rules["special_rules"].update(rule["special_rules"])
+                
                 # Cache result
-                _rule_cache[cache_key] = rules_data
-                logger.info(f"Loaded extraction rules for merchant: {merchant_name}")
-                return rules_data
+                _rule_cache[cache_key] = merged_rules
+                logger.info(f"Loaded extraction rules from tags {tag_names} for merchant: {merchant_name}")
+                return merged_rules
         
-        # If not found, return default rules
-        logger.warning(f"No custom extraction rules found for merchant: {merchant_name}, using default")
+        # If no tags or no extraction rules found, return default rules
+        logger.debug(f"No custom extraction rules found for merchant: {merchant_name}, using default")
         return get_default_extraction_rules()
         
     except Exception as e:
-        logger.error(f"Failed to load extraction rules for merchant {merchant_name}: {e}")
+        logger.error(f"Failed to load extraction rules for merchant {merchant_name}: {e}", exc_info=True)
         return get_default_extraction_rules()
 
 

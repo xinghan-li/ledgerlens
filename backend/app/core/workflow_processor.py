@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import asyncio
+import hashlib
 
 from ..services.ocr.documentai_client import parse_receipt_documentai
 from ..services.ocr.textract_client import parse_receipt_textract
@@ -25,7 +26,16 @@ from ..processors.validation.sum_checker import check_receipt_sums, apply_field_
 from ..services.llm.llm_client import parse_receipt_with_llm
 from ..prompts.prompt_manager import format_prompt, get_default_prompt
 from ..config import settings
-from ..services.database.statistics_manager import update_statistics
+from ..services.database.statistics_manager import record_api_call
+from ..services.database.supabase_client import (
+    create_receipt,
+    save_processing_run,
+    update_receipt_status,
+    get_test_user_id,
+    update_receipt_file_url,
+    check_duplicate_by_hash
+)
+import shutil
 from ..exporters.csv_exporter import convert_receipt_to_csv_rows, append_to_daily_csv, get_csv_headers
 from ..processors.merchants.implementations.tt_supermarket import clean_tt_receipt_items
 from ..processors.enrichment.address_matcher import correct_address
@@ -34,8 +44,9 @@ from ..processors.text.data_cleaner import clean_llm_result
 logger = logging.getLogger(__name__)
 
 # Output directories (moved to project root)
-# Path(__file__).parent.parent.parent is project root (backend/app -> backend -> project root)
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+# Path(__file__).parent.parent.parent.parent is project root
+# backend/app/core/workflow_processor.py -> backend/app/core -> backend/app -> backend -> project root
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 OUTPUT_ROOT = PROJECT_ROOT / "output"
 INPUT_ROOT = PROJECT_ROOT / "input"
 
@@ -154,6 +165,63 @@ def get_date_folder_name(receipt_id: str = None) -> str:
     return now.strftime("%Y%m%d")
 
 
+def _get_duration_from_timeline(timeline: TimelineRecorder, step_name: str) -> Optional[int]:
+    """
+    Get duration in milliseconds for a step from timeline.
+    
+    Args:
+        timeline: TimelineRecorder instance
+        step_name: Step name (e.g., "google_ocr", "gemini_llm")
+        
+    Returns:
+        Duration in milliseconds or None
+    """
+    for entry in timeline.timeline:
+        if entry.get("step") == f"{step_name}_end":
+            return entry.get("duration_ms")
+    return None
+
+
+def _save_image_for_manual_review(
+    receipt_id: str,
+    image_bytes: bytes,
+    filename: str
+) -> Optional[str]:
+    """
+    Save image file for manual review (when processing fails).
+    
+    Args:
+        receipt_id: Receipt ID
+        image_bytes: Image bytes
+        filename: Original filename
+        
+    Returns:
+        Relative file path or None if failed
+    """
+    try:
+        paths = get_output_paths_for_receipt(receipt_id)
+        error_dir = paths["error_dir"]
+        error_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Determine file extension from filename or default to .jpg
+        file_ext = Path(filename).suffix.lower() if filename else ".jpg"
+        if file_ext not in [".jpg", ".jpeg", ".png"]:
+            file_ext = ".jpg"
+        
+        image_file = error_dir / f"{receipt_id}_original{file_ext}"
+        
+        with open(image_file, "wb") as f:
+            f.write(image_bytes)
+        
+        # Return relative path from project root
+        relative_path = image_file.relative_to(PROJECT_ROOT)
+        logger.info(f"Saved image for manual review: {relative_path}")
+        return str(relative_path)
+    except Exception as e:
+        logger.error(f"Failed to save image for manual review: {e}")
+        return None
+
+
 def get_output_paths_for_receipt(receipt_id: str, date_folder: str = None) -> Dict[str, Path]:
     """
     Get all output paths for a receipt based on new directory structure.
@@ -180,7 +248,8 @@ def get_output_paths_for_receipt(receipt_id: str, date_folder: str = None) -> Di
 async def process_receipt_workflow(
     image_bytes: bytes,
     filename: str,
-    mime_type: str = "image/jpeg"
+    mime_type: str = "image/jpeg",
+    user_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Complete receipt processing workflow.
@@ -189,6 +258,7 @@ async def process_receipt_workflow(
         image_bytes: Image bytes
         filename: Filename
         mime_type: MIME type
+        user_id: Optional user ID (if None, uses get_test_user_id())
         
     Returns:
         Processing result dictionary
@@ -196,17 +266,195 @@ async def process_receipt_workflow(
     receipt_id = generate_receipt_id(filename)
     timeline = TimelineRecorder(receipt_id)
     
+    # Calculate file hash for duplicate detection
+    original_file_hash = hashlib.sha256(image_bytes).hexdigest()
+    file_hash = original_file_hash
+    logger.info(f"File hash calculated: {file_hash[:16]}... (for duplicate detection)")
+    
+    # Get user_id
+    if user_id is None:
+        logger.info("user_id not provided, attempting to get from get_test_user_id()...")
+        user_id = get_test_user_id()
+        if user_id:
+            logger.info(f"Got user_id from get_test_user_id(): {user_id}")
+        else:
+            logger.warning("get_test_user_id() returned None")
+    
+    # Check for duplicate before processing (if user_id is available)
+    if user_id:
+        existing_receipt_id = check_duplicate_by_hash(file_hash, user_id)
+        if existing_receipt_id:
+            # Log debug mode status for troubleshooting
+            logger.info(f"Duplicate detected. allow_duplicate_for_debug = {settings.allow_duplicate_for_debug}")
+            if settings.allow_duplicate_for_debug:
+                # Debug mode: Allow duplicate by modifying file_hash with timestamp
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                file_hash = f"{original_file_hash}_debug_{timestamp}"
+                logger.warning(
+                    f"DEBUG MODE: Duplicate receipt detected (original: {existing_receipt_id}), "
+                    f"but allowing reprocess with modified hash: {file_hash[:32]}... "
+                    f"This allows comparison of results between runs."
+                )
+            else:
+                # Normal mode: Reject duplicate
+                logger.warning(
+                    f"Duplicate receipt detected: file_hash={file_hash[:16]}..., "
+                    f"existing_receipt_id={existing_receipt_id}. "
+                    "Skipping processing to avoid duplicate work. "
+                    "Set ALLOW_DUPLICATE_FOR_DEBUG=true to allow reprocessing for debugging."
+                )
+                return {
+                    "success": False,
+                    "receipt_id": receipt_id,
+                    "status": "duplicate",
+                    "error": "duplicate_receipt",
+                    "message": "This receipt has already been processed",
+                    "existing_receipt_id": existing_receipt_id,
+                    "file_hash": file_hash[:16] + "..."  # Only return first 16 chars for security
+                }
+    
+    # Validate user_id before creating receipt
+    if not user_id:
+        logger.error(
+            "user_id is required but not provided. "
+            "Please set TEST_USER_ID environment variable or provide user_id parameter. "
+            "The user_id must be a valid UUID that exists in the users table."
+        )
+        # Continue without database storage, but log the issue
+        db_receipt_id = None
+    else:
+        logger.info(f"Attempting to create receipt record with user_id: {user_id}")
+        # Create receipt record in database
+        db_receipt_id: Optional[str] = None
+        try:
+            db_receipt_id = create_receipt(user_id=user_id, raw_file_url=None, file_hash=file_hash)
+            logger.info(f"✓ Created receipt record in database: {db_receipt_id}")
+        except Exception as e:
+            error_msg = str(e)
+            # Check if it's a duplicate error
+            if "duplicate" in error_msg.lower() or "Duplicate receipt" in error_msg:
+                if settings.allow_duplicate_for_debug:
+                    # Debug mode: Try again with modified hash
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    file_hash = f"{original_file_hash}_debug_{timestamp}"
+                    logger.warning(
+                        f"DEBUG MODE: Duplicate detected during creation, retrying with modified hash: {file_hash[:32]}..."
+                    )
+                    try:
+                        db_receipt_id = create_receipt(user_id=user_id, raw_file_url=None, file_hash=file_hash)
+                        logger.info(f"✓ Created receipt record in database (debug mode): {db_receipt_id}")
+                    except Exception as retry_error:
+                        logger.error(f"Failed to create receipt even with modified hash: {retry_error}")
+                        raise
+                else:
+                    # Normal mode: Return duplicate error
+                    logger.warning(f"Duplicate receipt detected during creation: {error_msg}")
+                    # Try to get existing receipt ID
+                    existing_receipt_id = check_duplicate_by_hash(original_file_hash, user_id)
+                    return {
+                        "success": False,
+                        "receipt_id": receipt_id,
+                        "status": "duplicate",
+                        "error": "duplicate_receipt",
+                        "message": "This receipt has already been processed",
+                        "existing_receipt_id": existing_receipt_id,
+                        "file_hash": original_file_hash[:16] + "..."
+                    }
+            
+            logger.error(
+                f"✗ Failed to create receipt record in database: {type(e).__name__}: {e}. "
+                f"user_id={user_id}. "
+                "This may be due to: "
+                "1. Invalid user_id (must be a valid UUID that exists in users table), "
+                "2. Database connection issue, "
+                "3. Missing user record in users table. "
+                "Continuing with file-only workflow."
+            )
+            db_receipt_id = None
+    
     try:
         # Step 1: Google Document AI OCR
+        # Update stage to ocr_google
+        if db_receipt_id:
+            try:
+                update_receipt_status(db_receipt_id, current_status="failed", current_stage="ocr_google")
+            except Exception as e:
+                logger.warning(f"Failed to update receipt stage to ocr_google: {e}")
+        
         timeline.start("google_ocr")
         try:
             google_ocr_result = parse_receipt_documentai(image_bytes, mime_type=mime_type)
             timeline.end("google_ocr")
+            
+            # Save OCR processing run to database
+            if db_receipt_id:
+                try:
+                    # Calculate duration from timeline
+                    ocr_duration = None
+                    for entry in timeline.timeline:
+                        if entry.get("step") == "google_ocr_end":
+                            ocr_duration = entry.get("duration_ms")
+                            break
+                    
+                    save_processing_run(
+                        receipt_id=db_receipt_id,
+                        stage="ocr",
+                        model_provider="google_documentai",
+                        model_name=None,  # OCR doesn't have model_name
+                        model_version=None,
+                        input_payload={"image_bytes_length": len(image_bytes), "mime_type": mime_type},
+                        output_payload=google_ocr_result,
+                        output_schema_version=None,  # OCR doesn't have schema version
+                        status="pass",
+                        error_message=None
+                    )
+                    logger.info(f"Saved OCR processing run for receipt {db_receipt_id}")
+                    
+                    # Record API call for statistics
+                    ocr_duration = _get_duration_from_timeline(timeline, "google_ocr")
+                    record_api_call(
+                        call_type="ocr",
+                        provider="google_documentai",
+                        receipt_id=db_receipt_id,
+                        duration_ms=int(ocr_duration) if ocr_duration else None,
+                        status="success"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to save OCR processing run: {e}")
+            
         except Exception as e:
             timeline.end("google_ocr")
             logger.error(f"Google OCR failed: {e}")
+            
+            # Save failed OCR run to database
+            if db_receipt_id:
+                try:
+                    save_processing_run(
+                        receipt_id=db_receipt_id,
+                        stage="ocr",
+                        model_provider="google_documentai",
+                        model_name=None,  # OCR doesn't have model_name
+                        model_version=None,
+                        input_payload={"image_bytes_length": len(image_bytes), "mime_type": mime_type},
+                        output_payload={},
+                        output_schema_version=None,  # OCR doesn't have schema version
+                        status="fail",
+                        error_message=str(e)
+                    )
+                    update_receipt_status(db_receipt_id, current_status="failed", current_stage="failed")
+                    
+                    # Save image for manual review
+                    image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+                    if image_path:
+                        try:
+                            update_receipt_file_url(db_receipt_id, image_path)
+                        except Exception as url_error:
+                            logger.warning(f"Failed to update receipt file URL: {url_error}")
+                except Exception as db_error:
+                    logger.warning(f"Failed to save failed OCR run: {db_error}")
+            
             # Fallback to AWS OCR
-            return await _fallback_to_aws_ocr(image_bytes, filename, receipt_id, timeline, error=f"Google OCR failed: {e}")
+            return await _fallback_to_aws_ocr(image_bytes, filename, receipt_id, timeline, error=f"Google OCR failed: {e}", db_receipt_id=db_receipt_id)
         
         # Save Google OCR result (temporarily not saved, will save when needed)
         google_ocr_data = google_ocr_result
@@ -225,6 +473,13 @@ async def process_receipt_workflow(
             logger.info(f"Using GPT-4o-mini LLM (Gemini unavailable: {gemini_reason})")
             logger.debug(f"Gemini unavailable reason: {gemini_reason}")
         
+        # Update stage to llm_primary
+        if db_receipt_id:
+            try:
+                update_receipt_status(db_receipt_id, current_status="failed", current_stage="llm_primary")
+            except Exception as e:
+                logger.warning(f"Failed to update receipt stage to llm_primary: {e}")
+        
         # Step 3: LLM processing
         timeline.start(f"{llm_provider}_llm")
         try:
@@ -232,16 +487,75 @@ async def process_receipt_workflow(
                 ocr_result=google_ocr_data,
                 merchant_name=None,
                 ocr_provider="google_documentai",
-                llm_provider=llm_provider
+                llm_provider=llm_provider,
+                receipt_id=db_receipt_id
             )
             timeline.end(f"{llm_provider}_llm")
+            
+            # Save LLM processing run to database
+            if db_receipt_id and first_llm_result:
+                try:
+                    # Get model name from settings (the actual model used for the call)
+                    if llm_provider.lower() == "gemini":
+                        model_name = settings.gemini_model
+                    else:
+                        model_name = settings.openai_model
+                    
+                    # Extract RAG metadata from LLM result
+                    rag_metadata = first_llm_result.get("_metadata", {}).get("rag_metadata", {})
+                    
+                    save_processing_run(
+                        receipt_id=db_receipt_id,
+                        stage="llm",
+                        model_provider=llm_provider,
+                        model_name=model_name,
+                        model_version=None,  # Model version not available from API
+                        input_payload={
+                            "ocr_result": google_ocr_data,
+                            "rag_metadata": rag_metadata  # Add RAG usage statistics
+                        },
+                        output_payload=first_llm_result,
+                        output_schema_version="0.1",  # Current schema version
+                        status="pass",
+                        error_message=None
+                    )
+                    logger.info(f"Saved LLM processing run for receipt {db_receipt_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to save LLM processing run: {e}")
+            
         except Exception as e:
             timeline.end(f"{llm_provider}_llm")
             logger.error(f"{llm_provider.upper()} LLM failed: {e}")
+            
+            # Save failed LLM run to database
+            if db_receipt_id:
+                try:
+                    # Get model name from settings
+                    if llm_provider.lower() == "gemini":
+                        model_name = settings.gemini_model
+                    else:
+                        model_name = settings.openai_model
+                    
+                    save_processing_run(
+                        receipt_id=db_receipt_id,
+                        stage="llm",
+                        model_provider=llm_provider,
+                        model_name=model_name,
+                        model_version=None,
+                        input_payload={"ocr_result": google_ocr_data},
+                        output_payload={},
+                        output_schema_version="0.1",
+                        status="fail",
+                        error_message=str(e)
+                    )
+                    update_receipt_status(db_receipt_id, current_status="failed", current_stage="failed")
+                except Exception as db_error:
+                    logger.warning(f"Failed to save failed LLM run: {db_error}")
+            
             # Fallback to another LLM
             return await _fallback_to_other_llm(
                 google_ocr_data, filename, receipt_id, timeline, 
-                failed_provider=llm_provider, error=str(e)
+                failed_provider=llm_provider, error=str(e), db_receipt_id=db_receipt_id
             )
         
         if first_llm_result is None:
@@ -276,8 +590,25 @@ async def process_receipt_workflow(
             if not field_conflicts:
                 # Fully passed, return directly
                 timeline.start("save_output")
-                await _save_output(receipt_id, first_llm_result, timeline, google_ocr_data)
+                await _save_output(receipt_id, first_llm_result, timeline, google_ocr_data, user_id=user_id)
                 timeline.end("save_output")
+                
+                # Update receipt status
+                if db_receipt_id:
+                    try:
+                        update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+                    except Exception as e:
+                        logger.warning(f"Failed to update receipt status: {e}")
+                
+                # Record API call for statistics
+                llm_duration = _get_duration_from_timeline(timeline, f"{llm_provider}_llm")
+                record_api_call(
+                    call_type="llm",
+                    provider=llm_provider,
+                    receipt_id=db_receipt_id,
+                    duration_ms=int(llm_duration) if llm_duration else None,
+                    status="success"
+                )
                 
                 return {
                     "success": True,
@@ -291,11 +622,25 @@ async def process_receipt_workflow(
                 # Sum check passed but has field_conflicts, apply resolution
                 resolved_result = apply_field_conflicts_resolution(first_llm_result)
                 timeline.start("save_output")
-                await _save_output(receipt_id, resolved_result, timeline, google_ocr_data)
+                await _save_output(receipt_id, resolved_result, timeline, google_ocr_data, user_id=user_id)
                 timeline.end("save_output")
                 
-                # Update statistics
-                update_statistics(llm_provider, sum_check_passed=True)
+                # Update receipt status
+                if db_receipt_id:
+                    try:
+                        update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+                    except Exception as e:
+                        logger.warning(f"Failed to update receipt status: {e}")
+                
+                # Record API call for statistics
+                llm_duration = _get_duration_from_timeline(timeline, f"{llm_provider}_llm")
+                record_api_call(
+                    call_type="llm",
+                    provider=llm_provider,
+                    receipt_id=db_receipt_id,
+                    duration_ms=int(llm_duration) if llm_duration else None,
+                    status="success"
+                )
                 
                 return {
                     "success": True,
@@ -309,9 +654,18 @@ async def process_receipt_workflow(
         else:
             # Sum check failed, introduce AWS OCR + GPT-4o-mini secondary processing
             logger.warning(f"Sum check failed for {receipt_id}, triggering backup check")
+            
+            # Update stage to sum_check_failed
+            if db_receipt_id:
+                try:
+                    update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="sum_check_failed")
+                except Exception as e:
+                    logger.warning(f"Failed to update receipt stage to sum_check_failed: {e}")
+            
             return await _backup_check_with_aws_ocr(
                 image_bytes, filename, receipt_id, timeline,
-                google_ocr_data, first_llm_result, sum_check_details, llm_provider
+                google_ocr_data, first_llm_result, sum_check_details, llm_provider,
+                db_receipt_id=db_receipt_id
             )
     
     except Exception as e:
@@ -320,8 +674,15 @@ async def process_receipt_workflow(
         await _save_error(receipt_id, timeline, error=str(e), filename=filename)
         timeline.end("save_error")
         
-        # Update statistics (error)
-        update_statistics("openai", sum_check_passed=False, is_error=True)
+        # Record API call (error)
+        record_api_call(
+            call_type="llm",
+            provider="openai",
+            receipt_id=db_receipt_id,
+            duration_ms=None,
+            status="failed",
+            error_message=str(e)
+        )
         
         return {
             "success": False,
@@ -339,14 +700,50 @@ async def _backup_check_with_aws_ocr(
     google_ocr_data: Dict[str, Any],
     first_llm_result: Dict[str, Any],
     sum_check_details: Dict[str, Any],
-    first_llm_provider: str
+    first_llm_provider: str,
+    db_receipt_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Use AWS OCR + GPT-4o-mini for secondary processing."""
+    # Update stage to llm_fallback
+    if db_receipt_id:
+        try:
+            update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="llm_fallback")
+        except Exception as e:
+            logger.warning(f"Failed to update receipt stage to llm_fallback: {e}")
+    
     # Step 1: AWS OCR
     timeline.start("aws_ocr")
     try:
         aws_ocr_result = parse_receipt_textract(image_bytes)
         timeline.end("aws_ocr")
+        
+        # Save AWS OCR processing run to database
+        if db_receipt_id:
+            try:
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="ocr",
+                    model_provider="aws_textract",
+                    model_name=None,  # OCR doesn't have model_name
+                    model_version=None,
+                    input_payload={"image_bytes_length": len(image_bytes)},
+                    output_payload=aws_ocr_result,
+                    output_schema_version=None,  # OCR doesn't have schema version
+                    status="pass",
+                    error_message=None
+                )
+                
+                # Record API call for statistics
+                aws_ocr_duration = _get_duration_from_timeline(timeline, "aws_ocr")
+                record_api_call(
+                    call_type="ocr",
+                    provider="aws_textract",
+                    receipt_id=db_receipt_id,
+                    duration_ms=int(aws_ocr_duration) if aws_ocr_duration else None,
+                    status="success"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save AWS OCR processing run: {e}")
     except Exception as e:
         timeline.end("aws_ocr")
         logger.error(f"AWS OCR failed: {e}")
@@ -357,7 +754,10 @@ async def _backup_check_with_aws_ocr(
             google_ocr_data=google_ocr_data,
             first_llm_result=first_llm_result,
             sum_check_details=sum_check_details,
-            error=f"AWS OCR failed: {e}"
+            error=f"AWS OCR failed: {e}",
+            image_bytes=image_bytes,
+            filename=filename,
+            db_receipt_id=db_receipt_id
         )
     
     # Step 2: GPT-4o-mini secondary processing
@@ -367,9 +767,57 @@ async def _backup_check_with_aws_ocr(
             google_ocr_data, aws_ocr_result, first_llm_result, sum_check_details
         )
         timeline.end("gpt_backup_llm")
+        
+        # Save GPT backup LLM processing run to database (regardless of sum check result)
+        if db_receipt_id:
+            try:
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="llm",
+                    model_provider="openai",
+                    model_name=settings.openai_model,
+                    model_version=None,  # Model version not available from API
+                    input_payload={
+                        "google_ocr": google_ocr_data,
+                        "aws_ocr": aws_ocr_result,
+                        "first_llm_result": first_llm_result,
+                        "sum_check_details": sum_check_details
+                    },
+                    output_payload=backup_llm_result,
+                    output_schema_version="0.1",  # Current schema version
+                    status="pass",  # LLM processing succeeded, sum check will be done separately
+                    error_message=None
+                )
+                logger.info(f"Saved GPT backup LLM processing run for receipt {db_receipt_id}")
+            except Exception as db_error:
+                logger.warning(f"Failed to save GPT backup LLM processing run: {db_error}")
     except Exception as e:
         timeline.end("gpt_backup_llm")
         logger.error(f"GPT backup processing failed: {e}")
+        
+        # Save failed GPT backup LLM processing run to database
+        if db_receipt_id:
+            try:
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="llm",
+                    model_provider="openai",
+                    model_name=settings.openai_model,
+                    model_version=None,
+                    input_payload={
+                        "google_ocr": google_ocr_data,
+                        "aws_ocr": aws_ocr_result,
+                        "first_llm_result": first_llm_result,
+                        "sum_check_details": sum_check_details
+                    },
+                    output_payload={},
+                    output_schema_version=None,
+                    status="fail",
+                    error_message=str(e)
+                )
+            except Exception as db_error:
+                logger.warning(f"Failed to save failed GPT backup LLM run: {db_error}")
+        
         return await _mark_for_manual_review(
             receipt_id=receipt_id,
             timeline=timeline,
@@ -377,7 +825,10 @@ async def _backup_check_with_aws_ocr(
             aws_ocr_data=aws_ocr_result,
             first_llm_result=first_llm_result,
             sum_check_details=sum_check_details,
-            error=f"GPT backup failed: {e}"
+            error=f"GPT backup failed: {e}",
+            image_bytes=image_bytes,
+            filename=filename,
+            db_receipt_id=db_receipt_id
         )
     
     # Step 3: Clean data fields
@@ -410,14 +861,39 @@ async def _backup_check_with_aws_ocr(
         await _save_output(receipt_id, backup_llm_result, timeline, google_ocr_data)
         timeline.end("save_output")
         
+        # Update receipt status
+        if db_receipt_id:
+            try:
+                update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+            except Exception as e:
+                logger.warning(f"Failed to update receipt status: {e}")
+        
         # Save debug files
         await _save_debug_files(
             receipt_id, google_ocr_data, aws_ocr_result,
             first_llm_result, backup_llm_result, image_bytes, filename
         )
         
-        # Update statistics (GPT-4o-mini passed)
-        update_statistics("openai", sum_check_passed=True)
+        # Record API calls for statistics
+        # AWS OCR
+        aws_ocr_duration = _get_duration_from_timeline(timeline, "aws_ocr")
+        record_api_call(
+            call_type="ocr",
+            provider="aws_textract",
+            receipt_id=db_receipt_id,
+            duration_ms=int(aws_ocr_duration) if aws_ocr_duration else None,
+            status="success"
+        )
+        
+        # GPT-4o-mini LLM
+        llm_duration = _get_duration_from_timeline(timeline, "gpt_backup_llm")
+        record_api_call(
+            call_type="llm",
+            provider="openai",
+            receipt_id=db_receipt_id,
+            duration_ms=int(llm_duration) if llm_duration else None,
+            status="success"
+        )
         
         return {
             "success": True,
@@ -430,8 +906,20 @@ async def _backup_check_with_aws_ocr(
         }
     else:
         # Backup check also failed, mark for manual review
-        # Update statistics (GPT-4o-mini failed, needs manual review)
-        update_statistics("openai", sum_check_passed=False, is_manual_review=True)
+        # Note: The GPT backup LLM processing run was already saved with status="pass" above
+        # We don't update it here because the LLM processing itself succeeded, only the sum check failed
+        # The sum check failure is recorded in the error_message and manual review status
+        
+        # Record API call (GPT-4o-mini sum check failed, needs manual review)
+        llm_duration = _get_duration_from_timeline(timeline, "gpt_backup_llm")
+        record_api_call(
+            call_type="llm",
+            provider="openai",
+            receipt_id=db_receipt_id,
+            duration_ms=int(llm_duration) if llm_duration else None,
+            status="failed",
+            error_message="Sum check failed, needs manual review"
+        )
         
         return await _mark_for_manual_review(
             receipt_id=receipt_id,
@@ -442,7 +930,10 @@ async def _backup_check_with_aws_ocr(
             backup_llm_result=backup_llm_result,
             sum_check_details=sum_check_details,
             backup_sum_check_details=backup_sum_check_details,
-            error="Backup sum check also failed"
+            error="Backup sum check also failed",
+            image_bytes=image_bytes,
+            filename=filename,
+            db_receipt_id=db_receipt_id
         )
 
 
@@ -540,13 +1031,42 @@ async def _fallback_to_aws_ocr(
     filename: str,
     receipt_id: str,
     timeline: TimelineRecorder,
-    error: str
+    error: str,
+    db_receipt_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Google OCR failed, fallback to AWS OCR."""
     timeline.start("aws_ocr_fallback")
     try:
         aws_ocr_result = parse_receipt_textract(image_bytes)
         timeline.end("aws_ocr_fallback")
+        
+        # Save AWS OCR processing run to database
+        if db_receipt_id:
+            try:
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="ocr",
+                    model_provider="aws_textract",
+                    model_name=None,  # OCR doesn't have model_name
+                    model_version=None,
+                    input_payload={"image_bytes_length": len(image_bytes)},
+                    output_payload=aws_ocr_result,
+                    output_schema_version=None,  # OCR doesn't have schema version
+                    status="pass",
+                    error_message=None
+                )
+                
+                # Record API call for statistics
+                aws_ocr_duration = _get_duration_from_timeline(timeline, "aws_ocr_fallback")
+                record_api_call(
+                    call_type="ocr",
+                    provider="aws_textract",
+                    receipt_id=db_receipt_id,
+                    duration_ms=int(aws_ocr_duration) if aws_ocr_duration else None,
+                    status="success"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save AWS OCR processing run: {e}")
         
         # Use GPT-4o-mini to process AWS OCR result
         timeline.start("gpt_llm_fallback")
@@ -555,13 +1075,39 @@ async def _fallback_to_aws_ocr(
                 ocr_result=aws_ocr_result,
                 merchant_name=None,
                 ocr_provider="aws_textract",
-                llm_provider="openai"
+                llm_provider="openai",
+                receipt_id=db_receipt_id
             )
             timeline.end("gpt_llm_fallback")
             
             if llm_result is None:
                 logger.error("llm_result is None after processing with GPT-4o-mini fallback")
                 raise ValueError("llm_result cannot be None")
+            
+            # Save LLM processing run to database
+            if db_receipt_id:
+                try:
+                    model_name = settings.openai_model
+                    # Extract RAG metadata from LLM result
+                    rag_metadata = llm_result.get("_metadata", {}).get("rag_metadata", {})
+                    
+                    save_processing_run(
+                        receipt_id=db_receipt_id,
+                        stage="llm",
+                        model_provider="openai",
+                        model_name=model_name,
+                        model_version=None,
+                        input_payload={
+                            "ocr_result": aws_ocr_result,
+                            "rag_metadata": rag_metadata  # Add RAG usage statistics
+                        },
+                        output_payload=llm_result,
+                        output_schema_version="0.1",
+                        status="pass",
+                        error_message=None
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to save LLM processing run: {e}")
             
             # Sum check
             timeline.start("sum_check")
@@ -573,8 +1119,22 @@ async def _fallback_to_aws_ocr(
                 await _save_output(receipt_id, llm_result, timeline, aws_ocr_result)
                 timeline.end("save_output")
                 
-                # Update statistics
-                update_statistics("openai", sum_check_passed=True)
+                # Update receipt status
+                if db_receipt_id:
+                    try:
+                        update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+                    except Exception as e:
+                        logger.warning(f"Failed to update receipt status: {e}")
+                
+                # Record API call
+                llm_duration = _get_duration_from_timeline(timeline, "gpt_llm_fallback")
+                record_api_call(
+                    call_type="llm",
+                    provider="openai",
+                    receipt_id=db_receipt_id,
+                    duration_ms=int(llm_duration) if llm_duration else None,
+                    status="success"
+                )
                 
                 return {
                     "success": True,
@@ -586,8 +1146,16 @@ async def _fallback_to_aws_ocr(
                     "fallback_used": True
                 }
             else:
-                # Update statistics (failed)
-                update_statistics("openai", sum_check_passed=False, is_manual_review=True)
+                # Record API call (failed)
+                llm_duration = _get_duration_from_timeline(timeline, "gpt_llm_fallback")
+                record_api_call(
+                    call_type="llm",
+                    provider="openai",
+                    receipt_id=db_receipt_id,
+                    duration_ms=int(llm_duration) if llm_duration else None,
+                    status="failed",
+                    error_message="Sum check failed, needs manual review"
+                )
                 
                 return await _mark_for_manual_review(
                     receipt_id=receipt_id,
@@ -595,28 +1163,71 @@ async def _fallback_to_aws_ocr(
                     aws_ocr_data=aws_ocr_result,
                     first_llm_result=llm_result,
                     sum_check_details=sum_check_details,
-                    error=f"Google OCR failed, AWS OCR sum check also failed. Original error: {error}"
+                    error=f"Google OCR failed, AWS OCR sum check also failed. Original error: {error}",
+                    image_bytes=image_bytes,
+                    filename=filename,
+                    db_receipt_id=db_receipt_id
                 )
         except Exception as e:
             timeline.end("gpt_llm_fallback")
-            # Update statistics (error)
-            update_statistics("openai", sum_check_passed=False, is_error=True)
+            
+            # Save failed LLM run to database
+            if db_receipt_id:
+                try:
+                    model_name = settings.openai_model
+                    save_processing_run(
+                        receipt_id=db_receipt_id,
+                        stage="llm",
+                        model_provider="openai",
+                        model_name=model_name,
+                        model_version=None,
+                        input_payload={"ocr_result": aws_ocr_result},
+                        output_payload={},
+                        output_schema_version="0.1",
+                        status="fail",
+                        error_message=str(e)
+                    )
+                except Exception as db_error:
+                    logger.warning(f"Failed to save failed LLM run: {db_error}")
+            
+            # Record API call (error)
+            record_api_call(
+                call_type="llm",
+                provider="openai",
+                receipt_id=db_receipt_id,
+                duration_ms=None,
+                status="failed",
+                error_message=str(e)
+            )
             
             return await _mark_for_manual_review(
                 receipt_id=receipt_id,
                 timeline=timeline,
                 aws_ocr_data=aws_ocr_result,
-                error=f"Google OCR failed, GPT LLM also failed: {e}"
+                error=f"Google OCR failed, GPT LLM also failed: {e}",
+                image_bytes=image_bytes,
+                filename=filename,
+                db_receipt_id=db_receipt_id
             )
     except Exception as e:
         timeline.end("aws_ocr_fallback")
-        # Update statistics (error)
-        update_statistics("openai", sum_check_passed=False, is_error=True)
+        # Record API call (error)
+        record_api_call(
+            call_type="ocr",
+            provider="aws_textract",
+            receipt_id=db_receipt_id,
+            duration_ms=None,
+            status="failed",
+            error_message=error
+        )
         
         return await _mark_for_manual_review(
             receipt_id=receipt_id,
             timeline=timeline,
-            error=f"Both OCRs failed. Google: {error}, AWS: {e}"
+            error=f"Both OCRs failed. Google: {error}, AWS: {e}",
+            image_bytes=image_bytes,
+            filename=filename,
+            db_receipt_id=db_receipt_id
         )
 
 
@@ -626,7 +1237,8 @@ async def _fallback_to_other_llm(
     receipt_id: str,
     timeline: TimelineRecorder,
     failed_provider: str,
-    error: str
+    error: str,
+    db_receipt_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """First LLM failed, fallback to another LLM."""
     other_provider = "openai" if failed_provider == "gemini" else "gemini"
@@ -637,13 +1249,42 @@ async def _fallback_to_other_llm(
             ocr_result=google_ocr_data,
             merchant_name=None,
             ocr_provider="google_documentai",
-            llm_provider=other_provider
+            llm_provider=other_provider,
+            receipt_id=db_receipt_id
         )
         timeline.end(f"{other_provider}_llm_fallback")
         
         if llm_result is None:
             logger.error(f"llm_result is None after processing with {other_provider} fallback")
             raise ValueError("llm_result cannot be None")
+        
+        # Save LLM processing run to database
+        if db_receipt_id:
+            try:
+                if other_provider == "gemini":
+                    model_name = settings.gemini_model
+                else:
+                    model_name = settings.openai_model
+                # Extract RAG metadata from LLM result
+                rag_metadata = llm_result.get("_metadata", {}).get("rag_metadata", {})
+                
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="llm",
+                    model_provider=other_provider,
+                    model_name=model_name,
+                    model_version=None,
+                    input_payload={
+                        "ocr_result": google_ocr_data,
+                        "rag_metadata": rag_metadata  # Add RAG usage statistics
+                    },
+                    output_payload=llm_result,
+                    output_schema_version="0.1",
+                    status="pass",
+                    error_message=None
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save LLM processing run: {e}")
         
         # Sum check
         timeline.start("sum_check")
@@ -655,8 +1296,22 @@ async def _fallback_to_other_llm(
             await _save_output(receipt_id, llm_result, timeline, google_ocr_data)
             timeline.end("save_output")
             
-            # Update statistics
-            update_statistics(other_provider, sum_check_passed=True)
+            # Update receipt status
+            if db_receipt_id:
+                try:
+                    update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+                except Exception as e:
+                    logger.warning(f"Failed to update receipt status: {e}")
+            
+            # Record API call
+            llm_duration = _get_duration_from_timeline(timeline, f"{other_provider}_llm_fallback")
+            record_api_call(
+                call_type="llm",
+                provider=other_provider,
+                receipt_id=db_receipt_id,
+                duration_ms=int(llm_duration) if llm_duration else None,
+                status="success"
+            )
             
             return {
                 "success": True,
@@ -668,8 +1323,31 @@ async def _fallback_to_other_llm(
                 "fallback_used": True
             }
         else:
-            # Update statistics (failed)
-            update_statistics(other_provider, sum_check_passed=False, is_manual_review=True)
+            # Sum check failed after fallback LLM, trigger AWS OCR backup check
+            logger.warning(f"Sum check failed for {receipt_id} after {other_provider} fallback, triggering AWS OCR backup check")
+            
+            # Update stage to sum_check_failed
+            if db_receipt_id:
+                try:
+                    update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="sum_check_failed")
+                except Exception as e:
+                    logger.warning(f"Failed to update receipt stage to sum_check_failed: {e}")
+            
+            # Need image_bytes for AWS OCR, but we don't have it in this function
+            # So we'll mark for manual review instead
+            # TODO: Pass image_bytes to this function to enable AWS OCR fallback
+            logger.warning(f"Cannot trigger AWS OCR backup check from _fallback_to_other_llm (image_bytes not available), marking for manual review")
+            
+            # Record API call (failed)
+            llm_duration = _get_duration_from_timeline(timeline, f"{other_provider}_llm_fallback")
+            record_api_call(
+                call_type="llm",
+                provider=other_provider,
+                receipt_id=db_receipt_id,
+                duration_ms=int(llm_duration) if llm_duration else None,
+                status="failed",
+                error_message="Sum check failed, needs manual review"
+            )
             
             return await _mark_for_manual_review(
                 receipt_id=receipt_id,
@@ -677,18 +1355,54 @@ async def _fallback_to_other_llm(
                 google_ocr_data=google_ocr_data,
                 first_llm_result=llm_result,
                 sum_check_details=sum_check_details,
-                error=f"{failed_provider.upper()} failed, {other_provider.upper()} sum check also failed"
+                error=f"{failed_provider.upper()} failed, {other_provider.upper()} sum check also failed",
+                image_bytes=None,  # No image_bytes in this function
+                filename=filename,
+                db_receipt_id=db_receipt_id
             )
     except Exception as e:
         timeline.end(f"{other_provider}_llm_fallback")
-        # Update statistics (error)
-        update_statistics(other_provider, sum_check_passed=False, is_error=True)
+        
+        # Save failed LLM run to database
+        if db_receipt_id:
+            try:
+                if other_provider == "gemini":
+                    model_name = settings.gemini_model
+                else:
+                    model_name = settings.openai_model
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="llm",
+                    model_provider=other_provider,
+                    model_name=model_name,
+                    model_version=None,
+                    input_payload={"ocr_result": google_ocr_data},
+                    output_payload={},
+                    output_schema_version="0.1",
+                    status="fail",
+                    error_message=str(e)
+                )
+            except Exception as db_error:
+                logger.warning(f"Failed to save failed LLM run: {db_error}")
+        
+        # Record API call (error)
+        record_api_call(
+            call_type="llm",
+            provider=other_provider,
+            receipt_id=db_receipt_id,
+            duration_ms=None,
+            status="failed",
+            error_message=error
+        )
         
         return await _mark_for_manual_review(
             receipt_id=receipt_id,
             timeline=timeline,
             google_ocr_data=google_ocr_data,
-            error=f"Both LLMs failed. {failed_provider.upper()}: {error}, {other_provider.upper()}: {e}"
+            error=f"Both LLMs failed. {failed_provider.upper()}: {error}, {other_provider.upper()}: {e}",
+            image_bytes=None,  # No image_bytes in this function
+            filename=filename,
+            db_receipt_id=db_receipt_id
         )
 
 
@@ -703,33 +1417,37 @@ async def _mark_for_manual_review(
     backup_sum_check_details: Optional[Dict[str, Any]] = None,
     error: Optional[str] = None,
     image_bytes: Optional[bytes] = None,
-    filename: Optional[str] = None
+    filename: Optional[str] = None,
+    db_receipt_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Mark for manual review, save all related files."""
+    # Save image for manual review if available
+    if image_bytes and filename:
+        image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+        if image_path and db_receipt_id:
+            try:
+                update_receipt_file_url(db_receipt_id, image_path)
+                logger.info(f"Updated receipt {db_receipt_id} with image path: {image_path}")
+            except Exception as e:
+                logger.warning(f"Failed to update receipt file URL: {e}")
+    
+    # Update receipt status to needs_review
+    if db_receipt_id:
+        try:
+            update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="manual_review")
+        except Exception as e:
+            logger.warning(f"Failed to update receipt status: {e}")
+    
     # Save debug files
     await _save_debug_files(
         receipt_id, google_ocr_data, aws_ocr_data,
         first_llm_result, backup_llm_result, image_bytes, filename
     )
     
-    # Save timeline
-    timeline.start("save_timeline")
-    paths = get_output_paths_for_receipt(receipt_id)
-    try:
-        paths["timeline_dir"].mkdir(parents=True, exist_ok=True)
-    except (PermissionError, OSError) as e:
-        logger.error(f"Failed to create timeline directory {paths['timeline_dir']}: {e}")
-        timeline.end("save_timeline", error=str(e))
-        raise
-    
-    try:
-        with open(paths["timeline_file"], "w", encoding="utf-8") as f:
-            json.dump(timeline.to_dict(), f, indent=2, ensure_ascii=False)
-        timeline.end("save_timeline")
-    except (FileNotFoundError, PermissionError, OSError) as e:
-        logger.error(f"Failed to save timeline file to {paths['timeline_file']}: {e}")
-        timeline.end("save_timeline", error=str(e))
-        raise
+    # Note: Timeline files are no longer saved to disk
+    # Timeline data is still tracked in memory for duration calculations
+    # All data is now stored in the database
+    logger.debug("Skipping timeline file generation (data stored in database)")
     
     # Build manual review result
     manual_review_result = {
@@ -796,25 +1514,10 @@ async def _save_output(
         logger.error(f"Failed to save output JSON to {paths['json_file']}: {e}")
         raise
     
-    # Save timeline
-    try:
-        with open(paths["timeline_file"], "w", encoding="utf-8") as f:
-            json.dump(timeline.to_dict(), f, indent=2, ensure_ascii=False)
-        logger.info(f"Saved timeline: {paths['timeline_file']}")
-    except (FileNotFoundError, PermissionError, OSError) as e:
-        logger.error(f"Failed to save timeline to {paths['timeline_file']}: {e}")
-        raise
-    
-    # Convert to CSV rows and append to daily CSV
-    try:
-        csv_rows = convert_receipt_to_csv_rows(llm_result, user_id=user_id)
-        csv_headers = get_csv_headers()
-        append_to_daily_csv(paths["csv_file"], csv_rows, csv_headers)
-        logger.info(f"Appended {len(csv_rows)} rows to CSV: {paths['csv_file']}")
-    except (FileNotFoundError, PermissionError, OSError) as e:
-        logger.error(f"Failed to append CSV rows to {paths['csv_file']}: {e}")
-        # Don't raise - CSV export failure shouldn't break the workflow
-        logger.warning("Continuing workflow despite CSV export failure")
+    # Note: Timeline and CSV files are no longer saved to disk
+    # All data is now stored in the database (receipts, receipt_processing_runs, api_calls tables)
+    # Timeline data is still tracked in memory for duration calculations
+    logger.debug("Skipping timeline and CSV file generation (data stored in database)")
 
 
 async def _save_debug_files(
@@ -929,10 +1632,7 @@ async def _save_error(
         logger.error(f"Failed to create timeline directory {paths['timeline_dir']}: {e}")
         raise
     
-    timeline_path = paths["timeline_dir"] / f"{receipt_id}_timeline.json"
-    try:
-        with open(timeline_path, "w", encoding="utf-8") as f:
-            json.dump(timeline.to_dict(), f, indent=2, ensure_ascii=False)
-    except (FileNotFoundError, PermissionError, OSError) as e:
-        logger.error(f"Failed to save timeline file to {timeline_path}: {e}")
-        raise
+    # Note: Timeline files are no longer saved to disk
+    # Timeline data is still tracked in memory for duration calculations
+    # All data is now stored in the database
+    logger.debug("Skipping timeline file generation (data stored in database)")
