@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # Output directories (moved to project root)
 # Path(__file__).parent.parent.parent.parent is project root
 # backend/app/core/workflow_processor.py -> backend/app/core -> backend/app -> backend -> project root
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 OUTPUT_ROOT = PROJECT_ROOT / "output"
 INPUT_ROOT = PROJECT_ROOT / "input"
 
