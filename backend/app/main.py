@@ -40,6 +40,9 @@ from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_do
 from .core.workflow_processor import process_receipt_workflow
 from .core.bulk_processor import process_bulk_receipts
 from .models import DocumentAIResultRequest
+from .processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
+from .processors.validation.receipt_partitioner import partition_receipt
+from .processors.validation.coordinate_sum_checker import coordinate_based_sum_check
 import logging
 
 # Configure logging
@@ -747,6 +750,113 @@ async def process_receipt_workflow_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Workflow processing failed: {str(e)}"
+        )
+
+
+@app.post("/api/receipt/coordinate-sum-check")
+async def coordinate_sum_check_endpoint(
+    file: UploadFile = File(...)
+):
+    """
+    Coordinate-based sum check for receipt debugging.
+    
+    This endpoint:
+    1. Calls Google Document AI OCR to get coordinate data
+    2. Partitions receipt into 4 regions (header, items, totals, payment)
+    3. Performs coordinate-based sum check
+    4. Returns formatted vertical addition output for debugging
+    
+    Returns:
+        Dictionary containing:
+        - coordinate_check: Sum check results using coordinates
+        - formatted_output: Vertical addition format for debugging
+        - regions: Partitioned receipt regions
+        - raw_coordinate_data: Raw coordinate data from Document AI
+    """
+    try:
+        # Read file
+        contents = await file.read()
+        mime_type = file.content_type or "image/jpeg"
+        
+        # Call Document AI
+        logger.info(f"Processing receipt for coordinate sum check: {file.filename}")
+        docai_result = parse_receipt_documentai(contents, mime_type=mime_type)
+        
+        # Extract coordinate data
+        coordinate_data = docai_result.get("coordinate_data", {})
+        if not coordinate_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to extract coordinate data from Document AI response"
+            )
+        
+        # Extract text blocks with coordinates
+        blocks = extract_text_blocks_with_coordinates(coordinate_data)
+        
+        # Partition receipt
+        regions = partition_receipt(blocks, coordinate_data)
+        
+        # Perform coordinate-based sum check
+        # We need LLM result for comparison, but for this debug endpoint,
+        # we'll use Document AI entities as a proxy
+        llm_result_proxy = {
+            "receipt": {
+                "subtotal": docai_result.get("subtotal"),
+                "tax": docai_result.get("tax") or 0.0,
+                "total": docai_result.get("total")
+            },
+            "items": docai_result.get("line_items", [])
+        }
+        
+        is_valid, check_details = coordinate_based_sum_check(
+            blocks,
+            regions,
+            llm_result_proxy
+        )
+        
+        # Generate response
+        response = {
+            "success": True,
+            "coordinate_check": check_details,
+            "formatted_output": check_details.get("formatted_output", ""),
+            "regions": {
+                "header": {
+                    "block_count": len(regions.get("header", [])),
+                    "text": "\n".join(b.get("text", "") for b in regions.get("header", [])[:5])
+                },
+                "items": {
+                    "block_count": len(regions.get("items", [])),
+                    "amount_count": sum(1 for b in regions.get("items", []) if b.get("is_amount"))
+                },
+                "totals": {
+                    "block_count": len(regions.get("totals", [])),
+                    "text": "\n".join(b.get("text", "") for b in regions.get("totals", []))
+                },
+                "payment": {
+                    "block_count": len(regions.get("payment", [])),
+                    "text": "\n".join(b.get("text", "") for b in regions.get("payment", [])[:5])
+                }
+            },
+            "markers": {
+                "first_item": regions.get("markers", {}).get("first_item", {}).get("text") if regions.get("markers", {}).get("first_item") else None,
+                "subtotal": regions.get("markers", {}).get("subtotal", {}).get("text") if regions.get("markers", {}).get("subtotal") else None,
+                "total": regions.get("markers", {}).get("total", {}).get("text") if regions.get("markers", {}).get("total") else None
+            },
+            "raw_coordinate_data": {
+                "text_blocks_count": len(coordinate_data.get("text_blocks", [])),
+                "pages_count": len(coordinate_data.get("pages", []))
+            }
+        }
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Coordinate sum check failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Coordinate sum check failed: {str(e)}"
         )
 
 
