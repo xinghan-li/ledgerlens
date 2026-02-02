@@ -104,6 +104,10 @@ def parse_receipt_documentai(image_bytes: bytes, mime_type: str = "image/jpeg") 
         
         # Extract structured data
         parsed_data = _extract_receipt_data(document)
+        
+        # Extract coordinate data for advanced sum checking
+        parsed_data["coordinate_data"] = _extract_coordinate_data(document)
+        
         logger.info(f"Document AI parsing completed successfully")
         
         return parsed_data
@@ -515,5 +519,226 @@ def _extract_line_item(entity) -> Optional[Dict[str, Any]]:
     # If at least has some information, return
     if line_item["product_name"] or line_item["line_total"]:
         return line_item
+    
+    return None
+
+
+def _extract_coordinate_data(document) -> Dict[str, Any]:
+    """
+    Extract coordinate data from Document AI response.
+    
+    Returns:
+        Dictionary containing:
+        - text_blocks: List of text blocks with coordinates
+        - pages: List of pages with layout information
+    """
+    coordinate_data = {
+        "text_blocks": [],
+        "pages": []
+    }
+    
+    try:
+        # Extract from pages
+        if hasattr(document, 'pages') and document.pages:
+            for page_idx, page in enumerate(document.pages):
+                page_data = {
+                    "page_number": page_idx + 1,
+                    "width": page.dimension.width if hasattr(page, 'dimension') else None,
+                    "height": page.dimension.height if hasattr(page, 'dimension') else None,
+                    "blocks": [],
+                    "paragraphs": [],
+                    "lines": [],
+                    "tokens": []
+                }
+                
+                # Extract tokens (most granular)
+                if hasattr(page, 'tokens') and page.tokens:
+                    for token in page.tokens:
+                        if hasattr(token, 'layout') and token.layout:
+                            bbox = _extract_bounding_box(token.layout)
+                            if bbox:
+                                token_data = {
+                                    "text": _get_text_from_layout(token.layout),
+                                    "bounding_box": bbox,
+                                    "confidence": token.layout.confidence if hasattr(token.layout, 'confidence') else None,
+                                    "page_number": page_idx + 1,
+                                    "type": "token"
+                                }
+                                page_data["tokens"].append(token_data)
+                                coordinate_data["text_blocks"].append(token_data)
+                
+                # Extract lines
+                if hasattr(page, 'lines') and page.lines:
+                    for line in page.lines:
+                        if hasattr(line, 'layout') and line.layout:
+                            bbox = _extract_bounding_box(line.layout)
+                            if bbox:
+                                line_data = {
+                                    "text": _get_text_from_layout(line.layout),
+                                    "bounding_box": bbox,
+                                    "confidence": line.layout.confidence if hasattr(line.layout, 'confidence') else None
+                                }
+                                page_data["lines"].append(line_data)
+                
+                # Extract paragraphs
+                if hasattr(page, 'paragraphs') and page.paragraphs:
+                    for para in page.paragraphs:
+                        if hasattr(para, 'layout') and para.layout:
+                            bbox = _extract_bounding_box(para.layout)
+                            if bbox:
+                                para_data = {
+                                    "text": _get_text_from_layout(para.layout),
+                                    "bounding_box": bbox,
+                                    "confidence": para.layout.confidence if hasattr(para.layout, 'confidence') else None
+                                }
+                                page_data["paragraphs"].append(para_data)
+                
+                # Extract blocks
+                if hasattr(page, 'blocks') and page.blocks:
+                    for block in page.blocks:
+                        if hasattr(block, 'layout') and block.layout:
+                            bbox = _extract_bounding_box(block.layout)
+                            if bbox:
+                                block_data = {
+                                    "text": _get_text_from_layout(block.layout),
+                                    "bounding_box": bbox,
+                                    "confidence": block.layout.confidence if hasattr(block.layout, 'confidence') else None
+                                }
+                                page_data["blocks"].append(block_data)
+                
+                coordinate_data["pages"].append(page_data)
+        
+        # Extract entity coordinates
+        if hasattr(document, 'entities') and document.entities:
+            coordinate_data["entities"] = []
+            for entity in document.entities:
+                entity_coords = _extract_entity_coordinates(entity)
+                if entity_coords:
+                    coordinate_data["entities"].append({
+                        "type": entity.type_ if hasattr(entity, 'type_') else None,
+                        "value": _get_entity_value(entity),
+                        "bounding_box": entity_coords,
+                        "confidence": entity.confidence if hasattr(entity, 'confidence') else None
+                    })
+        
+        logger.debug(f"Extracted {len(coordinate_data['text_blocks'])} text blocks with coordinates")
+        
+    except Exception as e:
+        logger.warning(f"Failed to extract coordinate data: {e}")
+        # Return empty structure if extraction fails
+        pass
+    
+    return coordinate_data
+
+
+def _extract_bounding_box(layout) -> Optional[Dict[str, Any]]:
+    """Extract bounding box from layout object."""
+    if not hasattr(layout, 'bounding_poly') or not layout.bounding_poly:
+        return None
+    
+    bbox = layout.bounding_poly
+    
+    # Try normalized_vertices first (preferred)
+    if hasattr(bbox, 'normalized_vertices') and bbox.normalized_vertices:
+        vertices = bbox.normalized_vertices
+        x_coords = [v.x for v in vertices]
+        y_coords = [v.y for v in vertices]
+        
+        return {
+            "normalized_vertices": [{"x": v.x, "y": v.y} for v in vertices],
+            "x": min(x_coords),
+            "y": min(y_coords),
+            "width": max(x_coords) - min(x_coords),
+            "height": max(y_coords) - min(y_coords),
+            "center_x": sum(x_coords) / len(x_coords),
+            "center_y": sum(y_coords) / len(y_coords),
+            "is_normalized": True
+        }
+    
+    # Fallback to vertices (pixel coordinates)
+    elif hasattr(bbox, 'vertices') and bbox.vertices:
+        vertices = bbox.vertices
+        x_coords = [v.x for v in vertices]
+        y_coords = [v.y for v in vertices]
+        
+        return {
+            "vertices": [{"x": v.x, "y": v.y} for v in vertices],
+            "x": min(x_coords),
+            "y": min(y_coords),
+            "width": max(x_coords) - min(x_coords),
+            "height": max(y_coords) - min(y_coords),
+            "center_x": sum(x_coords) / len(x_coords),
+            "center_y": sum(y_coords) / len(y_coords),
+            "is_normalized": False
+        }
+    
+    return None
+
+
+def _get_text_from_layout(layout) -> str:
+    """Extract text from layout object."""
+    if hasattr(layout, 'text_anchor') and layout.text_anchor:
+        if hasattr(layout.text_anchor, 'content'):
+            return layout.text_anchor.content
+        elif hasattr(layout.text_anchor, 'text_segments'):
+            # Text segments contain start_index and end_index
+            # We'd need the full document text to extract, but for now return empty
+            return ""
+    return ""
+
+
+def _extract_entity_coordinates(entity) -> Optional[Dict[str, Any]]:
+    """Extract coordinates from entity (page_anchor or text_anchor)."""
+    # Try page_anchor first
+    if hasattr(entity, 'page_anchor') and entity.page_anchor:
+        if hasattr(entity.page_anchor, 'page_refs') and entity.page_anchor.page_refs:
+            page_ref = entity.page_anchor.page_refs[0]  # Take first reference
+            if hasattr(page_ref, 'bounding_poly') and page_ref.bounding_poly:
+                return _extract_bounding_box_from_poly(page_ref.bounding_poly)
+    
+    # Fallback to text_anchor (less precise)
+    if hasattr(entity, 'text_anchor') and entity.text_anchor:
+        # Text anchor doesn't have direct coordinates, but we can use it to find text position
+        # For now, return None and we'll use text matching instead
+        return None
+    
+    return None
+
+
+def _extract_bounding_box_from_poly(bounding_poly) -> Optional[Dict[str, Any]]:
+    """Extract bounding box from bounding_poly object."""
+    # Try normalized_vertices first
+    if hasattr(bounding_poly, 'normalized_vertices') and bounding_poly.normalized_vertices:
+        vertices = bounding_poly.normalized_vertices
+        x_coords = [v.x for v in vertices]
+        y_coords = [v.y for v in vertices]
+        
+        return {
+            "normalized_vertices": [{"x": v.x, "y": v.y} for v in vertices],
+            "x": min(x_coords),
+            "y": min(y_coords),
+            "width": max(x_coords) - min(x_coords),
+            "height": max(y_coords) - min(y_coords),
+            "center_x": sum(x_coords) / len(x_coords),
+            "center_y": sum(y_coords) / len(y_coords),
+            "is_normalized": True
+        }
+    
+    # Fallback to vertices
+    elif hasattr(bounding_poly, 'vertices') and bounding_poly.vertices:
+        vertices = bounding_poly.vertices
+        x_coords = [v.x for v in vertices]
+        y_coords = [v.y for v in vertices]
+        
+        return {
+            "vertices": [{"x": v.x, "y": v.y} for v in vertices],
+            "x": min(x_coords),
+            "y": min(y_coords),
+            "width": max(x_coords) - min(x_coords),
+            "height": max(y_coords) - min(y_coords),
+            "center_x": sum(x_coords) / len(x_coords),
+            "center_y": sum(y_coords) / len(y_coords),
+            "is_normalized": False
+        }
     
     return None
