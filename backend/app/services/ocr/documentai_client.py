@@ -534,7 +534,8 @@ def _extract_coordinate_data(document) -> Dict[str, Any]:
     """
     coordinate_data = {
         "text_blocks": [],
-        "pages": []
+        "pages": [],
+        "document_text": document.text if hasattr(document, 'text') else ""
     }
     
     try:
@@ -551,34 +552,53 @@ def _extract_coordinate_data(document) -> Dict[str, Any]:
                     "tokens": []
                 }
                 
-                # Extract tokens (most granular)
-                if hasattr(page, 'tokens') and page.tokens:
-                    for token in page.tokens:
-                        if hasattr(token, 'layout') and token.layout:
-                            bbox = _extract_bounding_box(token.layout)
-                            if bbox:
-                                token_data = {
-                                    "text": _get_text_from_layout(token.layout),
-                                    "bounding_box": bbox,
-                                    "confidence": token.layout.confidence if hasattr(token.layout, 'confidence') else None,
-                                    "page_number": page_idx + 1,
-                                    "type": "token"
-                                }
-                                page_data["tokens"].append(token_data)
-                                coordinate_data["text_blocks"].append(token_data)
-                
-                # Extract lines
+                # Extract lines first (better for item extraction)
+                document_text = coordinate_data.get("document_text", "")
                 if hasattr(page, 'lines') and page.lines:
                     for line in page.lines:
                         if hasattr(line, 'layout') and line.layout:
                             bbox = _extract_bounding_box(line.layout)
                             if bbox:
-                                line_data = {
-                                    "text": _get_text_from_layout(line.layout),
-                                    "bounding_box": bbox,
-                                    "confidence": line.layout.confidence if hasattr(line.layout, 'confidence') else None
-                                }
-                                page_data["lines"].append(line_data)
+                                line_text = _get_text_from_layout(line.layout, document_text)
+                                if line_text.strip():  # Only add if text is not empty
+                                    line_data = {
+                                        "text": line_text.strip(),
+                                        "bounding_box": bbox,
+                                        "confidence": line.layout.confidence if hasattr(line.layout, 'confidence') else None,
+                                        "page_number": page_idx + 1,
+                                        "type": "line"
+                                    }
+                                    page_data["lines"].append(line_data)
+                                    coordinate_data["text_blocks"].append(line_data)
+                
+                # Extract tokens (most granular) - as fallback for lines that didn't extract text
+                if hasattr(page, 'tokens') and page.tokens:
+                    for token in page.tokens:
+                        if hasattr(token, 'layout') and token.layout:
+                            bbox = _extract_bounding_box(token.layout)
+                            if bbox:
+                                token_text = _get_text_from_layout(token.layout, document_text)
+                                if token_text.strip():  # Only add if text is not empty
+                                    token_data = {
+                                        "text": token_text.strip(),
+                                        "bounding_box": bbox,
+                                        "confidence": token.layout.confidence if hasattr(token.layout, 'confidence') else None,
+                                        "page_number": page_idx + 1,
+                                        "type": "token"
+                                    }
+                                    page_data["tokens"].append(token_data)
+                                    # Add token if it's not already covered by a line
+                                    # Simple check: if no line overlaps with this token's position
+                                    token_y = bbox.get("y", 0)
+                                    token_x = bbox.get("x", 0)
+                                    is_covered = False
+                                    for existing_line in page_data["lines"]:
+                                        line_y = existing_line.get("bounding_box", {}).get("y", 0)
+                                        if abs(token_y - line_y) < 0.01:  # Same row
+                                            is_covered = True
+                                            break
+                                    if not is_covered:
+                                        coordinate_data["text_blocks"].append(token_data)
                 
                 # Extract paragraphs
                 if hasattr(page, 'paragraphs') and page.paragraphs:
@@ -586,12 +606,14 @@ def _extract_coordinate_data(document) -> Dict[str, Any]:
                         if hasattr(para, 'layout') and para.layout:
                             bbox = _extract_bounding_box(para.layout)
                             if bbox:
-                                para_data = {
-                                    "text": _get_text_from_layout(para.layout),
-                                    "bounding_box": bbox,
-                                    "confidence": para.layout.confidence if hasattr(para.layout, 'confidence') else None
-                                }
-                                page_data["paragraphs"].append(para_data)
+                                para_text = _get_text_from_layout(para.layout, document_text)
+                                if para_text.strip():
+                                    para_data = {
+                                        "text": para_text.strip(),
+                                        "bounding_box": bbox,
+                                        "confidence": para.layout.confidence if hasattr(para.layout, 'confidence') else None
+                                    }
+                                    page_data["paragraphs"].append(para_data)
                 
                 # Extract blocks
                 if hasattr(page, 'blocks') and page.blocks:
@@ -599,12 +621,14 @@ def _extract_coordinate_data(document) -> Dict[str, Any]:
                         if hasattr(block, 'layout') and block.layout:
                             bbox = _extract_bounding_box(block.layout)
                             if bbox:
-                                block_data = {
-                                    "text": _get_text_from_layout(block.layout),
-                                    "bounding_box": bbox,
-                                    "confidence": block.layout.confidence if hasattr(block.layout, 'confidence') else None
-                                }
-                                page_data["blocks"].append(block_data)
+                                block_text = _get_text_from_layout(block.layout, document_text)
+                                if block_text.strip():
+                                    block_data = {
+                                        "text": block_text.strip(),
+                                        "bounding_box": bbox,
+                                        "confidence": block.layout.confidence if hasattr(block.layout, 'confidence') else None
+                                    }
+                                    page_data["blocks"].append(block_data)
                 
                 coordinate_data["pages"].append(page_data)
         
@@ -675,15 +699,39 @@ def _extract_bounding_box(layout) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _get_text_from_layout(layout) -> str:
-    """Extract text from layout object."""
+def _get_text_from_layout(layout, document_text: str = "") -> str:
+    """
+    Extract text from layout object.
+    
+    Tries multiple methods to extract text:
+    1. text_anchor.content (if available)
+    2. text_anchor.text_segments (using document text)
+    3. Returns empty string if no text found
+    
+    Args:
+        layout: Layout object from Document AI
+        document_text: Full document text (for text_segments extraction)
+    """
     if hasattr(layout, 'text_anchor') and layout.text_anchor:
-        if hasattr(layout.text_anchor, 'content'):
+        # Method 1: Direct content
+        if hasattr(layout.text_anchor, 'content') and layout.text_anchor.content:
             return layout.text_anchor.content
-        elif hasattr(layout.text_anchor, 'text_segments'):
-            # Text segments contain start_index and end_index
-            # We'd need the full document text to extract, but for now return empty
-            return ""
+        
+        # Method 2: Text segments (extract from document text)
+        if hasattr(layout.text_anchor, 'text_segments') and layout.text_anchor.text_segments and document_text:
+            text_parts = []
+            for segment in layout.text_anchor.text_segments:
+                if hasattr(segment, 'start_index') and hasattr(segment, 'end_index'):
+                    try:
+                        start_idx = int(segment.start_index) if hasattr(segment.start_index, '__int__') else 0
+                        end_idx = int(segment.end_index) if hasattr(segment.end_index, '__int__') else len(document_text)
+                        if 0 <= start_idx < end_idx <= len(document_text):
+                            text_parts.append(document_text[start_idx:end_idx])
+                    except (ValueError, TypeError):
+                        pass
+            if text_parts:
+                return "".join(text_parts)
+    
     return ""
 
 

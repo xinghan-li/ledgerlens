@@ -1,0 +1,1976 @@
+﻿
+=== Loaded 49 blocks from fixture ===
+
+app.processors.validation.receipt_pipeline_v2 | INFO | Computed dynamic half-line tolerance: 0.01163 (avg height=0.02327)
+app.processors.validation.receipt_pipeline_v2 | INFO | Step 0: Converted 49 blocks to TextBlock objects
+app.processors.validation.receipt_pipeline_v2 | DEBUG | Washed block (no longer amount): Points 20
+app.processors.validation.receipt_pipeline_v2 | DEBUG | Washed block (no longer amount): : 20
+app.processors.validation.receipt_pipeline_v2 | INFO | Step 0b: Applied store config wash_data (chain_id=tnt_supermarket_us)
+app.processors.validation.row_reconstructor | INFO | Built 35 physical rows from 49 blocks
+app.processors.validation.receipt_pipeline_v2 | INFO | Step 1: Built 35 physical rows
+app.processors.validation.column_detector | INFO | Detected 1 amount columns: main column at X=0.7400 (confidence=1.00, 3 blocks)
+app.processors.validation.receipt_pipeline_v2 | INFO | Step 2: Detected main amount column at X=0.7400
+app.processors.validation.region_splitter | INFO | T&T header ends at date/time row 6 (y=0.4723): '01/25/26 12:46:58 PM'
+app.processors.validation.region_splitter | DEBUG | Row 7: T&T items start (index 7)
+app.processors.validation.region_splitter | DEBUG | Row 19: Transition to TOTALS region (found total line)
+app.processors.validation.region_splitter | DEBUG | Row 21: Transition to PAYMENT region (found payment marker)
+app.processors.validation.region_splitter | INFO | Detected membership (two rows): 600089152
+app.processors.validation.region_splitter | INFO | Extracted membership ID: 600089152, removed 2 rows from items
+app.processors.validation.region_splitter | INFO | Region split: Header=7 rows, Items=10 rows, Totals=2 rows, Payment=14 rows
+app.processors.validation.receipt_pipeline_v2 | INFO | Step 3: Split into regions: 10 items, 2 totals
+app.processors.validation.item_extractor_v2 | INFO | [Column Detection] Detected left/right boundary at X=0.5262 (gap: 0.3190 -> 0.7333, size: 0.4144)
+app.processors.validation.item_extractor_v2 | INFO | [Column Detection] Using X=0.5262 as left/right cutoff for all item extraction
+python : --- Logging error ---
+At C:\Users\Xinghan Li\AppData\Local\Temp\ps-script-cd945748-e8df-4495-9bb0-0809cdfc5cd7.ps1:80 char:27
++ ... \LedgerLens\backend; python test/debug_receipt_121422.py 2>&1 | Out-F ...
++                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (--- Logging error ---:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 9: Y_center=0.5301, text='PRODUCE', 1 blocks, 0 amounts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 10: Y_center=0.5445, text='(SALE) GOLDEN DEW PEAR FP $7.72', 2 blocks, 1 amounts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 241, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] === Processing row_id={row.row_id}, amount #{idx+1}/{len(amount_blocks)}: ${amo
+unt_block.amount:.2f} at Y={amount_block.center_y:.4f} ===")
+Message: '[\u6d88\u6d88\u4e50] === Processing row_id=10, amount #1/1: $7.72 at Y=0.5526 ==='
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 253, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): '{row_name_part}'")
+Message: "[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): '(SALE) GOLDEN DEW PEAR'"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 258, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Processing amount ${amount_block.amount:.2f} at Y={amount_block.center_y:.4f}, 
+used_Y={sorted(used_name_y_positions)}")
+Message: '[\u6d88\u6d88\u4e50] Processing amount $7.72 at Y=0.5526, used_Y=[]'
+Arguments: ()
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.5526 y_min=0.4595 y_max=0.5759 right_x=0.5262 scan_rows=0-3
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 3 blocks: ['PRODUCE', '(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b']
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 259, in extract_items
+    full_name = _full_product_name_above_amount(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 741, in _full_product_name_above_am
+ount
+    logger.debug(f"[\u6d88\u6d88\u4e50] Found name at amount line: '{at_text}' at Y={at_mean_y:.4f}")
+Message: "[\u6d88\u6d88\u4e50] Found name at amount line: '(SALE) GOLDEN DEW PEAR' at Y=0.5505"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.5526 y_min=0.4595 y_max=0.5759 right_x=0.5262 scan_rows=0-3
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 3 blocks: ['PRODUCE', '(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b']
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.5526 y_min=0.4595 y_max=0.5759 right_x=0.5262 scan_rows=0-3
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 3 blocks: ['PRODUCE', '(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b']
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] Checking 3 blocks for amount=$7.72 at y=0.5526, y_tolerance=0.0175
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5346, y_dist=0.0180, text='PRODUCE'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5505, y_dist=0.0021, text='(SALE) GOLDEN DEW PEAR'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5685, y_dist=0.0159, text='2.68 lb @ $2.88/1b'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] Found 1 candidates, picked: y_dist=0.0159, validation_err=$0.16, text='2.68 lb @ $2.88/1b'
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 267, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] full_name path: name='{product_name}', Y={name_y_position:.4f}, auxiliary_Ys={a
+uxiliary_y_positions}")
+Message: "[\u6d88\u6d88\u4e50] full_name path: name='(SALE) GOLDEN DEW PEAR', Y=0.5505, auxiliary_Ys=[]"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 381, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Marked product name y={name_y_position:.4f} as used (cannot be used as product 
+name again)")
+Message: '[\u6d88\u6d88\u4e50] Marked product name y=0.5505 as used (cannot be used as product name again)'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=2.68, unit_price=288.0, unit=1/100 lb'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1098, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Added to candidates: validation_error=${validation_error:.2f}")
+Message: '[qty/unit]   \u2192 Added to candidates: validation_error=$0.16'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 408, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Marked qty/unit line y={qty_unit_y:.4f} as used for qty/unit extraction")
+Message: '[\u6d88\u6d88\u4e50] Marked qty/unit line y=0.5685 as used for qty/unit extraction'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 54-56: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 412, in extract_items
+    logger.info(f"[\u6d88\u6d88\u4e50] '{product_name}' (${amount_block.amount:.2f}): qty={qty}, unit={unit}, up={unit_
+price} from '{combined_text[:80]}'")
+Message: "[\u6d88\u6d88\u4e50] 'GOLDEN DEW PEAR' ($7.72): qty=2.68, unit=1/100 lb, up=2.88 from 'PRODUCE (SALE) GOLDEN 
+DEW PEAR 2.68 lb @ $2.88/1b'"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 54-56: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 439, in extract_items
+    logger.info(f"[\u6d88\u6d88\u4e50] Created item '{product_name}': qty={qty} (type={type(qty).__name__}), unit={unit
+}, unit_price={unit_price}")
+Message: "[\u6d88\u6d88\u4e50] Created item 'GOLDEN DEW PEAR': qty=2.68 (type=float), unit=1/100 lb, unit_price=2.88"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 11: Y_center=0.5616, text='2.68 lb @ $2.88/1b', 1 blocks, 0 amounts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 12: Y_center=0.5781, text='JAPANESE SWEET POTATO /lb FP $1.83', 3 blocks, 1 amounts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 241, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] === Processing row_id={row.row_id}, amount #{idx+1}/{len(amount_blocks)}: ${amo
+unt_block.amount:.2f} at Y={amount_block.center_y:.4f} ===")
+Message: '[\u6d88\u6d88\u4e50] === Processing row_id=12, amount #1/1: $1.83 at Y=0.5870 ==='
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 253, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): '{row_name_part}'")
+Message: "[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): 'JAPANESE SWEET POTATO /lb'"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 258, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Processing amount ${amount_block.amount:.2f} at Y={amount_block.center_y:.4f}, 
+used_Y={sorted(used_name_y_positions)}")
+Message: '[\u6d88\u6d88\u4e50] Processing amount $1.83 at Y=0.5870, used_Y=[5505]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 259, in extract_items
+    full_name = _full_product_name_above_amount(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 741, in _full_product_name_above_am
+ount
+app.processors.validation.item_extractor_v2 | DEBUG | [qty conversion] 2.68 lb -> 268 in 1/100 lb
+    logger.debug(f"[\u6d88\u6d88\u4e50] Found name at amount line: '{at_text}' at Y={at_mean_y:.4f}")
+Message: "[\u6d88\u6d88\u4e50] Found name at amount line: 'JAPANESE SWEET POTATO /lb' at Y=0.5852"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 267, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] full_name path: name='{product_name}', Y={name_y_position:.4f}, auxiliary_Ys={a
+uxiliary_y_positions}")
+Message: "[\u6d88\u6d88\u4e50] full_name path: name='JAPANESE SWEET POTATO /lb', Y=0.5852, auxiliary_Ys=[]"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 381, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Marked product name y={name_y_position:.4f} as used (cannot be used as product 
+name again)")
+Message: '[\u6d88\u6d88\u4e50] Marked product name y=0.5852 as used (cannot be used as product name again)'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+app.processors.validation.item_extractor_v2 | DEBUG | Extracted item: 'GOLDEN DEW PEAR' = $7.72 (row 10, block 12)
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.5870 y_min=0.4939 y_max=0.6102 right_x=0.5262 scan_rows=0-5
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $1.83' cx=0.7352 cy=0.5870: x=0.7352>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 7 blocks: ['PRODUCE', '(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b', 'JAPANESE SWEET POTATO', '/lb', '0.92 lb @ $1.99', '0.92']
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.5870 y_min=0.4939 y_max=0.6102 right_x=0.5262 scan_rows=0-5
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=0.92, unit_price=199.0, unit=1/100 lb'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1098, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Added to candidates: validation_error=${validation_error:.2f}")
+Message: '[qty/unit]   \u2192 Added to candidates: validation_error=$0.08'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 408, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Marked qty/unit line y={qty_unit_y:.4f} as used for qty/unit extraction")
+Message: '[\u6d88\u6d88\u4e50] Marked qty/unit line y=0.6031 as used for qty/unit extraction'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 54-56: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 412, in extract_items
+    logger.info(f"[\u6d88\u6d88\u4e50] '{product_name}' (${amount_block.amount:.2f}): qty={qty}, unit={unit}, up={unit_
+price} from '{combined_text[:80]}'")
+Message: "[\u6d88\u6d88\u4e50] 'JAPANESE SWEET POTATO' ($1.83): qty=0.92, unit=1/100 lb, up=1.99 from 'PRODUCE (SALE) G
+OLDEN DEW PEAR 2.68 lb @ $2.88/1b JAPANESE SWEET POTATO /lb 0.92'"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 54-56: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $1.83' cx=0.7352 cy=0.5870: x=0.7352>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 7 blocks: ['PRODUCE', '(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b', 'JAPANESE SWEET POTATO', '/lb', '0.92 lb @ $1.99', '0.92']
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.5870 y_min=0.4939 y_max=0.6102 right_x=0.5262 scan_rows=0-5
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $1.83' cx=0.7352 cy=0.5870: x=0.7352>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 7 blocks: ['PRODUCE', '(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b', 'JAPANESE SWEET POTATO', '/lb', '0.92 lb @ $1.99', '0.92']
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] Checking 7 blocks for amount=$1.83 at y=0.5870, y_tolerance=0.0175
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5346, y_dist=0.0523, text='PRODUCE'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5505, y_dist=0.0365, text='(SALE) GOLDEN DEW PEAR'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Skipping already-used qty/unit block at y=0.5685: '2.68 lb @ $2.88/1b'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5852, y_dist=0.0018, text='JAPANESE SWEET POTATO'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5852, y_dist=0.0018, text='/lb'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6031, y_dist=0.0161, text='0.92 lb @ $1.99'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6091, y_dist=0.0221, text='0.92'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] Found 1 candidates, picked: y_dist=0.0161, validation_err=$0.08, text='0.92 lb @ $1.99'
+app.processors.validation.item_extractor_v2 | DEBUG | [qty conversion] 0.92 lb -> 92 in 1/100 lb
+app.processors.validation.item_extractor_v2 | DEBUG | Extracted item: 'JAPANESE SWEET POTATO' = $1.83 (row 12, block 16)
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.6203 y_min=0.5272 y_max=0.6436 right_x=0.5262 scan_rows=0-7
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $1.83' cx=0.7352 cy=0.5870: x=0.7352>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $4.99' cx=0.7361 cy=0.6203: x=0.7361>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $5.99' cx=0.7356 cy=0.6365: x=0.7356>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 9 blocks: ['PRODUCE', '(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b', 'JAPANESE SWEET POTATO', '/lb', '0.92 lb @ $1.99', '0.92', 'DELI', 'AFC SOYNILK ORIG UNSWEETENED L']
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 439, in extract_items
+    logger.info(f"[\u6d88\u6d88\u4e50] Created item '{product_name}': qty={qty} (type={type(qty).__name__}), unit={unit
+}, unit_price={unit_price}")
+Message: "[\u6d88\u6d88\u4e50] Created item 'JAPANESE SWEET POTATO': qty=0.92 (type=float), unit=1/100 lb, unit_price=1
+.99"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 13: Y_center=0.5980, text='0.92 lb @ $1.99 0.92', 2 blocks, 0 amounts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 14: Y_center=0.6199, text='DELI FP $4.99', 2 blocks, 1 amounts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 241, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] === Processing row_id={row.row_id}, amount #{idx+1}/{len(amount_blocks)}: ${amo
+unt_block.amount:.2f} at Y={amount_block.center_y:.4f} ===")
+Message: '[\u6d88\u6d88\u4e50] === Processing row_id=14, amount #1/1: $4.99 at Y=0.6203 ==='
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 253, in extract_items
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.6203 y_min=0.5272 y_max=0.6436 right_x=0.5262 scan_rows=0-7
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $1.83' cx=0.7352 cy=0.5870: x=0.7352>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $4.99' cx=0.7361 cy=0.6203: x=0.7361>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $5.99' cx=0.7356 cy=0.6365: x=0.7356>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 9 blocks: ['PRODUCE', '(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b', 'JAPANESE SWEET POTATO', '/lb', '0.92 lb @ $1.99', '0.92', 'DELI', 'AFC SOYNILK ORIG UNSWEETENED L']
+    logger.debug(f"[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): '{row_name_part}'")
+Message: "[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): 'DELI'"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 258, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Processing amount ${amount_block.amount:.2f} at Y={amount_block.center_y:.4f}, 
+used_Y={sorted(used_name_y_positions)}")
+Message: '[\u6d88\u6d88\u4e50] Processing amount $4.99 at Y=0.6203, used_Y=[5505, 5852]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 259, in extract_items
+    full_name = _full_product_name_above_amount(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 741, in _full_product_name_above_am
+ount
+    logger.debug(f"[\u6d88\u6d88\u4e50] Found name at amount line: '{at_text}' at Y={at_mean_y:.4f}")
+Message: "[\u6d88\u6d88\u4e50] Found name at amount line: 'DELI AFC SOYNILK ORIG UNSWEETENED L' at Y=0.6303"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 267, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] full_name path: name='{product_name}', Y={name_y_position:.4f}, auxiliary_Ys={a
+uxiliary_y_positions}")
+Message: "[\u6d88\u6d88\u4e50] full_name path: name='DELI AFC SOYNILK ORIG UNSWEETENED L', Y=0.6303, auxiliary_Ys=[]"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 381, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Marked product name y={name_y_position:.4f} as used (cannot be used as product 
+name again)")
+Message: '[\u6d88\u6d88\u4e50] Marked product name y=0.6303 as used (cannot be used as product name again)'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.6203 y_min=0.5272 y_max=0.6436 right_x=0.5262 scan_rows=0-7
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 54-56: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 412, in extract_items
+    logger.info(f"[\u6d88\u6d88\u4e50] '{product_name}' (${amount_block.amount:.2f}): qty={qty}, unit={unit}, up={unit_
+price} from '{combined_text[:80]}'")
+Message: "[\u6d88\u6d88\u4e50] 'AFC SOYNILK ORIG UNSWEETENED L' ($4.99): qty=None, unit=None, up=None from 'PRODUCE (SA
+LE) GOLDEN DEW PEAR 2.68 lb @ $2.88/1b JAPANESE SWEET POTATO /lb 0.92'"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 15: Y_center=0.6229, text='AFC SOYNILK ORIG UNSWEETENED L FP $5.99', 2 blocks, 1 amo
+unts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $1.83' cx=0.7352 cy=0.5870: x=0.7352>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $4.99' cx=0.7361 cy=0.6203: x=0.7361>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $5.99' cx=0.7356 cy=0.6365: x=0.7356>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 9 blocks: ['PRODUCE', '(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b', 'JAPANESE SWEET POTATO', '/lb', '0.92 lb @ $1.99', '0.92', 'DELI', 'AFC SOYNILK ORIG UNSWEETENED L']
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] Checking 9 blocks for amount=$4.99 at y=0.6203, y_tolerance=0.0175
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5346, y_dist=0.0857, text='PRODUCE'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5505, y_dist=0.0698, text='(SALE) GOLDEN DEW PEAR'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Skipping already-used qty/unit block at y=0.5685: '2.68 lb @ $2.88/1b'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5852, y_dist=0.0352, text='JAPANESE SWEET POTATO'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5852, y_dist=0.0352, text='/lb'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Skipping already-used qty/unit block at y=0.6031: '0.92 lb @ $1.99'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6091, y_dist=0.0112, text='0.92'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6279, y_dist=0.0076, text='DELI'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6328, y_dist=0.0125, text='AFC SOYNILK ORIG UNSWEETENED L'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] No candidates found, returning None
+app.processors.validation.item_extractor_v2 | DEBUG | Extracted item: 'AFC SOYNILK ORIG UNSWEETENED L' = $4.99 (row 14, block 20)
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.6365 y_min=0.5434 y_max=0.6597 right_x=0.5262 scan_rows=1-8
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $1.83' cx=0.7352 cy=0.5870: x=0.7352>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $4.99' cx=0.7361 cy=0.6203: x=0.7361>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $5.99' cx=0.7356 cy=0.6365: x=0.7356>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP '$0.00' cx=0.7565 cy=0.6529: x=0.7565>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 9 blocks: ['(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b', 'JAPANESE SWEET POTATO', '/lb', '0.92 lb @ $1.99', '0.92', 'DELI', 'AFC SOYNILK ORIG UNSWEETENED L', '(SALE) GYG NINGBO GLUTINOUS RI']
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 241, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] === Processing row_id={row.row_id}, amount #{idx+1}/{len(amount_blocks)}: ${amo
+unt_block.amount:.2f} at Y={amount_block.center_y:.4f} ===")
+Message: '[\u6d88\u6d88\u4e50] === Processing row_id=15, amount #1/1: $5.99 at Y=0.6365 ==='
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 253, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): '{row_name_part}'")
+Message: "[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): 'AFC SOYNILK ORIG UNSWEETENED L'"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 258, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Processing amount ${amount_block.amount:.2f} at Y={amount_block.center_y:.4f}, 
+used_Y={sorted(used_name_y_positions)}")
+Message: '[\u6d88\u6d88\u4e50] Processing amount $5.99 at Y=0.6365, used_Y=[5505, 5852, 6303]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 259, in extract_items
+    full_name = _full_product_name_above_amount(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 744, in _full_product_name_above_am
+ount
+    logger.debug(f"[\u6d88\u6d88\u4e50] SKIP: '{at_text}' at Y={at_mean_y:.4f} already used")
+Message: "[\u6d88\u6d88\u4e50] SKIP: 'DELI AFC SOYNILK ORIG UNSWEETENED L' at Y=0.6303 already used"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 274, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] full_name returned None, trying fallback paths")
+Message: '[\u6d88\u6d88\u4e50] full_name returned None, trying fallback paths'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 276, in extract_items
+    topmost_result = _topmost_name_line_above_amount(row, amount_block, amount_blocks, section_headers, LINE_Y_EPS, use
+d_name_y_positions)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 644, in _topmost_name_line_above_am
+ount
+    logger.debug(f"[\u6d88\u6d88\u4e50] _topmost_name: amount_y={amount_y:.4f}, found {len(lines)} lines, used_y={sorte
+d(used_y)}")
+Message: '[\u6d88\u6d88\u4e50] _topmost_name: amount_y=0.6365, found 1 lines, used_y=[5505, 5852, 6303]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+app.processors.validation.item_extractor_v2 | DEBUG |   Line 0: Y=0.6328, text='AFC SOYNILK ORIG UNSWEETENED L'
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 276, in extract_items
+    topmost_result = _topmost_name_line_above_amount(row, amount_block, amount_blocks, section_headers, LINE_Y_EPS, use
+d_name_y_positions)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 668, in _topmost_name_line_above_am
+ount
+    logger.debug(f"[\u6d88\u6d88\u4e50] _topmost_name found: '{line_text}' at Y={mean_y:.4f}")
+Message: "[\u6d88\u6d88\u4e50] _topmost_name found: 'AFC SOYNILK ORIG UNSWEETENED L' at Y=0.6328"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 54-56: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 279, in extract_items
+    logger.info(f"[\u6d88\u6d88\u4e50] topmost_name path: name='{topmost_name}', Y={name_y_position:.4f}")
+Message: "[\u6d88\u6d88\u4e50] topmost_name path: name='AFC SOYNILK ORIG UNSWEETENED L', Y=0.6328"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 381, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Marked product name y={name_y_position:.4f} as used (cannot be used as product 
+name again)")
+Message: '[\u6d88\u6d88\u4e50] Marked product name y=0.6328 as used (cannot be used as product name again)'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.6365 y_min=0.5434 y_max=0.6597 right_x=0.5262 scan_rows=1-8
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $1.83' cx=0.7352 cy=0.5870: x=0.7352>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $4.99' cx=0.7361 cy=0.6203: x=0.7361>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $5.99' cx=0.7356 cy=0.6365: x=0.7356>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP '$0.00' cx=0.7565 cy=0.6529: x=0.7565>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 9 blocks: ['(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b', 'JAPANESE SWEET POTATO', '/lb', '0.92 lb @ $1.99', '0.92', 'DELI', 'AFC SOYNILK ORIG UNSWEETENED L', '(SALE) GYG NINGBO GLUTINOUS RI']
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.6365 y_min=0.5434 y_max=0.6597 right_x=0.5262 scan_rows=1-8
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $7.72' cx=0.7333 cy=0.5526: x=0.7333>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $1.83' cx=0.7352 cy=0.5870: x=0.7352>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $4.99' cx=0.7361 cy=0.6203: x=0.7361>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $5.99' cx=0.7356 cy=0.6365: x=0.7356>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP '$0.00' cx=0.7565 cy=0.6529: x=0.7565>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 9 blocks: ['(SALE) GOLDEN DEW PEAR', '2.68 lb @ $2.88/1b', 'JAPANESE SWEET POTATO', '/lb', '0.92 lb @ $1.99', '0.92', 'DELI', 'AFC SOYNILK ORIG UNSWEETENED L', '(SALE) GYG NINGBO GLUTINOUS RI']
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] Checking 9 blocks for amount=$5.99 at y=0.6365, y_tolerance=0.0175
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5505, y_dist=0.0859, text='(SALE) GOLDEN DEW PEAR'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Skipping already-used qty/unit block at y=0.5685: '2.68 lb @ $2.88/1b'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5852, y_dist=0.0513, text='JAPANESE SWEET POTATO'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.5852, y_dist=0.0513, text='/lb'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Skipping already-used qty/unit block at y=0.6031: '0.92 lb @ $1.99'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6091, y_dist=0.0273, text='0.92'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6279, y_dist=0.0086, text='DELI'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6328, y_dist=0.0036, text='AFC SOYNILK ORIG UNSWEETENED L'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6482, y_dist=0.0117, text='(SALE) GYG NINGBO GLUTINOUS RICE BALL'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] No candidates found, returning None
+app.processors.validation.item_extractor_v2 | DEBUG | Extracted item: 'AFC SOYNILK ORIG UNSWEETENED L' = $5.99 (row 15, block 23)
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 54-56: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 412, in extract_items
+    logger.info(f"[\u6d88\u6d88\u4e50] '{product_name}' (${amount_block.amount:.2f}): qty={qty}, unit={unit}, up={unit_
+price} from '{combined_text[:80]}'")
+Message: "[\u6d88\u6d88\u4e50] 'AFC SOYNILK ORIG UNSWEETENED L' ($5.99): qty=None, unit=None, up=None from '(SALE) GOLD
+EN DEW PEAR 2.68 lb @ $2.88/1b JAPANESE SWEET POTATO /lb 0.92 lb @ $1'"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 16: Y_center=0.6376, text='(SALE) GYG NINGBO GLUTINOUS RICE BALL $0.00', 2 blocks, 0
+ amounts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 17: Y_center=0.6665, text='Points 20', 1 blocks, 0 amounts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 239, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row
+.blocks)} blocks, {len(amount_blocks)} amounts")
+Message: "[\u6d88\u6d88\u4e50] Row 18: Y_center=0.6820, text='$20.53', 1 blocks, 1 amounts"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 241, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] === Processing row_id={row.row_id}, amount #{idx+1}/{len(amount_blocks)}: ${amo
+unt_block.amount:.2f} at Y={amount_block.center_y:.4f} ===")
+Message: '[\u6d88\u6d88\u4e50] === Processing row_id=18, amount #1/1: $20.53 at Y=0.6859 ==='
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 253, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): '{row_name_part}'")
+Message: "[\u6d88\u6d88\u4e50] row_name_part (left of amount in current row): ''"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 258, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Processing amount ${amount_block.amount:.2f} at Y={amount_block.center_y:.4f}, 
+used_Y={sorted(used_name_y_positions)}")
+Message: '[\u6d88\u6d88\u4e50] Processing amount $20.53 at Y=0.6859, used_Y=[5505, 5852, 6303, 6328]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 259, in extract_items
+    full_name = _full_product_name_above_amount(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 783, in _full_product_name_above_am
+ount
+    logger.debug(f"[\u6d88\u6d88\u4e50] Found name above amount: '{line_text}' at Y={mean_y:.4f}")
+Message: "[\u6d88\u6d88\u4e50] Found name above amount: '(SALE) GYG NINGBO GLUTINOUS RICE BALL' at Y=0.6482"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.6859 y_min=0.5929 y_max=0.7092 right_x=0.5262 scan_rows=4-10
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 267, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] full_name path: name='{product_name}', Y={name_y_position:.4f}, auxiliary_Ys={a
+uxiliary_y_positions}")
+Message: "[\u6d88\u6d88\u4e50] full_name path: name='(SALE) GYG NINGBO GLUTINOUS RICE BALL', Y=0.6482, auxiliary_Ys=[]"
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 55-57: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 381, in extract_items
+    logger.debug(f"[\u6d88\u6d88\u4e50] Marked product name y={name_y_position:.4f} as used (cannot be used as product 
+name again)")
+Message: '[\u6d88\u6d88\u4e50] Marked product name y=0.6482 as used (cannot be used as product name again)'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1081, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Skipped: y_dist > tolerance")
+Message: '[qty/unit]   \u2192 Skipped: y_dist > tolerance'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 66: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 398, in extract_items
+    qty, unit_price_cents, unit, qty_unit_y = _extract_qty_and_price_from_blocks(
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 1091, in _extract_qty_and_price_fro
+m_blocks
+    logger.info(f"[qty/unit]   \u2192 Extraction result: qty={qty}, unit_price={unit_price}, unit={unit}")
+Message: '[qty/unit]   \u2192 Extraction result: qty=None, unit_price=None, unit=None'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Python312\Lib\logging\__init__.py", line 1163, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 54-56: character maps to <undefined>
+Call stack:
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 45, in <module>
+    main()
+  File "F:\LedgerLens\backend\test\debug_receipt_121422.py", line 36, in main
+    result = process_receipt_pipeline(blocks, {}, store_config=store_config)
+  File "F:\LedgerLens\backend\app\processors\validation\receipt_pipeline_v2.py", line 134, in process_receipt_pipeline
+    items = extract_items(regions, amount_columns, tracker, store_config=store_config, half_line_tolerance=half_line_to
+lerance)
+  File "F:\LedgerLens\backend\app\processors\validation\item_extractor_v2.py", line 412, in extract_items
+    logger.info(f"[\u6d88\u6d88\u4e50] '{product_name}' (${amount_block.amount:.2f}): qty={qty}, unit={unit}, up={unit_
+price} from '{combined_text[:80]}'")
+Message: "[\u6d88\u6d88\u4e50] 'GYG NINGBO GLUTINOUS RICE BALL' ($20.53): qty=None, unit=None, up=None from '0.92 lb @ 
+$1.99 0.92 DELI AFC SOYNILK ORIG UNSWEETENED L (SALE) GYG NINGBO GLUTI'"
+Arguments: ()
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $4.99' cx=0.7361 cy=0.6203: x=0.7361>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $5.99' cx=0.7356 cy=0.6365: x=0.7356>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP '$0.00' cx=0.7565 cy=0.6529: x=0.7565>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP '$20.53' cx=0.7495 cy=0.6859: x=0.7495>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 6 blocks: ['0.92 lb @ $1.99', '0.92', 'DELI', 'AFC SOYNILK ORIG UNSWEETENED L', '(SALE) GYG NINGBO GLUTINOUS RI', 'Points 20']
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.6859 y_min=0.5929 y_max=0.7092 right_x=0.5262 scan_rows=4-10
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $4.99' cx=0.7361 cy=0.6203: x=0.7361>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $5.99' cx=0.7356 cy=0.6365: x=0.7356>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP '$0.00' cx=0.7565 cy=0.6529: x=0.7565>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP '$20.53' cx=0.7495 cy=0.6859: x=0.7495>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 6 blocks: ['0.92 lb @ $1.99', '0.92', 'DELI', 'AFC SOYNILK ORIG UNSWEETENED L', '(SALE) GYG NINGBO GLUTINOUS RI', 'Points 20']
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] amount_y=0.6859 y_min=0.5929 y_max=0.7092 right_x=0.5262 scan_rows=4-10
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $4.99' cx=0.7361 cy=0.6203: x=0.7361>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP 'FP $5.99' cx=0.7356 cy=0.6365: x=0.7356>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP '$0.00' cx=0.7565 cy=0.6529: x=0.7565>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] SKIP '$20.53' cx=0.7495 cy=0.6859: x=0.7495>=right_x
+app.processors.validation.item_extractor_v2 | DEBUG | [left_blocks] Included 6 blocks: ['0.92 lb @ $1.99', '0.92', 'DELI', 'AFC SOYNILK ORIG UNSWEETENED L', '(SALE) GYG NINGBO GLUTINOUS RI', 'Points 20']
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] Checking 6 blocks for amount=$20.53 at y=0.6859, y_tolerance=0.0175
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Skipping already-used qty/unit block at y=0.6031: '0.92 lb @ $1.99'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6091, y_dist=0.0768, text='0.92'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6279, y_dist=0.0581, text='DELI'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6328, y_dist=0.0531, text='AFC SOYNILK ORIG UNSWEETENED L'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6482, y_dist=0.0378, text='(SALE) GYG NINGBO GLUTINOUS RICE BALL'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit] Block at y=0.6737, y_dist=0.0122, text='Points 20'
+app.processors.validation.item_extractor_v2 | INFO | [qty/unit extraction] No candidates found, returning None
+app.processors.validation.item_extractor_v2 | DEBUG | Extracted item: 'GYG NINGBO GLUTINOUS RICE BALL' = $20.53 (row 18, block 26)
+app.processors.validation.item_extractor_v2 | INFO | Extracted 5 items from 10 item rows
+app.processors.validation.receipt_pipeline_v2 | INFO | Step 4: Extracted 5 items
+app.processors.validation.totals_extractor | DEBUG | [Totals] Scanning 2 totals_rows, main_x=0.7400, tolerance=0.0200
+app.processors.validation.totals_extractor | DEBUG | [Totals] Row 19: Y=0.7018, text='TOTAL $20.53', amounts=['$20.53@X=0.7500']
+app.processors.validation.totals_extractor | DEBUG | [Totals] Row 19 contains 'TOTAL' keyword: 'TOTAL $20.53'
+app.processors.validation.totals_extractor | DEBUG | [Totals] Row 19: _find_amount_in_row returned TextBlock(text='$20.53', x=0.7083333134651184, y=0.6947916746139526, center_x=0.75, center_y=0.7023437470197678, is_amount=True, amount=20.53, block_id=27, width=0.08333337306976318, height=0.015104174613952637, raw_data={'text': '$20.53', 'x': 0.7083333134651184, 'y': 0.6947916746139526, 'width': 0.08333337306976318, 'height': 0.015104174613952637, 'center_x': 0.75, 'center_y': 0.7023437470197678, 'confidence': 0.9821741580963135, 'is_amount': True, 'amount': 20.53, 'page_number': 1})
+app.processors.validation.totals_extractor | INFO | Found TOTAL: $20.53 at row 19
+app.processors.validation.totals_extractor | DEBUG | [Totals] Row 20: Y=0.7087, text='American Express', amounts=[]
+app.processors.validation.receipt_pipeline_v2 | INFO | Step 5: Found 0 middle amounts
+app.processors.validation.receipt_pipeline_v2 | INFO | Step 6: Extracted tax=$0.00 (0 tax lines), 0 fees
+app.processors.validation.receipt_pipeline_v2 | INFO | Step 7: Totals validation: FAILED
+
+=== RESULT ===
+Success: False
+Items: 5
+  1. GOLDEN DEW PEAR qty=26800 unit=1/100 lb up=288 total=772
+  2. JAPANESE SWEET POTATO qty=9200 unit=1/100 lb up=199 total=183
+  3. AFC SOYNILK ORIG UNSWEETENED L qty=1 unit=None up=None total=499
+  4. AFC SOYNILK ORIG UNSWEETENED L qty=1 unit=None up=None total=599
+  5. GYG NINGBO GLUTINOUS RICE BALL qty=1 unit=None up=None total=2053

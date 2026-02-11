@@ -5,6 +5,15 @@ This module implements a flexible tag-based RAG system where:
 1. Tags are detected from OCR text and merchant names
 2. RAG snippets are loaded for matched tags
 3. Snippets are combined into final prompts
+
+TODO: Performance Optimizations (Future)
+- [ ] 倒排索引优化：当规则达到 1 万条时，需要创建 tag_inverted_index 表
+  预建倒排索引，将匹配性能从 O(n) 降低到 O(1) 或 O(log n)
+  详见：backend/development_log/2026-01-31_log.md "RAG 系统优化 TODO"
+  
+- [ ] Redis 缓存：多实例部署时需要使用 Redis 作为分布式缓存
+  实现缓存 TTL 和自动刷新机制
+  详见：backend/development_log/2026-01-31_log.md "RAG 系统优化 TODO"
 """
 import logging
 import re
@@ -22,7 +31,14 @@ _cache_populated = False
 
 
 def _populate_cache():
-    """Populate cache with tags, snippets, and matching rules from database."""
+    """
+    Populate cache with tags, snippets, and matching rules from database.
+    
+    TODO: Redis Cache Optimization
+    - 当前实现：简单的内存缓存，多实例部署时不同步
+    - 未来优化：使用 Redis 作为分布式缓存，支持 TTL 和自动刷新
+    - 详见：backend/development_log/2026-01-31_log.md "RAG 系统优化 TODO - Redis 缓存"
+    """
     global _cache_populated, _tag_cache, _snippet_cache, _matching_rules_cache
     
     if _cache_populated:

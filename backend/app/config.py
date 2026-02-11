@@ -136,8 +136,17 @@ class Settings(BaseSettings):
             "to allow comparison of results. Set to 'true', '1', 'yes', or 'on' to enable."
         )
     )
+    enable_debug_logs: bool = Field(
+        default=True,
+        alias="ENABLE_DEBUG_LOGS",
+        description=(
+            "Enable detailed debug logging for coordinate sum check and pipeline processing. "
+            "Set to 'false', '0', 'no', or 'off' to disable in production. "
+            "When disabled, detailed debug logs (like formatted output, usage tracker) will not be printed."
+        )
+    )
     
-    @field_validator('allow_duplicate_for_debug', mode='before')
+    @field_validator('allow_duplicate_for_debug', 'enable_debug_logs', mode='before')
     @classmethod
     def parse_bool_from_string(cls, v: Any) -> bool:
         """Parse boolean from string environment variable."""

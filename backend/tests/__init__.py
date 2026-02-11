@@ -1,1 +1,3 @@
-# Tests directory
+"""
+Test package for LedgerLens backend.
+"""

@@ -50,3 +50,8 @@ service_account/
 
 # Logs
 *.log
+
+
+# Test folder
+input/
+output/

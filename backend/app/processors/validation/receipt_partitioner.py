@@ -22,7 +22,8 @@ SUBTOTAL_MARKERS = [
 TOTAL_MARKERS = [
     "TOTAL", "Total", "TOTAL AMOUNT", "Total Amount",
     "TOTAL DUE", "Total Due", "AMOUNT DUE", "Amount Due",
-    "GRAND TOTAL", "Grand Total"
+    "GRAND TOTAL", "Grand Total",
+    "TOTAL SALES", "Total Sales", "TOTAL SALES:", "Total Sales:"
 ]
 
 PAYMENT_MARKERS = [
@@ -89,35 +90,68 @@ def partition_receipt(
             }
             logger.info("No SUBTOTAL marker found, inferred from last item position")
     
-    # Determine boundaries
-    first_item_y = first_item_block.get("y", 0) if first_item_block else 0.1
-    subtotal_y = subtotal_block.get("y", 0.5) if subtotal_block else 0.5
-    total_y = total_block.get("y", 0.9) if total_block else 0.9
+    # Determine boundaries (use center_y if available, otherwise y)
+    def get_y(block: Optional[Dict[str, Any]], default: float) -> float:
+        if not block:
+            return default
+        return block.get("center_y") or block.get("y", default)
     
-    # Partition blocks by Y coordinate
-    regions = {
-        "header": [
-            b for b in blocks 
-            if b.get("y", 0) < first_item_y
-        ],
-        "items": [
-            b for b in blocks 
-            if first_item_y <= b.get("y", 0) < subtotal_y
-        ],
-        "totals": [
-            b for b in blocks 
-            if subtotal_y <= b.get("y", 0) < total_y
-        ],
-        "payment": [
-            b for b in blocks 
-            if b.get("y", 0) >= total_y
-        ],
-        "markers": {
-            "first_item": first_item_block,
-            "subtotal": subtotal_block,
-            "total": total_block
-        }
+    first_item_y = get_y(first_item_block, 0.1)
+    subtotal_y = get_y(subtotal_block, 0.5)
+    total_y = get_y(total_block, 0.9)
+    
+    # CRITICAL: If first_item is None, try to infer it from amount blocks
+    # Items region should contain blocks with amounts that are above subtotal
+    if not first_item_block and subtotal_block:
+        # Find the first amount block above subtotal that looks like an item
+        # Items typically have amounts in a reasonable range ($0.01 - $1000)
+        from .coordinate_extractor import extract_amount_blocks
+        amount_blocks = extract_amount_blocks(blocks)
+        
+        for block in amount_blocks:
+            block_y = get_y(block, 1.0)
+            amount = block.get("amount", 0)
+            
+            # Must be above subtotal
+            if block_y >= subtotal_y:
+                continue
+            
+            # Amount should be reasonable for a product price
+            if not (0.01 <= amount <= 1000):
+                continue
+            
+            # Check if there's text nearby (product name)
+            block_x = block.get("x", 0)
+            has_text_nearby = False
+            for other_block in blocks:
+                other_y = other_block.get("y", 0)
+                other_x = other_block.get("x", 0)
+                if (abs(other_y - block_y) < 0.01 and 
+                    other_x < block_x - 0.05 and
+                    not other_block.get("is_amount") and
+                    len(other_block.get("text", "").strip()) > 2):
+                    has_text_nearby = True
+                    break
+            
+            # This looks like the first item
+            first_item_block = block
+            first_item_y = get_y(first_item_block, 0.1)
+            logger.info(f"Inferred first_item from amount block: '{block.get('text', '')}' at Y={first_item_y:.4f}")
+            break
+    
+    # Use relative positioning to handle S-folded receipts
+    # This ensures each region is correctly identified even with different offsets
+    from .relative_positioning import partition_by_relative_position
+    
+    markers_dict = {
+        "first_item": first_item_block,
+        "subtotal": subtotal_block,
+        "total": total_block
     }
+    
+    # Partition using relative positioning (handles S-folding offsets)
+    regions = partition_by_relative_position(blocks, markers_dict, use_relative=True)
+    regions["markers"] = markers_dict
     
     # Log partition summary
     logger.info(

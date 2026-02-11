@@ -1,7 +1,7 @@
 """
 Google Gemini LLM Client: Call Google Gemini API for receipt parsing.
 """
-import google.generativeai as genai
+import google.genai as genai
 from ...config import settings
 from typing import Dict, Any, Optional
 import logging
@@ -12,27 +12,28 @@ logger = logging.getLogger(__name__)
 # Thread-safe state management
 import asyncio
 _lock = asyncio.Lock()
-_client_configured = False
+_client = None
 
 
-async def _configure_client():
+async def _get_client():
     """
-    Configure Gemini client (only needs to be called once).
+    Get or create Gemini client (only needs to be called once).
     
     Note: This function is async and uses a lock to ensure thread safety.
     """
-    global _client_configured
+    global _client
     
     async with _lock:
-        if not _client_configured:
+        if _client is None:
             if not settings.gemini_api_key:
                 raise ValueError(
                     "GEMINI_API_KEY environment variable must be set"
                 )
             
-            genai.configure(api_key=settings.gemini_api_key)
-            _client_configured = True
+            _client = genai.Client(api_key=settings.gemini_api_key)
             logger.info("Google Gemini client configured")
+        
+        return _client
 
 
 async def parse_receipt_with_gemini(
@@ -55,7 +56,7 @@ async def parse_receipt_with_gemini(
     Returns:
         Parsed JSON data
     """
-    await _configure_client()
+    client = await _get_client()
     model = model or settings.gemini_model
     
     # Add debug logs to confirm the model being used
@@ -63,28 +64,43 @@ async def parse_receipt_with_gemini(
     logger.info(f"Using Gemini model: {model}")
     
     try:
-        # Create GenerativeModel
-        generative_model = genai.GenerativeModel(model)
-        
-        # Merge system_message and user_message (Gemini doesn't directly support system message)
-        # Solution: Put system_message at the beginning of user_message
+        # Merge system_message and user_message
+        # In the new API, we can use system_instruction parameter
         combined_message = f"{system_message}\n\n{user_message}"
         
-        # Configure generation parameters
-        generation_config = {
-            "temperature": temperature,
-            "response_mime_type": "application/json",  # Force JSON output
-        }
+        # Configure generation parameters using new API
+        generation_config = genai.types.GenerationConfig(
+            temperature=temperature,
+            response_mime_type="application/json",  # Force JSON output
+        )
         
         logger.info(f"Calling Google Gemini API with model: {model}")
         
-        # Call API
-        response = generative_model.generate_content(
-            combined_message,
-            generation_config=generation_config
+        # Call API using the new google.genai API
+        response = client.models.generate_content(
+            model=model,
+            contents=combined_message,
+            config=generation_config
         )
         
-        content = response.text.strip()
+        # Extract text from response
+        # The new API structure may be different
+        if hasattr(response, 'text'):
+            content = response.text.strip()
+        elif hasattr(response, 'candidates') and response.candidates:
+            # Fallback: try to get text from candidates
+            if hasattr(response.candidates[0], 'content'):
+                if hasattr(response.candidates[0].content, 'parts'):
+                    content = response.candidates[0].content.parts[0].text.strip()
+                elif hasattr(response.candidates[0].content, 'text'):
+                    content = response.candidates[0].content.text.strip()
+                else:
+                    raise ValueError("Unexpected response format from Gemini API")
+            else:
+                raise ValueError("Unexpected response format from Gemini API")
+        else:
+            raise ValueError("Unexpected response format from Gemini API")
+        
         logger.info("Google Gemini API call successful")
         
         # Parse JSON (Gemini sometimes wraps it with ```json)

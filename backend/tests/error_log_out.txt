@@ -1,0 +1,5 @@
+error_log count: 3
+  0 OCR duplicate bbox: multiple blocks share same coordinates, text=['JAPANESE SWEET POTATO', '/lb'], needs LLM review
+  1 OCR duplicate bbox: multiple blocks share same coordinates, text=['Total points in this transaction: 20', 'balance'], needs LLM review
+  2 qty/unit line '0.92 lb @ $1.99' missing /lb suffix but math matches (qty×up≈line total), needs LLM confirmation
+Items: ['GOLDEN DEW PEAR', 'JAPANESE SWEET POTATO', 'AFC SOYMILK ORIG UNSWEETENED L', 'GYG NINGBO GLUTINOUS RICE BALL']

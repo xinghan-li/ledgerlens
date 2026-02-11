@@ -9,8 +9,8 @@ from .base import ReceiptPipeline, PipelineStage
 # Import processors (organized by function, not by stage!)
 from ..processors.text.data_cleaner import clean_llm_result
 from ..processors.enrichment.address_matcher import correct_address
-from ..processors.merchants.implementations.tt_supermarket import clean_tt_receipt_items
-from ..processors.validation.sum_checker import check_receipt_sums
+from ..processors.stores.tnt_supermarket import clean_tnt_receipt_items
+from ..processors.core.sum_checker import check_receipt_sums
 
 
 def validate_wrapper(llm_result):
@@ -40,7 +40,7 @@ class StandardPipeline(ReceiptPipeline):
             ),
             PipelineStage(
                 name="merchant_processing",
-                processor=clean_tt_receipt_items,
+                processor=clean_tnt_receipt_items,
                 required=False,
                 skip_on_error=True
             ),

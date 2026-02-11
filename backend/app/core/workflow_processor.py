@@ -22,7 +22,7 @@ from ..services.ocr.documentai_client import parse_receipt_documentai
 from ..services.ocr.textract_client import parse_receipt_textract
 from ..services.llm.gemini_rate_limiter import check_gemini_available, record_gemini_request
 from ..services.llm.receipt_llm_processor import process_receipt_with_llm_from_ocr
-from ..processors.validation.sum_checker import check_receipt_sums, apply_field_conflicts_resolution
+from ..processors.core.sum_checker import check_receipt_sums, apply_field_conflicts_resolution
 from ..services.llm.llm_client import parse_receipt_with_llm
 from ..prompts.prompt_manager import format_prompt, get_default_prompt
 from ..config import settings
@@ -37,9 +37,12 @@ from ..services.database.supabase_client import (
 )
 import shutil
 from ..exporters.csv_exporter import convert_receipt_to_csv_rows, append_to_daily_csv, get_csv_headers
-from ..processors.merchants.implementations.tt_supermarket import clean_tt_receipt_items
+from ..processors.stores.tnt_supermarket import clean_tnt_receipt_items
 from ..processors.enrichment.address_matcher import correct_address
 from ..processors.text.data_cleaner import clean_llm_result
+from ..processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
+from ..processors.validation.pipeline import process_receipt_pipeline
+from ..processors.validation.store_config_loader import get_store_config_for_receipt
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +462,42 @@ async def process_receipt_workflow(
         # Save Google OCR result (temporarily not saved, will save when needed)
         google_ocr_data = google_ocr_result
         
+        # Step 1.5: Run Initial Parse (rule-based extraction before LLM)
+        timeline.start("initial_parse")
+        initial_parse_result = None
+        try:
+            # Extract coordinate data from Document AI response
+            coordinate_data = google_ocr_result.get("coordinate_data", {})
+            if coordinate_data:
+                # Extract text blocks with coordinates
+                blocks = extract_text_blocks_with_coordinates(coordinate_data, apply_receipt_body_filter=True)
+                
+                # Get merchant name from OCR
+                merchant_name = google_ocr_result.get("merchant_name", "")
+                
+                # Load store config
+                store_config = get_store_config_for_receipt(merchant_name, blocks=blocks)
+                
+                # Run rule-based pipeline
+                initial_parse_result = process_receipt_pipeline(
+                    blocks=blocks,
+                    llm_result={},  # No LLM result yet
+                    store_config=store_config,
+                    merchant_name=merchant_name
+                )
+                
+                logger.info(f"Initial parse completed: success={initial_parse_result.get('success')}, "
+                           f"method={initial_parse_result.get('method')}, "
+                           f"items={len(initial_parse_result.get('items', []))}")
+            else:
+                logger.warning("No coordinate data in OCR result, skipping initial parse")
+                
+        except Exception as e:
+            logger.warning(f"Initial parse failed: {e}")
+            # Don't fail the entire workflow if initial parse fails
+        finally:
+            timeline.end("initial_parse")
+        
         # Step 2: Decide which LLM to use
         gemini_available, gemini_reason = await check_gemini_available()
         
@@ -480,7 +519,7 @@ async def process_receipt_workflow(
             except Exception as e:
                 logger.warning(f"Failed to update receipt stage to llm_primary: {e}")
         
-        # Step 3: LLM processing
+        # Step 3: LLM processing (with initial parse result)
         timeline.start(f"{llm_provider}_llm")
         try:
             first_llm_result = await process_receipt_with_llm_from_ocr(
@@ -488,7 +527,8 @@ async def process_receipt_workflow(
                 merchant_name=None,
                 ocr_provider="google_documentai",
                 llm_provider=llm_provider,
-                receipt_id=db_receipt_id
+                receipt_id=db_receipt_id,
+                initial_parse_result=initial_parse_result  # Pass initial parse result to LLM
             )
             timeline.end(f"{llm_provider}_llm")
             
@@ -569,7 +609,7 @@ async def process_receipt_workflow(
         
         # Step 4.5: Apply T&T-specific cleaning rules (remove membership lines, extract card number)
         timeline.start("tt_cleaning")
-        first_llm_result = clean_tt_receipt_items(first_llm_result)
+        first_llm_result = clean_tnt_receipt_items(first_llm_result)
         timeline.end("tt_cleaning")
         
         # Step 4.6: Correct address using fuzzy matching against canonical database
@@ -842,7 +882,7 @@ async def _backup_check_with_aws_ocr(
     
     # Step 3.5: Apply T&T cleaning on backup result
     timeline.start("tt_cleaning_backup")
-    backup_llm_result = clean_tt_receipt_items(backup_llm_result)
+    backup_llm_result = clean_tnt_receipt_items(backup_llm_result)
     timeline.end("tt_cleaning_backup")
     
     # Step 3.6: Correct address
