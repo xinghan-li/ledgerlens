@@ -9,7 +9,7 @@ Rate Limiter Middleware
 """
 import time
 import logging
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from collections import defaultdict
 from threading import Lock
 from fastapi import HTTPException, Depends
@@ -162,10 +162,69 @@ class RateLimiter:
 # 全局 rate limiter 实例
 _rate_limiter = RateLimiter(max_requests=10, window_seconds=60)
 
+# 用户等级缓存（避免频繁查询数据库）
+# 格式: {user_id: (user_class, expire_time)}
+_user_class_cache: Dict[str, Tuple[str, float]] = {}
+_user_class_cache_lock = Lock()
+_USER_CLASS_CACHE_TTL = 300  # 5 分钟 TTL
+
 
 def get_rate_limiter() -> RateLimiter:
     """获取全局 rate limiter 实例"""
     return _rate_limiter
+
+
+def _get_user_class_cached(user_id: str) -> str:
+    """
+    获取用户等级（带缓存）
+    
+    缓存 TTL: 5 分钟
+    好处：减少数据库查询，提高性能
+    权衡：用户等级变更最多延迟 5 分钟生效
+    
+    Args:
+        user_id: 用户 ID
+        
+    Returns:
+        user_class: "super_admin", "admin", "premium", "free"
+    """
+    now = time.time()
+    
+    # 检查缓存
+    with _user_class_cache_lock:
+        if user_id in _user_class_cache:
+            user_class, expire_time = _user_class_cache[user_id]
+            if now < expire_time:
+                logger.debug(f"User class cache hit for {user_id}: {user_class}")
+                return user_class
+            else:
+                # 缓存过期，删除
+                del _user_class_cache[user_id]
+    
+    # 缓存未命中，查询数据库
+    from ..services.database.supabase_client import _get_client
+    
+    try:
+        supabase = _get_client()
+        res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
+        
+        if not res.data:
+            logger.warning(f"User {user_id} not found in database")
+            user_class = "free"  # 默认为 free
+        else:
+            user_class = res.data[0].get("user_class", "free")
+        
+        # 更新缓存
+        with _user_class_cache_lock:
+            _user_class_cache[user_id] = (user_class, now + _USER_CLASS_CACHE_TTL)
+            logger.debug(f"User class cached for {user_id}: {user_class}")
+        
+        return user_class
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch user class for {user_id}: {e}")
+        # 发生错误时，假设为 free（安全起见）
+        return "free"
 
 
 async def check_workflow_rate_limit(user_id: str) -> str:
@@ -195,19 +254,9 @@ async def check_workflow_rate_limit(user_id: str) -> str:
         ):
             ...
     """
-    from ..services.database.supabase_client import _get_client
-    
     try:
-        # 1. 获取用户等级
-        supabase = _get_client()
-        res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
-        
-        if not res.data:
-            logger.warning(f"User {user_id} not found in database")
-            # 用户不存在，应用限流（安全起见）
-            user_class = "free"
-        else:
-            user_class = res.data[0].get("user_class", "free")
+        # 1. 获取用户等级（使用缓存）
+        user_class = _get_user_class_cached(user_id)
         
         # 2. super_admin 和 admin 不限制
         if user_class in ("super_admin", "admin"):
@@ -265,6 +314,27 @@ async def check_workflow_rate_limit(user_id: str) -> str:
             status_code=500,
             detail="Failed to check rate limit"
         )
+
+
+def clear_user_class_cache(user_id: Optional[str] = None):
+    """
+    清理用户等级缓存
+    
+    用途：
+    - 用户等级变更后立即生效
+    - 测试时清理缓存
+    - 管理接口调用
+    
+    Args:
+        user_id: 如果提供，只清理该用户；如果为 None，清理所有缓存
+    """
+    with _user_class_cache_lock:
+        if user_id is None:
+            _user_class_cache.clear()
+            logger.info("Cleared all user class cache")
+        elif user_id in _user_class_cache:
+            del _user_class_cache[user_id]
+            logger.info(f"Cleared user class cache for {user_id}")
 
 
 def add_rate_limit_headers(user_id: str) -> Dict[str, str]:

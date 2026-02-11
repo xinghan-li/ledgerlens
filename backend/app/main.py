@@ -1332,7 +1332,7 @@ async def initial_parse(file: UploadFile = File(...)):
             import json
             import glob
             
-            test_fixtures_dir = Path(__file__).parent.parent / "test" / "fixtures"
+            test_fixtures_dir = Path(__file__).parent.parent / "tests" / "fixtures"
             test_fixtures_dir.mkdir(parents=True, exist_ok=True)
             
             # Generate filename: YYYYMMDD_HHMMSS_{counter}.json
