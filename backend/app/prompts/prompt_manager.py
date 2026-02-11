@@ -88,7 +88,8 @@ Key requirements:
 4. Sum of all line_totals must ≈ total (tolerance: ±0.01)
 5. If information is missing or uncertain, set to null and document in tbd
 6. Do not hallucinate or guess values
-7. **IMPORTANT**: If you see package discount patterns (e.g., "2/$9.00"), follow the tag-based instructions - do NOT validate quantity × unit_price = line_total for those items"""
+7. **IMPORTANT**: If you see package discount patterns (e.g., "2/$9.00"), follow the tag-based instructions - do NOT validate quantity × unit_price = line_total for those items
+8. **NEW**: If an Initial Parse Result is provided, use it as a reference to reduce hallucination. The initial parse is from a rule-based system that extracts items, totals, and validation from OCR coordinates. Cross-check your extraction with the initial parse result, but correct any OCR errors you find in product names."""
 
 
 def _get_default_prompt_template() -> str:
@@ -229,11 +230,12 @@ def format_prompt(
     store_chain_id: Optional[str] = None,
     location_id: Optional[str] = None,
     state: Optional[str] = None,
-    country_code: Optional[str] = None
+    country_code: Optional[str] = None,
+    initial_parse_result: Optional[Dict[str, Any]] = None
 ) -> tuple[str, str, Dict[str, Any]]:
     """
     Format prompt, prepare to send to LLM.
-    Now supports tag-based RAG system.
+    Now supports tag-based RAG system and initial parse result.
     
     Args:
         raw_text: Original receipt text
@@ -244,6 +246,7 @@ def format_prompt(
         location_id: Store location ID for location-based tag detection (optional)
         state: State/province code for location-based tag detection (optional)
         country_code: Country code for location-based tag detection (optional)
+        initial_parse_result: Optional rule-based extraction result to guide LLM (optional)
         
     Returns:
         (system_message, user_message, rag_metadata) tuple
@@ -330,14 +333,48 @@ def format_prompt(
         output_schema = output_schema or _get_default_output_schema()
         output_schema_str = json.dumps(output_schema, indent=2, ensure_ascii=False)
     
+    # Add initial parse result to user message if available
+    initial_parse_str = ""
+    if initial_parse_result and initial_parse_result.get("success"):
+        # Create a simplified version for LLM (exclude ocr_blocks to save tokens)
+        initial_parse_summary = {
+            "method": initial_parse_result.get("method"),
+            "chain_id": initial_parse_result.get("chain_id"),
+            "store": initial_parse_result.get("store"),
+            "address": initial_parse_result.get("address"),
+            "items": initial_parse_result.get("items", []),
+            "totals": initial_parse_result.get("totals", {}),
+            "validation": initial_parse_result.get("validation", {})
+        }
+        initial_parse_str = f"""
+
+## Initial Parse Result (Rule-Based Extraction):
+We have already run a rule-based parser on the OCR data. Please use this as a reference along with the raw OCR text to generate the final structured JSON. This initial parse helps reduce hallucination.
+
+```json
+{json.dumps(initial_parse_summary, indent=2, ensure_ascii=False)}
+```
+
+**IMPORTANT**: The initial parse result above is from our rule-based system. It may not be 100% accurate due to OCR errors, but it provides a good starting point. Please:
+1. Verify item names, quantities, and prices against the raw text
+2. Correct any OCR errors you find (e.g., "SAMUCAS" → "SAMOSAS", "IKKA" → "TIKKA")
+3. If the initial parse found items and totals, use them as guidance but cross-check with raw text
+4. If validation in initial parse failed, investigate and correct the extraction
+"""
+        rag_metadata["initial_parse_provided"] = True
+        rag_metadata["initial_parse_method"] = initial_parse_result.get("method")
+        rag_metadata["initial_parse_items_count"] = len(initial_parse_result.get("items", []))
+    else:
+        rag_metadata["initial_parse_provided"] = False
+    
     # Format user message
     user_message = prompt_template.format(
         raw_text=raw_text,
         trusted_hints=trusted_hints_str,
         output_schema=output_schema_str
-    )
+    ) + initial_parse_str
     
-    return system_message, user_message
+    return system_message, user_message, rag_metadata
 
 
 def clear_cache():

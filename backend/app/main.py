@@ -28,6 +28,7 @@ from typing import List, Optional
 from .services.ocr.vision_client import ocr_document_bytes
 from .services.database.supabase_client import get_test_user_id
 from .services.auth.jwt_auth import get_current_user, get_current_user_optional
+from .middleware.rate_limiter import check_workflow_rate_limit
 from .services.rag.rag_manager import (
     create_tag, get_tag, list_tags, update_tag,
     create_snippet, list_snippets,
@@ -40,6 +41,11 @@ from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_do
 from .core.workflow_processor import process_receipt_workflow
 from .core.bulk_processor import process_bulk_receipts
 from .models import DocumentAIResultRequest
+from .processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
+from .processors.validation.receipt_body_detector import filter_blocks_by_receipt_body, get_receipt_body_bounds
+from .processors.validation.receipt_partitioner import partition_receipt
+from .processors.validation.coordinate_sum_checker import coordinate_based_sum_check
+from .processors.validation.pipeline import process_receipt_pipeline
 import logging
 
 # Configure logging
@@ -125,7 +131,7 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
+@app.get("/health", tags=["System"])
 async def health():
     """Health check endpoint."""
     return {"status": "ok"}
@@ -138,7 +144,7 @@ class AuthorizationRequest(BaseModel):
     user_id: str  # Supabase user UID
 
 
-@app.post("/api/auth/authorization")
+@app.post("/api/auth/authorization", tags=["Authentication"])
 async def get_authorization_token(request: AuthorizationRequest):
     """
     Generate JWT token for a user by UID (Development only).
@@ -389,7 +395,7 @@ async def get_authorization_token(request: AuthorizationRequest):
         )
 
 
-@app.post("/api/receipt/goog-ocr", response_model=ReceiptOCRResponse)
+@app.post("/api/receipt/goog-ocr", response_model=ReceiptOCRResponse, tags=["Receipts - OCR Model"])
 async def ocr_receipt_google_vision(file: UploadFile = File(...)):
     """
     Perform OCR using Google Cloud Vision API.
@@ -436,7 +442,7 @@ async def ocr_receipt_google_vision(file: UploadFile = File(...)):
     )
 
 
-@app.post("/api/receipt/goog-ocr-dai")
+@app.post("/api/receipt/goog-ocr-dai", tags=["Receipts - OCR Model"])
 async def parse_receipt_with_documentai(file: UploadFile = File(...)):
     """
     Parse receipt image using Google Document AI Expense Parser.
@@ -487,7 +493,7 @@ async def parse_receipt_with_documentai(file: UploadFile = File(...)):
         )
 
 
-@app.post("/api/receipt/amzn-ocr")
+@app.post("/api/receipt/amzn-ocr", tags=["Receipts - OCR Model"])
 async def parse_receipt_with_textract(file: UploadFile = File(...)):
     """
     Parse receipt image using AWS Textract.
@@ -540,7 +546,7 @@ async def parse_receipt_with_textract(file: UploadFile = File(...)):
         )
 
 
-@app.post("/api/receipt/openai-llm")
+@app.post("/api/receipt/openai-llm", tags=["Receipts - LLM Model"])
 async def process_receipt_with_openai_llm_endpoint(request: DocumentAIResultRequest):
     """
     Process OCR results using OpenAI LLM (supports multiple OCR providers).
@@ -611,7 +617,7 @@ async def process_receipt_with_openai_llm_endpoint(request: DocumentAIResultRequ
         )
 
 
-@app.post("/api/receipt/gemini-llm")
+@app.post("/api/receipt/gemini-llm", tags=["Receipts - LLM Model"])
 async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequest):
     """
     Process OCR results using Google Gemini LLM (supports multiple OCR providers).
@@ -683,13 +689,18 @@ async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequ
         )
 
 
-@app.post("/api/receipt/workflow")
+@app.post("/api/receipt/workflow", tags=["Receipts - Other"])
 async def process_receipt_workflow_endpoint(
     file: UploadFile = File(...),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
+    _rate_limit_check: str = Depends(check_workflow_rate_limit)
 ):
     """
     Complete receipt processing workflow.
+    
+    Rate Limit:
+    - super_admin and admin: No limit
+    - Other user classes: 10 requests per minute
     
     Workflow:
     1. Google Document AI OCR
@@ -750,7 +761,200 @@ async def process_receipt_workflow_endpoint(
         )
 
 
-@app.post("/api/receipt/workflow-bulk", dependencies=[Depends(get_current_user)])
+@app.post("/api/receipt/coordinate-sum-check", tags=["Receipts - Other"])
+async def coordinate_sum_check_endpoint(
+    file: UploadFile = File(...)
+):
+    """
+    Coordinate-based sum check for receipt debugging.
+    
+    This endpoint:
+    1. Calls Google Document AI OCR to get coordinate data
+    2. Partitions receipt into 4 regions (header, items, totals, payment)
+    3. Performs coordinate-based sum check
+    4. Returns formatted vertical addition output for debugging
+    
+    Returns:
+        Dictionary containing:
+        - coordinate_check: Sum check results using coordinates
+        - formatted_output: Vertical addition format for debugging
+        - regions: Partitioned receipt regions
+        - raw_coordinate_data: Raw coordinate data from Document AI
+    """
+    try:
+        # Read file
+        contents = await file.read()
+        mime_type = file.content_type or "image/jpeg"
+        
+        # Call Document AI
+        logger.info(f"Processing receipt for coordinate sum check: {file.filename}")
+        docai_result = parse_receipt_documentai(contents, mime_type=mime_type)
+        
+        # Extract coordinate data
+        coordinate_data = docai_result.get("coordinate_data", {})
+        if not coordinate_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to extract coordinate data from Document AI response"
+            )
+        
+        # Extract text blocks with coordinates
+        blocks = extract_text_blocks_with_coordinates(coordinate_data)
+        
+        # Partition receipt
+        regions = partition_receipt(blocks, coordinate_data)
+        
+        # Perform coordinate-based sum check
+        # We need LLM result for comparison, but for this debug endpoint,
+        # we'll use Document AI entities as a proxy
+        # Note: Items are now extracted directly from coordinates, not from LLM result
+        llm_result_proxy = {
+            "receipt": {
+                "subtotal": docai_result.get("subtotal"),
+                "tax": docai_result.get("tax") or 0.0,
+                "total": docai_result.get("total")
+            },
+            "items": []  # Items will be extracted from coordinates, not from here
+        }
+        
+        is_valid, check_details = coordinate_based_sum_check(
+            blocks,
+            regions,
+            llm_result_proxy
+        )
+        
+        # Print formatted output to console for debugging (only if debug logs enabled)
+        from .config import settings
+        formatted_output = check_details.get("formatted_output", "")
+        if formatted_output and settings.enable_debug_logs:
+            logger.info("=" * 60)
+            logger.info("Coordinate Sum Check - Formatted Output:")
+            logger.info("=" * 60)
+            # Print each line separately so it displays correctly in console
+            for line in formatted_output.split('\n'):
+                logger.info(line)
+            logger.info("=" * 60)
+        
+        # Generate response (formatted_output is already in check_details, no need to duplicate)
+        response = {
+            "success": True,
+            "coordinate_check": check_details,
+            "regions": {
+                "header": {
+                    "block_count": len(regions.get("header", [])),
+                    "text": "\n".join(b.get("text", "") for b in regions.get("header", [])[:5])
+                },
+                "items": {
+                    "block_count": len(regions.get("items", [])),
+                    "amount_count": sum(1 for b in regions.get("items", []) if b.get("is_amount"))
+                },
+                "totals": {
+                    "block_count": len(regions.get("totals", [])),
+                    "text": "\n".join(b.get("text", "") for b in regions.get("totals", []))
+                },
+                "payment": {
+                    "block_count": len(regions.get("payment", [])),
+                    "text": "\n".join(b.get("text", "") for b in regions.get("payment", [])[:5])
+                }
+            },
+            "markers": {
+                "first_item": regions.get("markers", {}).get("first_item", {}).get("text") if regions.get("markers", {}).get("first_item") else None,
+                "subtotal": regions.get("markers", {}).get("subtotal", {}).get("text") if regions.get("markers", {}).get("subtotal") else None,
+                "total": regions.get("markers", {}).get("total", {}).get("text") if regions.get("markers", {}).get("total") else None
+            },
+            "raw_coordinate_data": {
+                "text_blocks_count": len(coordinate_data.get("text_blocks", [])),
+                "pages_count": len(coordinate_data.get("pages", [])),
+                "all_text_blocks": [
+                    {
+                        "text": b.get("text", ""),
+                        "x": round(b.get("x", 0), 4),
+                        "y": round(b.get("y", 0), 4),
+                        "center_x": round(b.get("center_x", 0), 4) if b.get("center_x") else None,
+                        "center_y": round(b.get("center_y", 0), 4) if b.get("center_y") else None,
+                        "is_amount": b.get("is_amount", False),
+                        "amount": round(b.get("amount", 0), 2) if b.get("amount") else None
+                    }
+                    for b in blocks[:200]  # Limit to first 200 blocks to avoid huge response
+                ]
+            }
+        }
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Coordinate sum check failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Coordinate sum check failed: {str(e)}"
+        )
+
+
+def _block_to_json(b: dict) -> dict:
+    """Serialize a text block for JSON response (text, center_x, center_y, is_amount, amount)."""
+    return {
+        "text": b.get("text", ""),
+        "center_x": round(b.get("center_x", 0), 4),
+        "center_y": round(b.get("center_y", 0), 4),
+        "is_amount": b.get("is_amount", False),
+        "amount": round(b.get("amount", 0), 2) if b.get("amount") is not None else None,
+    }
+
+
+@app.post("/api/receipt/body-detector", tags=["Receipts - Other"])
+async def receipt_body_detector_endpoint(file: UploadFile = File(..., description="Receipt image (JPEG or PNG)")):
+    """
+    Receipt body detector: upload a JPEG/PNG, get JSON with the estimated receipt body box and which blocks are inside vs dropped.
+    Use this to verify that all valid receipt content is inside the new bounds (and nothing important was dropped).
+    """
+    if file.content_type not in ("image/jpeg", "image/jpg", "image/png"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only JPEG or PNG images are supported.",
+        )
+    contents = await file.read()
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    mime_type = file.content_type or "image/jpeg"
+    try:
+        docai_result = parse_receipt_documentai(contents, mime_type=mime_type)
+        coordinate_data = docai_result.get("coordinate_data", {})
+        if not coordinate_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to extract coordinate data from Document AI response",
+            )
+        all_blocks = extract_text_blocks_with_coordinates(coordinate_data, apply_receipt_body_filter=False)
+        bounds = get_receipt_body_bounds(all_blocks)
+        blocks_inside = filter_blocks_by_receipt_body(all_blocks)
+        left_bound = bounds.get("left_bound", 0)
+        right_bound = bounds.get("right_bound", 1)
+        y_keep_min = bounds.get("y_keep_min", 0)
+        blocks_dropped = [
+            b for b in all_blocks
+            if not (b.get("center_y", 0) >= y_keep_min and left_bound <= b.get("center_x", 0) <= right_bound)
+        ]
+        return {
+            "success": True,
+            "bounds": bounds,
+            "count_inside": len(blocks_inside),
+            "count_dropped": len(blocks_dropped),
+            "blocks_inside": [_block_to_json(b) for b in blocks_inside],
+            "blocks_dropped": [_block_to_json(b) for b in blocks_dropped],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Receipt body detector failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Receipt body detector failed: {str(e)}",
+        )
+
+
+@app.post("/api/receipt/workflow-bulk", dependencies=[Depends(get_current_user)], tags=["Receipts - Other"])
 async def process_receipt_workflow_bulk_endpoint(
     files: List[UploadFile] = File(...),
     user_id: str = Depends(get_current_user)
@@ -865,7 +1069,7 @@ def require_admin(user_id: str = Depends(get_current_user)) -> str:
 
 
 # Tag Management
-@app.get("/api/rag/tags")
+@app.get("/api/rag/tags", tags=["RAG"])
 async def list_rag_tags(
     is_active: Optional[bool] = None,
     user_id: str = Depends(require_admin)
@@ -879,7 +1083,7 @@ async def list_rag_tags(
     return {"success": True, "tags": tags}
 
 
-@app.post("/api/rag/tags")
+@app.post("/api/rag/tags", tags=["RAG"])
 async def create_rag_tag(
     tag_name: str,
     tag_type: str,
@@ -909,7 +1113,7 @@ async def create_rag_tag(
         raise HTTPException(status_code=500, detail=f"Failed to create tag: {str(e)}")
 
 
-@app.get("/api/rag/tags/{tag_name}")
+@app.get("/api/rag/tags/{tag_name}", tags=["RAG"])
 async def get_rag_tag(
     tag_name: str,
     user_id: str = Depends(require_admin)
@@ -925,7 +1129,7 @@ async def get_rag_tag(
     return {"success": True, "tag": tag}
 
 
-@app.put("/api/rag/tags/{tag_name}")
+@app.put("/api/rag/tags/{tag_name}", tags=["RAG"])
 async def update_rag_tag(
     tag_name: str,
     description: Optional[str] = None,
@@ -954,7 +1158,7 @@ async def update_rag_tag(
 
 
 # Snippet Management
-@app.get("/api/rag/tags/{tag_name}/snippets")
+@app.get("/api/rag/tags/{tag_name}/snippets", tags=["RAG"])
 async def list_rag_snippets(
     tag_name: str,
     user_id: str = Depends(require_admin)
@@ -968,7 +1172,7 @@ async def list_rag_snippets(
     return {"success": True, "snippets": snippets}
 
 
-@app.post("/api/rag/tags/{tag_name}/snippets")
+@app.post("/api/rag/tags/{tag_name}/snippets", tags=["RAG"])
 async def create_rag_snippet(
     tag_name: str,
     snippet_type: str,
@@ -1001,7 +1205,7 @@ async def create_rag_snippet(
 
 
 # Matching Rule Management
-@app.get("/api/rag/tags/{tag_name}/matching-rules")
+@app.get("/api/rag/tags/{tag_name}/matching-rules", tags=["RAG"])
 async def list_rag_matching_rules(
     tag_name: str,
     user_id: str = Depends(require_admin)
@@ -1015,7 +1219,7 @@ async def list_rag_matching_rules(
     return {"success": True, "matching_rules": rules}
 
 
-@app.post("/api/rag/tags/{tag_name}/matching-rules")
+@app.post("/api/rag/tags/{tag_name}/matching-rules", tags=["RAG"])
 async def create_rag_matching_rule(
     tag_name: str,
     match_type: str,
@@ -1045,3 +1249,173 @@ async def create_rag_matching_rule(
     except Exception as e:
         logger.error(f"Failed to create matching rule: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create matching rule: {str(e)}")
+
+
+@app.post("/api/receipt/initial-parse", tags=["Receipts - Other"])
+async def initial_parse(file: UploadFile = File(...)):
+    """
+    Initial parse: row-based receipt pipeline (structured parse with optional store config).
+    
+    This endpoint uses the pipeline architecture:
+    1. Physical row reconstruction
+    2. Statistical column detection
+    3. Region splitting
+    4. Item extraction with multi-line support
+    5. Totals sequence extraction
+    6. Tax/fee classification
+    7. Math validation
+    8. Amount usage tracking (消消乐)
+    
+    Returns:
+        Dictionary containing:
+        - success: Whether validation passed
+        - items: Extracted items
+        - totals: Subtotal, tax, fees, total
+        - validation: Validation results
+        - usage_tracker: Amount usage summary
+        - formatted_output: Vertical addition format for debugging
+    """
+    try:
+        # Read file
+        contents = await file.read()
+        mime_type = file.content_type or "image/jpeg"
+        
+        # Call Document AI to get coordinate data
+        from .services.ocr.documentai_client import parse_receipt_documentai
+        docai_result = parse_receipt_documentai(contents, mime_type)
+        
+        # Extract coordinate_data (same as old endpoint: text_blocks live under coordinate_data)
+        coordinate_data = docai_result.get("coordinate_data", {})
+        if not coordinate_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to extract coordinate data from Document AI response"
+            )
+        
+        # Extract text blocks with coordinates (all then filter for receipt body so we can log included/dropped)
+        from .processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
+        from .processors.validation.receipt_body_detector import filter_blocks_by_receipt_body, get_receipt_body_bounds
+        all_blocks = extract_text_blocks_with_coordinates(coordinate_data, apply_receipt_body_filter=False)
+        blocks = filter_blocks_by_receipt_body(all_blocks)
+        receipt_body_bounds = get_receipt_body_bounds(all_blocks)
+        left_b = receipt_body_bounds.get("left_bound", 0)
+        right_b = receipt_body_bounds.get("right_bound", 1)
+        y_keep_min = receipt_body_bounds.get("y_keep_min", 0)
+        dropped_blocks = [
+            b for b in all_blocks
+            if not (b.get("center_y", 0) >= y_keep_min and left_b <= b.get("center_x", 0) <= right_b)
+        ]
+        dropped_blocks.sort(key=lambda b: (b.get("center_y", 0), b.get("center_x", 0)))
+        receipt_body_dropped_count = len(dropped_blocks)
+
+        # Load store config by merchant name (config-driven pipeline)
+        from .processors.validation.store_config_loader import get_store_config_for_receipt
+        merchant_name = docai_result.get("merchant_name") or ""
+        store_config = get_store_config_for_receipt(merchant_name, blocks=blocks)
+        if store_config:
+            logger.info(f"Using store config: chain_id={store_config.get('chain_id', '')}")
+
+        # Create LLM result proxy (for expected values)
+        llm_result_proxy = {
+            "receipt": {
+                "subtotal": docai_result.get("subtotal"),
+                "tax": docai_result.get("tax") or 0.0,
+                "total": docai_result.get("total")
+            },
+            "items": []
+        }
+
+        # Auto-save test fixture for debugging (blocks + chain_id)
+        try:
+            from datetime import datetime
+            from pathlib import Path
+            import json
+            import glob
+            
+            test_fixtures_dir = Path(__file__).parent.parent / "tests" / "fixtures"
+            test_fixtures_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate filename: YYYYMMDD_HHMMSS_{counter}.json
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            existing = list(test_fixtures_dir.glob(f"{timestamp}_*.json"))
+            counter = len(existing) + 1
+            fixture_filename = f"{timestamp}_{counter}.json"
+            fixture_path = test_fixtures_dir / fixture_filename
+            
+            fixture_data = {
+                "chain_id": store_config.get("chain_id") if store_config else None,
+                "merchant_name": merchant_name,
+                "timestamp": datetime.now().isoformat(),
+                "blocks": blocks
+            }
+            
+            with open(fixture_path, "w", encoding="utf-8") as f:
+                json.dump(fixture_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"✓ Auto-saved test fixture: {fixture_path.name}")
+        except Exception as e:
+            # Don't fail the request if fixture save fails
+            logger.warning(f"Failed to save test fixture: {e}")
+        
+        # Process using new pipeline (with optional store config and merchant_name)
+        result = process_receipt_pipeline(blocks, llm_result_proxy, store_config=store_config, merchant_name=merchant_name)
+        
+        # Print formatted output to console for debugging (only if debug logs enabled)
+        from .config import settings
+        formatted_output = result.get("formatted_output", "")
+        if formatted_output and settings.enable_debug_logs:
+            logger.info("=" * 60)
+            logger.info("Pipeline V2 - Formatted Output:")
+            logger.info("=" * 60)
+            for line in formatted_output.split('\n'):
+                logger.info(line)
+            logger.info("=" * 60)
+        
+        # Print usage tracker summary (only if debug logs enabled)
+        usage_summary = result.get("usage_tracker", {})
+        if usage_summary and settings.enable_debug_logs:
+            logger.info("=" * 60)
+            logger.info("Amount Usage Tracker Summary:")
+            logger.info(f"Total used: {usage_summary.get('total_used', 0)}")
+            logger.info(f"Role distribution: {usage_summary.get('role_distribution', {})}")
+            logger.info("=" * 60)
+
+        # Print OCR and region info (only if debug logs enabled) — unified format: line_no, x, y, amt, included, text; section separators
+        ocr_regions = result.get("ocr_and_regions", {})
+        if ocr_regions and settings.enable_debug_logs:
+            logger.info("=" * 60)
+            logger.info("OCR & Regions (line_no, x, y, amt, receipt body included, text):")
+            logger.info("Receipt body: %d inside, %d dropped", len(blocks), receipt_body_dropped_count)
+            ac = ocr_regions.get("amount_column", {})
+            logger.info("Amount column: main_x=%s, tolerance=%s — %s", ac.get("main_x"), ac.get("tolerance"), ac.get("note", ""))
+            section_rows_detail = ocr_regions.get("section_rows_detail", [])
+            line_no = 0
+            for sec_idx, sec in enumerate(section_rows_detail):
+                logger.info("---------- %s ----------", sec.get("label", sec.get("section", "")))
+                for row in sec.get("rows", []):
+                    for blk in row.get("blocks", []):
+                        line_no += 1
+                        x = blk.get("x", 0) / 10000.0  # Convert back from integer
+                        y = blk.get("y", 0) / 10000.0  # Convert back from integer
+                        amt = blk.get("is_amount", False)
+                        text = (blk.get("text") or "")[:80]
+                        logger.info("  [%d] x=%.4f y=%.4f amt=%s included=T | %s", line_no, x, y, "T" if amt else "F", repr(text))
+                # Separator after each section (e.g. after last header row, before Items)
+                if sec_idx + 1 < len(section_rows_detail):
+                    logger.info("----------")
+            if dropped_blocks:
+                logger.info("---------- Dropped (outside receipt body) ----------")
+                for b in dropped_blocks:
+                    line_no += 1
+                    x = b.get("center_x", 0)  # Original blocks still have center_x/center_y
+                    y = b.get("center_y", 0)
+                    amt = b.get("is_amount", False)
+                    text = ((b.get("text") or "")[:80])
+                    logger.info("  [%d] x=%.4f y=%.4f amt=%s included=F | %s", line_no, x, y, "T" if amt else "F", repr(text))
+            logger.info("=" * 60)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in initial-parse: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")

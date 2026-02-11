@@ -50,7 +50,8 @@ async def process_receipt_with_llm_from_ocr(
     merchant_name: Optional[str] = None,
     ocr_provider: str = "unknown",
     llm_provider: str = "openai",
-    receipt_id: Optional[str] = None
+    receipt_id: Optional[str] = None,
+    initial_parse_result: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Unified LLM processing function that accepts any normalized OCR result.
@@ -60,12 +61,15 @@ async def process_receipt_with_llm_from_ocr(
     2. Unified validation logic (regardless of OCR source)
     3. Merchant-specific rules only need one set (targeting raw_text)
     4. Support multiple LLM providers (OpenAI, Gemini)
+    5. Can use initial parse result (rule-based extraction) to guide LLM
     
     Args:
         ocr_result: OCR result (can be any format, will be automatically normalized)
         merchant_name: Optional merchant name (if known)
         ocr_provider: OCR provider (for auto-detection, e.g., "google_documentai", "aws_textract")
         llm_provider: LLM provider ("openai" or "gemini")
+        receipt_id: Optional receipt ID for database tracking
+        initial_parse_result: Optional rule-based extraction result to guide LLM
         
     Returns:
         Structured receipt data
@@ -179,7 +183,8 @@ async def process_receipt_with_llm_from_ocr(
         store_chain_id=chain_id,
         location_id=location_id,
         state=location_state,
-        country_code=location_country
+        country_code=location_country,
+        initial_parse_result=initial_parse_result  # Pass initial parse result to prompt
     )
     
     # Step 5: Call LLM (read corresponding config from environment variables based on llm_provider)
