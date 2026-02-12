@@ -16,6 +16,9 @@ from fastapi import HTTPException, Depends
 
 logger = logging.getLogger(__name__)
 
+# Import get_current_user for dependency injection
+from ..services.auth.jwt_auth import get_current_user
+
 
 class RateLimiter:
     """
@@ -227,7 +230,7 @@ def _get_user_class_cached(user_id: str) -> str:
         return "free"
 
 
-async def check_workflow_rate_limit(user_id: str) -> str:
+async def check_workflow_rate_limit(user_id: str = Depends(get_current_user)) -> str:
     """
     FastAPI dependency: 检查 workflow API 的速率限制
     
@@ -236,7 +239,7 @@ async def check_workflow_rate_limit(user_id: str) -> str:
     - 其他所有 user_class: 每分钟 10 次
     
     Args:
-        user_id: 用户 ID（从 get_current_user 获取）
+        user_id: 用户 ID（从 get_current_user 依赖注入）
         
     Returns:
         user_id（如果通过检查）
@@ -249,9 +252,9 @@ async def check_workflow_rate_limit(user_id: str) -> str:
         @app.post("/api/receipt/workflow")
         async def workflow(
             file: UploadFile = File(...),
-            user_id: str = Depends(get_current_user),
             _rate_limit: str = Depends(check_workflow_rate_limit)
         ):
+            # user_id 会自动从 check_workflow_rate_limit 中获取
             ...
     """
     try:

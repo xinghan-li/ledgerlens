@@ -1,5 +1,6 @@
 -- ============================================
 -- Migration 008: Update current_stage to more granular values for better debugging
+-- ⚠️ DEPRECATED - DO NOT RUN ON FRESH DATABASES
 -- ============================================
 -- This migration updates the current_stage column in receipts table to support
 -- more granular stage values for better debugging and troubleshooting.

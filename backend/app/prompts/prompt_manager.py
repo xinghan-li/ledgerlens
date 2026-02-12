@@ -9,7 +9,7 @@ from ..config import settings
 from typing import Optional, Dict, Any
 import logging
 import json
-from .tag_based_rag import detect_tags_from_ocr, combine_rag_into_prompt
+from .tag_based_rag import detect_tags_from_ocr, combine_rag_into_prompt, load_rag_snippets
 
 logger = logging.getLogger(__name__)
 

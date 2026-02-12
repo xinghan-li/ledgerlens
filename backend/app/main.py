@@ -34,6 +34,11 @@ from .services.rag.rag_manager import (
     create_snippet, list_snippets,
     create_matching_rule, list_matching_rules
 )
+from .services.categorization.receipt_categorizer import (
+    categorize_receipt,
+    categorize_receipts_batch,
+    can_categorize_receipt
+)
 from .models import ReceiptOCRResponse
 from .services.ocr.documentai_client import parse_receipt_documentai
 from .services.ocr.textract_client import parse_receipt_textract
@@ -692,8 +697,7 @@ async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequ
 @app.post("/api/receipt/workflow", tags=["Receipts - Other"])
 async def process_receipt_workflow_endpoint(
     file: UploadFile = File(...),
-    user_id: str = Depends(get_current_user),
-    _rate_limit_check: str = Depends(check_workflow_rate_limit)
+    user_id: str = Depends(check_workflow_rate_limit)  # check_workflow_rate_limit 现在会返回 user_id
 ):
     """
     Complete receipt processing workflow.
@@ -1419,3 +1423,117 @@ async def initial_parse(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Error in initial-parse: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+
+
+# ============================================
+# Categorization Endpoints
+# ============================================
+
+class CategorizeReceiptRequest(BaseModel):
+    receipt_id: str
+    force: Optional[bool] = False
+
+class CategorizeReceiptsBatchRequest(BaseModel):
+    receipt_ids: List[str]
+    force: Optional[bool] = False
+
+
+@app.post("/api/receipt/categorize/{receipt_id}", tags=["Receipts - Categorization"])
+async def categorize_single_receipt(
+    receipt_id: str,
+    force: bool = False,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    将 receipt_processing_runs.output_payload 标准化并保存到 receipt_items/summaries
+    
+    前置条件：
+    1. Receipt 必须存在
+    2. current_status 必须是 'success' (通过了 sum check)
+    3. 必须有成功的 LLM processing run
+    
+    参数：
+    - receipt_id: Receipt UUID
+    - force: 如果为 True，重新处理已经 categorize 过的小票
+    
+    返回：
+    {
+        "success": bool,
+        "receipt_id": str,
+        "summary_id": str,
+        "items_count": int,
+        "message": str
+    }
+    """
+    try:
+        result = categorize_receipt(receipt_id, force=force)
+        
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("message", "Categorization failed")
+            )
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error categorizing receipt {receipt_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/receipt/categorize-batch", tags=["Receipts - Categorization"])
+async def categorize_batch_receipts(
+    request: CategorizeReceiptsBatchRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    批量 categorize 多张小票
+    
+    参数：
+    - receipt_ids: List of receipt UUIDs
+    - force: 如果为 True，重新处理已经 categorize 过的小票
+    
+    返回：
+    {
+        "total": int,
+        "success": int,
+        "failed": int,
+        "results": [...]
+    }
+    """
+    try:
+        result = categorize_receipts_batch(
+            receipt_ids=request.receipt_ids,
+            force=request.force
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error in batch categorization: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/receipt/categorize/check/{receipt_id}", tags=["Receipts - Categorization"])
+async def check_can_categorize(
+    receipt_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    检查小票是否可以被 categorize
+    
+    返回：
+    {
+        "can_categorize": bool,
+        "reason": str
+    }
+    """
+    try:
+        can_categorize, reason = can_categorize_receipt(receipt_id)
+        return {
+            "receipt_id": receipt_id,
+            "can_categorize": can_categorize,
+            "reason": reason
+        }
+    except Exception as e:
+        logger.error(f"Error checking receipt {receipt_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

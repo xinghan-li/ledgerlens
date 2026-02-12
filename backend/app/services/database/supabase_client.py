@@ -95,10 +95,12 @@ def create_receipt(user_id: str, raw_file_url: Optional[str] = None, file_hash: 
     payload = {
         "user_id": user_id,
         "current_status": "failed",  # Start with "failed", will be updated to "success" when processing completes
-        "current_stage": "ocr_google",  # Start with ocr_google, will be updated during processing
+        "current_stage": "ocr",  # Start with ocr, will be updated during processing
         "raw_file_url": raw_file_url,
         "file_hash": file_hash,
     }
+    
+    logger.info(f"[DEBUG] Attempting to insert receipt with payload: {payload}")
     
     try:
         res = supabase.table("receipts").insert(payload).execute()
@@ -109,6 +111,9 @@ def create_receipt(user_id: str, raw_file_url: Optional[str] = None, file_hash: 
         return receipt_id
     except Exception as e:
         error_msg = str(e)
+        logger.error(f"[DEBUG] Insert failed with error: {type(e).__name__}")
+        logger.error(f"[DEBUG] Error message: {error_msg}")
+        logger.error(f"[DEBUG] Payload was: {payload}")
         # Check if it's a unique constraint violation (duplicate file_hash)
         if "unique" in error_msg.lower() or "duplicate" in error_msg.lower():
             logger.warning(
@@ -319,6 +324,190 @@ def verify_user_exists(user_id: str) -> bool:
         logger.warning(f"Could not verify user existence: {e}")
         # For development environment, assume user exists (let database throw specific error)
         return False
+
+
+def save_receipt_summary(
+    receipt_id: str,
+    user_id: str,
+    receipt_data: Dict[str, Any]
+) -> str:
+    """
+    Save receipt summary data to receipt_summaries table.
+    
+    Args:
+        receipt_id: Receipt ID (UUID string)
+        user_id: User ID (UUID string)
+        receipt_data: Receipt-level data from LLM output
+        
+    Returns:
+        summary_id (UUID string)
+    """
+    if not receipt_id or not user_id:
+        raise ValueError("receipt_id and user_id are required")
+    
+    supabase = _get_client()
+    
+    # Extract receipt-level fields
+    merchant_name = receipt_data.get("merchant_name")
+    merchant_address = receipt_data.get("merchant_address")
+    purchase_date = receipt_data.get("purchase_date")
+    purchase_time = receipt_data.get("purchase_time")
+    subtotal = receipt_data.get("subtotal")
+    tax = receipt_data.get("tax")
+    total = receipt_data.get("total")
+    currency = receipt_data.get("currency", "USD")
+    payment_method = receipt_data.get("payment_method")
+    card_last4 = receipt_data.get("card_last4")
+    country = receipt_data.get("country")
+    
+    if not total:
+        raise ValueError("total is required in receipt_data")
+    
+    # Try to match store_chain and store_location
+    store_chain_id = None
+    store_location_id = None
+    
+    if merchant_name:
+        try:
+            # Try to find existing store chain
+            chain_result = supabase.table("store_chains").select("id").ilike("name", f"%{merchant_name}%").limit(1).execute()
+            if chain_result.data and len(chain_result.data) > 0:
+                store_chain_id = chain_result.data[0]["id"]
+                logger.info(f"Matched store chain: {merchant_name} -> {store_chain_id}")
+            else:
+                logger.debug(f"Store chain not found for: {merchant_name}")
+        except Exception as e:
+            logger.warning(f"Failed to match store chain: {e}")
+    
+    # Prepare payload
+    payload = {
+        "receipt_id": receipt_id,
+        "user_id": user_id,
+        "store_chain_id": store_chain_id,
+        "store_location_id": store_location_id,
+        "store_name": merchant_name,
+        "store_address": merchant_address,
+        "subtotal": float(subtotal) if subtotal else None,
+        "tax": float(tax) if tax else None,
+        "total": float(total),
+        "currency": currency,
+        "payment_method": payment_method,
+        "payment_last4": card_last4,
+        "receipt_date": purchase_date,
+    }
+    
+    try:
+        res = supabase.table("receipt_summaries").insert(payload).execute()
+        if not res.data:
+            raise ValueError("Failed to create receipt summary, no data returned")
+        summary_id = res.data[0]["id"]
+        logger.info(f"Created receipt_summary: {summary_id} for receipt {receipt_id}")
+        return summary_id
+    except Exception as e:
+        logger.error(f"Failed to create receipt summary: {e}")
+        raise
+
+
+def save_receipt_items(
+    receipt_id: str,
+    user_id: str,
+    items_data: List[Dict[str, Any]]
+) -> List[str]:
+    """
+    Save receipt items to receipt_items table.
+    
+    Args:
+        receipt_id: Receipt ID (UUID string)
+        user_id: User ID (UUID string)
+        items_data: List of item dictionaries from LLM output
+        
+    Returns:
+        List of item_ids (UUID strings)
+    """
+    if not receipt_id or not user_id:
+        raise ValueError("receipt_id and user_id are required")
+    
+    if not items_data:
+        logger.warning(f"No items to save for receipt {receipt_id}")
+        return []
+    
+    supabase = _get_client()
+    
+    # Prepare batch insert
+    items_payload = []
+    for idx, item in enumerate(items_data):
+        product_name = item.get("product_name")
+        if not product_name:
+            logger.warning(f"Skipping item without product_name at index {idx}")
+            continue
+        
+        quantity = item.get("quantity")
+        unit = item.get("unit")
+        unit_price = item.get("unit_price")
+        line_total = item.get("line_total")
+        
+        if line_total is None:
+            logger.warning(f"Skipping item '{product_name}' without line_total")
+            continue
+        
+        # Extract brand if available
+        brand = item.get("brand")
+        
+        # Extract category (for now just save as TEXT, Phase 2 will link to categories table)
+        category = item.get("category")
+        category_l1 = None
+        category_l2 = None
+        category_l3 = None
+        
+        # Try to parse category string (e.g., "Grocery > Produce > Fruit")
+        if category:
+            parts = [p.strip() for p in category.split(">")]
+            if len(parts) >= 1:
+                category_l1 = parts[0]
+            if len(parts) >= 2:
+                category_l2 = parts[1]
+            if len(parts) >= 3:
+                category_l3 = parts[2]
+        
+        # Check for sale/discount
+        is_on_sale = item.get("is_on_sale", False)
+        original_price = item.get("original_price")
+        discount_amount = item.get("discount_amount")
+        
+        item_payload = {
+            "receipt_id": receipt_id,
+            "user_id": user_id,
+            "product_name": product_name,
+            "brand": brand,
+            "quantity": float(quantity) if quantity else None,
+            "unit": unit,
+            "unit_price": float(unit_price) if unit_price else None,
+            "line_total": float(line_total),
+            "on_sale": is_on_sale,
+            "original_price": float(original_price) if original_price else None,
+            "discount_amount": float(discount_amount) if discount_amount else None,
+            "category_l1": category_l1,
+            "category_l2": category_l2,
+            "category_l3": category_l3,
+            "item_index": idx,
+        }
+        
+        items_payload.append(item_payload)
+    
+    if not items_payload:
+        logger.warning(f"No valid items to insert for receipt {receipt_id}")
+        return []
+    
+    try:
+        res = supabase.table("receipt_items").insert(items_payload).execute()
+        if not res.data:
+            raise ValueError("Failed to create receipt items, no data returned")
+        item_ids = [item["id"] for item in res.data]
+        logger.info(f"Created {len(item_ids)} receipt_items for receipt {receipt_id}")
+        return item_ids
+    except Exception as e:
+        logger.error(f"Failed to create receipt items: {e}")
+        raise
 
 
 def get_store_chain(
