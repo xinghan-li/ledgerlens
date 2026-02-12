@@ -369,12 +369,14 @@ def save_receipt_summary(
     
     if merchant_name:
         try:
-            # Try to find existing store chain
-            chain_result = supabase.table("store_chains").select("id").ilike("name", f"%{merchant_name}%").limit(1).execute()
+            # Try to find existing store chain using exact match first
+            chain_result = supabase.table("store_chains").select("id").eq("name", merchant_name).limit(1).execute()
             if chain_result.data and len(chain_result.data) > 0:
                 store_chain_id = chain_result.data[0]["id"]
                 logger.info(f"Matched store chain: {merchant_name} -> {store_chain_id}")
             else:
+                # If exact match fails, use rapidfuzz or pg_trgm for similarity matching
+                # For now, just log that no match was found
                 logger.debug(f"Store chain not found for: {merchant_name}")
         except Exception as e:
             logger.warning(f"Failed to match store chain: {e}")

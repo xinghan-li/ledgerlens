@@ -742,8 +742,8 @@ async def _backup_check_with_aws_ocr(
     first_llm_result: Dict[str, Any],
     sum_check_details: Dict[str, Any],
     first_llm_provider: str,
+    user_id: str,
     db_receipt_id: Optional[str] = None,
-    user_id: str = "dummy"
 ) -> Dict[str, Any]:
     """Use AWS OCR + GPT-4o-mini for secondary processing."""
     # Update stage to llm_fallback
@@ -1075,7 +1075,7 @@ async def _fallback_to_aws_ocr(
     timeline: TimelineRecorder,
     error: str,
     db_receipt_id: Optional[str] = None,
-    user_id: str = "dummy"
+    user_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Google OCR failed, fallback to AWS OCR."""
     timeline.start("aws_ocr_fallback")

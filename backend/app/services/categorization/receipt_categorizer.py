@@ -193,8 +193,8 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         # 如果 items 保存失败，回滚 summary
         try:
             supabase.table("receipt_summaries").delete().eq("id", summary_id).execute()
-        except:
-            pass
+        except Exception as rollback_error:
+            logger.warning(f"Failed to rollback summary {summary_id}: {rollback_error}")
         return {
             "success": False,
             "receipt_id": receipt_id,

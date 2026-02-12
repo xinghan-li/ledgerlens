@@ -68,15 +68,21 @@ async def parse_receipt_with_gemini(
         # In the new API, we can use system_instruction parameter
         combined_message = f"{system_message}\n\n{user_message}"
         
+        # Configure generation settings to ensure JSON output
+        generation_config = genai.types.GenerationConfig(
+            temperature=temperature,
+            response_mime_type="application/json",
+        )
+        
         logger.info(f"Calling Google Gemini API with model: {model}")
         logger.debug(f"Gemini API call - message length: {len(combined_message)} chars")
         
         # Call API using the new google.genai API
-        # Simplified approach: let the API use default config
         try:
             response = client.models.generate_content(
                 model=model,
-                contents=combined_message
+                contents=combined_message,
+                generation_config=generation_config
             )
             logger.debug(f"Gemini API response received: {type(response)}")
         except Exception as api_error:
