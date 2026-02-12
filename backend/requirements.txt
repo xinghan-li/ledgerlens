@@ -15,3 +15,5 @@ rapidfuzz>=3.10.1
 pandas>=2.0.0
 openpyxl>=3.1.0
 PyJWT>=2.8.0
+cryptography>=41.0.0
+python-jose[cryptography]>=3.3.0

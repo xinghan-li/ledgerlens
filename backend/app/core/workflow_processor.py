@@ -377,12 +377,12 @@ async def process_receipt_workflow(
     
     try:
         # Step 1: Google Document AI OCR
-        # Update stage to ocr_google
+        # Update stage to ocr
         if db_receipt_id:
             try:
-                update_receipt_status(db_receipt_id, current_status="failed", current_stage="ocr_google")
+                update_receipt_status(db_receipt_id, current_status="failed", current_stage="ocr")
             except Exception as e:
-                logger.warning(f"Failed to update receipt stage to ocr_google: {e}")
+                logger.warning(f"Failed to update receipt stage to ocr: {e}")
         
         timeline.start("google_ocr")
         try:
@@ -444,7 +444,7 @@ async def process_receipt_workflow(
                         status="fail",
                         error_message=str(e)
                     )
-                    update_receipt_status(db_receipt_id, current_status="failed", current_stage="failed")
+                    update_receipt_status(db_receipt_id, current_status="failed", current_stage="ocr")
                     
                     # Save image for manual review
                     image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
@@ -457,7 +457,7 @@ async def process_receipt_workflow(
                     logger.warning(f"Failed to save failed OCR run: {db_error}")
             
             # Fallback to AWS OCR
-            return await _fallback_to_aws_ocr(image_bytes, filename, receipt_id, timeline, error=f"Google OCR failed: {e}", db_receipt_id=db_receipt_id)
+            return await _fallback_to_aws_ocr(image_bytes, filename, receipt_id, timeline, error=f"Google OCR failed: {e}", db_receipt_id=db_receipt_id, user_id=user_id)
         
         # Save Google OCR result (temporarily not saved, will save when needed)
         google_ocr_data = google_ocr_result
@@ -588,7 +588,7 @@ async def process_receipt_workflow(
                         status="fail",
                         error_message=str(e)
                     )
-                    update_receipt_status(db_receipt_id, current_status="failed", current_stage="failed")
+                    update_receipt_status(db_receipt_id, current_status="failed", current_stage="ocr")
                 except Exception as db_error:
                     logger.warning(f"Failed to save failed LLM run: {db_error}")
             
@@ -636,7 +636,7 @@ async def process_receipt_workflow(
                 # Update receipt status
                 if db_receipt_id:
                     try:
-                        update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+                        update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_primary")
                     except Exception as e:
                         logger.warning(f"Failed to update receipt status: {e}")
                 
@@ -668,7 +668,7 @@ async def process_receipt_workflow(
                 # Update receipt status
                 if db_receipt_id:
                     try:
-                        update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+                        update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_primary")
                     except Exception as e:
                         logger.warning(f"Failed to update receipt status: {e}")
                 
@@ -698,14 +698,15 @@ async def process_receipt_workflow(
             # Update stage to sum_check_failed
             if db_receipt_id:
                 try:
-                    update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="sum_check_failed")
+                    update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="manual")
                 except Exception as e:
                     logger.warning(f"Failed to update receipt stage to sum_check_failed: {e}")
             
             return await _backup_check_with_aws_ocr(
                 image_bytes, filename, receipt_id, timeline,
                 google_ocr_data, first_llm_result, sum_check_details, llm_provider,
-                db_receipt_id=db_receipt_id
+                db_receipt_id=db_receipt_id,
+                user_id=user_id
             )
     
     except Exception as e:
@@ -741,7 +742,8 @@ async def _backup_check_with_aws_ocr(
     first_llm_result: Dict[str, Any],
     sum_check_details: Dict[str, Any],
     first_llm_provider: str,
-    db_receipt_id: Optional[str] = None
+    user_id: str,
+    db_receipt_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Use AWS OCR + GPT-4o-mini for secondary processing."""
     # Update stage to llm_fallback
@@ -898,13 +900,13 @@ async def _backup_check_with_aws_ocr(
     if backup_sum_check_passed:
         # Backup check passed
         timeline.start("save_output")
-        await _save_output(receipt_id, backup_llm_result, timeline, google_ocr_data)
+        await _save_output(receipt_id, backup_llm_result, timeline, google_ocr_data, user_id=user_id)
         timeline.end("save_output")
         
         # Update receipt status
         if db_receipt_id:
             try:
-                update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+                update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_fallback")
             except Exception as e:
                 logger.warning(f"Failed to update receipt status: {e}")
         
@@ -1072,7 +1074,8 @@ async def _fallback_to_aws_ocr(
     receipt_id: str,
     timeline: TimelineRecorder,
     error: str,
-    db_receipt_id: Optional[str] = None
+    db_receipt_id: Optional[str] = None,
+    user_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Google OCR failed, fallback to AWS OCR."""
     timeline.start("aws_ocr_fallback")
@@ -1156,13 +1159,13 @@ async def _fallback_to_aws_ocr(
             
             if sum_check_passed:
                 timeline.start("save_output")
-                await _save_output(receipt_id, llm_result, timeline, aws_ocr_result)
+                await _save_output(receipt_id, llm_result, timeline, aws_ocr_result, user_id=user_id)
                 timeline.end("save_output")
                 
                 # Update receipt status
                 if db_receipt_id:
                     try:
-                        update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+                        update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_fallback")
                     except Exception as e:
                         logger.warning(f"Failed to update receipt status: {e}")
                 
@@ -1333,13 +1336,13 @@ async def _fallback_to_other_llm(
         
         if sum_check_passed:
             timeline.start("save_output")
-            await _save_output(receipt_id, llm_result, timeline, google_ocr_data)
+            await _save_output(receipt_id, llm_result, timeline, google_ocr_data, user_id=user_id)
             timeline.end("save_output")
             
             # Update receipt status
             if db_receipt_id:
                 try:
-                    update_receipt_status(db_receipt_id, current_status="success", current_stage="success")
+                    update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_fallback")
                 except Exception as e:
                     logger.warning(f"Failed to update receipt status: {e}")
             
@@ -1369,7 +1372,7 @@ async def _fallback_to_other_llm(
             # Update stage to sum_check_failed
             if db_receipt_id:
                 try:
-                    update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="sum_check_failed")
+                    update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="manual")
                 except Exception as e:
                     logger.warning(f"Failed to update receipt stage to sum_check_failed: {e}")
             
@@ -1474,7 +1477,7 @@ async def _mark_for_manual_review(
     # Update receipt status to needs_review
     if db_receipt_id:
         try:
-            update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="manual_review")
+            update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="manual")
         except Exception as e:
             logger.warning(f"Failed to update receipt status: {e}")
     
@@ -1558,6 +1561,9 @@ async def _save_output(
     # All data is now stored in the database (receipts, receipt_processing_runs, api_calls tables)
     # Timeline data is still tracked in memory for duration calculations
     logger.debug("Skipping timeline and CSV file generation (data stored in database)")
+    
+    # Note: Categorization (saving to receipt_items/receipt_summaries) is now done via
+    # a separate API endpoint (/api/receipt/categorize) after workflow completes successfully
 
 
 async def _save_debug_files(
