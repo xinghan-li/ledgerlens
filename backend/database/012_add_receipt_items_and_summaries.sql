@@ -60,12 +60,12 @@ CREATE TABLE IF NOT EXISTS receipt_summaries (
 );
 
 -- Indexes for receipt_summaries
-CREATE INDEX receipt_summaries_user_id_idx ON receipt_summaries(user_id);
-CREATE INDEX receipt_summaries_receipt_date_idx ON receipt_summaries(receipt_date DESC);
-CREATE INDEX receipt_summaries_store_chain_idx ON receipt_summaries(store_chain_id) WHERE store_chain_id IS NOT NULL;
-CREATE INDEX receipt_summaries_store_location_idx ON receipt_summaries(store_location_id) WHERE store_location_id IS NOT NULL;
-CREATE INDEX receipt_summaries_created_at_idx ON receipt_summaries(created_at DESC);
-CREATE INDEX receipt_summaries_user_date_idx ON receipt_summaries(user_id, receipt_date DESC);
+CREATE INDEX IF NOT EXISTS receipt_summaries_user_id_idx ON receipt_summaries(user_id);
+CREATE INDEX IF NOT EXISTS receipt_summaries_receipt_date_idx ON receipt_summaries(receipt_date DESC);
+CREATE INDEX IF NOT EXISTS receipt_summaries_store_chain_idx ON receipt_summaries(store_chain_id) WHERE store_chain_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS receipt_summaries_store_location_idx ON receipt_summaries(store_location_id) WHERE store_location_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS receipt_summaries_created_at_idx ON receipt_summaries(created_at DESC);
+CREATE INDEX IF NOT EXISTS receipt_summaries_user_date_idx ON receipt_summaries(user_id, receipt_date DESC);
 
 -- Comments
 COMMENT ON TABLE receipt_summaries IS 'Denormalized receipt-level summary data for efficient querying and export';
@@ -121,18 +121,18 @@ CREATE TABLE IF NOT EXISTS receipt_items (
 );
 
 -- Indexes for receipt_items
-CREATE INDEX receipt_items_receipt_id_idx ON receipt_items(receipt_id);
-CREATE INDEX receipt_items_user_id_idx ON receipt_items(user_id);
-CREATE INDEX receipt_items_product_name_idx ON receipt_items(product_name);
-CREATE INDEX receipt_items_category_l1_idx ON receipt_items(category_l1) WHERE category_l1 IS NOT NULL;
-CREATE INDEX receipt_items_category_l2_idx ON receipt_items(category_l2) WHERE category_l2 IS NOT NULL;
-CREATE INDEX receipt_items_category_l3_idx ON receipt_items(category_l3) WHERE category_l3 IS NOT NULL;
-CREATE INDEX receipt_items_on_sale_idx ON receipt_items(on_sale) WHERE on_sale = TRUE;
-CREATE INDEX receipt_items_created_at_idx ON receipt_items(created_at DESC);
-CREATE INDEX receipt_items_user_created_idx ON receipt_items(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS receipt_items_receipt_id_idx ON receipt_items(receipt_id);
+CREATE INDEX IF NOT EXISTS receipt_items_user_id_idx ON receipt_items(user_id);
+CREATE INDEX IF NOT EXISTS receipt_items_product_name_idx ON receipt_items(product_name);
+CREATE INDEX IF NOT EXISTS receipt_items_category_l1_idx ON receipt_items(category_l1) WHERE category_l1 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS receipt_items_category_l2_idx ON receipt_items(category_l2) WHERE category_l2 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS receipt_items_category_l3_idx ON receipt_items(category_l3) WHERE category_l3 IS NOT NULL;
+CREATE INDEX IF NOT EXISTS receipt_items_on_sale_idx ON receipt_items(on_sale) WHERE on_sale = TRUE;
+CREATE INDEX IF NOT EXISTS receipt_items_created_at_idx ON receipt_items(created_at DESC);
+CREATE INDEX IF NOT EXISTS receipt_items_user_created_idx ON receipt_items(user_id, created_at DESC);
 
 -- Indexes for text search (product name)
-CREATE INDEX receipt_items_product_name_trgm_idx ON receipt_items USING gin(product_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS receipt_items_product_name_trgm_idx ON receipt_items USING gin(product_name gin_trgm_ops);
 
 -- Comments
 COMMENT ON TABLE receipt_items IS 'Individual line items from receipts - denormalized for efficient querying';

@@ -257,7 +257,7 @@ npm run dev
 - **README.md** - 项目介绍和快速开始
 - **SETUP_GUIDE.md** - 详细配置指南（含常见问题）
 - **TODO.md** - 用户待办事项清单（精简版）
-- **FRONTEND_IMPLEMENTATION_SUMMARY.md** (本文档) - 完整实现总结
+- **IMPLEMENTATION_SUMMARY.md** (本文档) - 完整实现总结
 
 ---
 

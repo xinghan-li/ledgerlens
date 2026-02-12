@@ -376,7 +376,8 @@ backend/
 │   └── core/
 │       └── workflow_processor.py       ← OCR/LLM (不含 categorization)
 ├── test_categorization_api.py          ← 测试脚本
-└── CATEGORIZATION_ARCHITECTURE.md      ← 本文档
+└── docs/architecture/
+    └── CATEGORIZATION.md               ← 本文档
 ```
 
 ---

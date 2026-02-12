@@ -1,0 +1,159 @@
+---
+description: File management rules - where to create temp files, docs, and when to clean up
+alwaysApply: true
+---
+
+# File Management Rules
+
+⚠️ **完整指南请查看**: `AI_AGENT_GUIDE.md` (项目根目录)
+
+## 📁 Directory Structure
+
+### Agent-Generated Files (待审查内容)
+**Location**: `backend/agent-tbd/` 
+- AI 生成的调试诊断
+- 业务逻辑相关的分析
+- 待确认的架构设计
+- 实验性功能文档
+- **用途**：业务相关内容，需要用户审查后再归档或删除
+
+### Temporary Files (传统调试)
+**Location**: `temp/` (root level)
+- 非业务相关的调试输出
+- 测试结果
+- 临时脚本
+- "阅后即焚" files (delete after task completion)
+
+### Documentation Files
+**Location**: `backend/database/documents/` (for database-related docs)
+**Location**: `docs/` (for general project docs)
+- Design documents
+- Decision records
+- Historical notes
+- Keep for archival/reference
+
+### Business Code
+**Location**: `backend/app/`, `frontend/`, etc.
+- 正常的业务代码进入对应文件夹
+- 不要因为是 AI 生成就放到特殊位置
+
+### Output Files
+**Location**: `output/` (root level)
+- Processing results
+- Generated reports
+- Data exports
+- Keep for review and analysis
+
+### Input Files
+**Location**: `input/` (root level)
+- Test receipts
+- Sample data
+- User uploads for testing
+
+## 🚨 Critical Rules
+
+### 1. Never Create Root-Level .md Files
+❌ **DON'T**: Create analysis files like `ANALYSIS.md`, `SUMMARY.md` in project root
+✅ **DO**: Create in `backend/agent-tbd/` or appropriate location
+
+### 2. AI-Generated Content Classification
+**业务相关分析/调试** → `backend/agent-tbd/`
+- 小票处理逻辑诊断
+- 架构设计草稿
+- 功能实现分析
+- 用户需要review的内容
+
+**传统调试/临时输出** → `temp/`
+- JSON 输出
+- 日志文件
+- 测试结果
+- 不需要review的临时文件
+
+**正常业务代码** → 对应的功能文件夹
+- 不要因为是 AI 生成就放特殊位置
+- 按正常项目结构组织
+
+### 3. Always Ask Before Creating Documentation
+- If creating a design doc or decision record → Ask user where to store it
+- If it's a temporary analysis → Use `backend/agent-tbd/`
+- If it's permanent documentation → Use `docs/` or `backend/database/documents/`
+
+### 4. Clean Up Strategy
+- At the end of a multi-step task, list files created in `backend/agent-tbd/`
+- Ask: "这些文件还需要吗？要归档到 docs/ 还是删除？"
+- For `temp/` files, ask: "要我清理 temp/ 文件夹吗？"
+- Never auto-delete without asking
+
+### 5. Backend Database Docs
+All database-related documentation must go in `backend/database/documents/`:
+- Migration notes
+- Schema design docs
+- Refactoring summaries
+- Never create in `backend/database/` root
+
+## 📝 Examples
+
+### Good Practice
+```
+backend/agent-tbd/
+  FILE_CLEANUP_REPORT_20260212.md      # 文件清理分析
+  DEBUG_LOGIC_DIAGNOSIS.md             # 逻辑诊断
+  ARCHITECTURE_DRAFT.md                # 架构草稿
+
+temp/
+  debug_output.json                    # 调试输出
+  test_results.txt                     # 测试结果
+  
+docs/
+  architecture/
+    system-design.md                   # 永久文档
+  decisions/
+    2026-02-12-api-design.md           # 决策记录
+
+backend/database/documents/
+  PRODUCT_CATALOG_DESIGN.md            # 数据库设计文档
+
+backend/app/services/
+  my_new_service.py                    # 正常业务代码
+```
+
+### Bad Practice
+```
+# ❌ 不要这样：
+PROJECT_ROOT/
+  ANALYSIS.md                          # 应该在 agent-tbd/
+  SUMMARY.md
+  DEBUG.md
+  
+backend/database/
+  MY_NOTES.md                          # 文档应该在 documents/ 里
+
+backend/agent-tbd/
+  my_service.py                        # 业务代码不应该在这里
+```
+
+## 🎯 Workflow
+
+1. **Creating Analysis/Debug Files**:
+   - **Business-related**: `backend/agent-tbd/FILE_NAME_YYYYMMDD.md`
+   - **Debug outputs**: `temp/debug_output.json`
+   - Always use descriptive timestamped names
+
+2. **Creating Business Code**:
+   - Put in appropriate functional folder (e.g., `backend/app/services/`)
+   - Don't put in `agent-tbd/` just because it's AI-generated
+   - Follow normal project structure
+
+3. **Creating Documentation**:
+   - Ask user: "这个文档是临时分析还是永久文档？"
+   - Temporary analysis → `backend/agent-tbd/`
+   - Permanent documentation → `docs/` or `backend/database/documents/`
+
+4. **After Task Completion**:
+   - List files created in `backend/agent-tbd/` and `temp/`
+   - Ask: "agent-tbd/ 里的文件：要归档还是删除？"
+   - Ask: "temp/ 里的文件：要我清理吗？"
+
+5. **File Archival**:
+   - If agent-tbd file has value, suggest moving to appropriate location
+   - Example: "agent-tbd/analysis.md 看起来有用，要移到 docs/architecture/ 吗？"

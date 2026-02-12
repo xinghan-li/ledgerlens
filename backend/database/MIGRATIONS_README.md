@@ -42,6 +42,37 @@ If you're setting up a **brand new production database**, run these migrations i
    - Creates `receipt_summaries` table for receipt-level metadata
    - Enables efficient querying, aggregation, and API export
 
+9. **013_auto_create_user_on_signup.sql** - Auto-create user on signup
+   - Creates trigger to auto-create public.users when auth.users is created
+   - Backfills existing auth users
+
+10. **014_add_brands_table.sql** - Brands table
+    - Creates brands table for product brand normalization
+    - Independent table, can run anytime
+
+11. **015_add_categories_tree.sql** - Categories tree structure
+    - Creates hierarchical categories table
+    - Seeds initial categories (Grocery, Household, etc.)
+    - Independent table, can run anytime
+
+12. **016_add_products_catalog.sql** - Products catalog
+    - Creates unified product catalog for cross-receipt aggregation
+    - **Depends on**: 014 (brands), 015 (categories)
+
+13. **017_link_receipt_items_to_products.sql** - Link receipt items to products
+    - Adds `product_id` and `category_id` foreign keys to receipt_items
+    - **Depends on**: 016 (products catalog)
+
+14. **018_add_price_snapshots.sql** - Price snapshots for PricePeek
+    - Creates price_snapshots table for price aggregation
+    - Creates materialized views and aggregation functions
+    - **Depends on**: 016 (products catalog)
+
+15. **019_add_categorization_rules.sql** - Product categorization rules
+    - Creates product_categorization_rules table with store-specific support
+    - Creates find_categorization_rule() function for smart matching
+    - **Depends on**: 015 (categories)
+
 ### ❌ Skip These (Development-Only Migrations):
 
 - **~~008_update_current_stage.sql~~** - DO NOT RUN on fresh database
@@ -63,7 +94,7 @@ If you already have a database with data and ran 008:
 
 ### ✅ Production (Fresh Database):
 ```sql
--- Run in Supabase SQL Editor:
+-- Run in Supabase SQL Editor (in order):
 001_schema_v2.sql
 003_add_file_hash.sql
 004_update_user_class.sql
@@ -72,6 +103,28 @@ If you already have a database with data and ran 008:
 009_tag_based_rag_system.sql
 010_update_costco_lynnwood_address.sql (optional)
 012_add_receipt_items_and_summaries.sql
+013_auto_create_user_on_signup.sql
+014_add_brands_table.sql
+015_add_categories_tree.sql
+016_add_products_catalog.sql
+017_link_receipt_items_to_products.sql
+018_add_price_snapshots.sql
+019_add_categorization_rules.sql
+```
+
+### 📊 Execution Order (with Dependencies):
+
+**Batch 1 - Foundation (Independent):**
+```
+001 → 003 → 004 → 006 → 007 → 009 → 010 → 012 → 013
+```
+
+**Batch 2 - Product System (Has Dependencies):**
+```
+014 (brands)     ┐
+                 ├→ 016 (products) → 017 (link items)
+015 (categories) ┘                 → 018 (price snapshots)
+                                   → 019 (categorization rules)
 ```
 
 ### 🔄 Development (Existing Database):
@@ -94,6 +147,13 @@ If you already have a database with data and ran 008:
 | 010 | Costco address | ✅ Production (optional) |
 | 011 | Simplify stage values | 🔄 Dev-only fix for 008 |
 | 012 | Receipt items & summaries | ✅ Production |
+| 013 | Auto-create user on signup | ✅ Production |
+| 014 | Brands table | ✅ Production |
+| 015 | Categories tree | ✅ Production |
+| 016 | Products catalog | ✅ Production |
+| 017 | Link receipt items to products | ✅ Production |
+| 018 | Price snapshots | ✅ Production |
+| 019 | Categorization rules | ✅ Production |
 
 ## 🎯 Current Stage Values (Final)
 
@@ -107,21 +167,92 @@ After running production migrations, `receipts.current_stage` supports:
 
 ```
 backend/database/
-├── MIGRATIONS_README.md (this file)
-├── 001_schema_v2.sql (✅ production)
-├── 003_add_file_hash.sql (✅ production)
-├── 004_update_user_class.sql (✅ production)
-├── 006_add_validation_status.sql (✅ production)
-├── 007_add_chain_name_to_store_locations.sql (✅ production)
-├── 009_tag_based_rag_system.sql (✅ production)
-├── 010_update_costco_lynnwood_address.sql (✅ production)
-├── 012_add_receipt_items_and_summaries.sql (✅ production)
-├── deprecated/
+├── MIGRATIONS_README.md (this file - migration guide)
+├── CHECK_TABLES.sql (diagnostic tool)
+│
+├── 📁 Migration Files (001-019)
+│   ├── 001_schema_v2.sql → 019_add_categorization_rules.sql
+│
+├── 📁 deprecated/ (development-only migrations)
 │   ├── README.md
-│   ├── 008_update_current_stage.sql (❌ dev only)
-│   └── 011_simplify_receipts_stage_values.sql (🔄 dev only)
-└── 2026-01-31_MIGRATION_NOTES.md (data backfill notes)
+│   ├── 008_update_current_stage.sql
+│   └── 011_simplify_receipts_stage_values.sql
+│
+└── 📁 documents/ (all documentation files)
+    ├── REFACTORING_SUMMARY.md (重构记录)
+    ├── CHECK_USER_CREATION.md (013 说明)
+    ├── PRODUCT_CATALOG_DESIGN.md (014-018 设计)
+    ├── FILE_CLEANUP_ANALYSIS.md (文件清理分析)
+    ├── 2026-01-30 MIGRATION_NOTES.md (历史记录)
+    └── 2026-01-31_MIGRATION_NOTES.md (详细笔记)
 ```
+
+### 📝 Documentation Guidelines
+
+**All future documentation files should be placed in `documents/` folder:**
+- Design documents
+- Migration notes
+- Troubleshooting guides
+- Historical records
+- Analysis reports
+
+**Only keep in root database/ folder:**
+- `MIGRATIONS_README.md` (this file)
+- Migration SQL files (001-019)
+- Diagnostic SQL tools (CHECK_*.sql)
+
+## 🔄 Post-Migration Tasks
+
+### After Migration 017 (Link Products)
+
+实现产品标准化服务：
+
+1. **Product Normalization Service**
+   - Extract normalized_name from product_name
+   - Match or create products
+   - Link receipt_items to products
+
+2. **Backfill Existing Data**
+   ```python
+   # Update workflow_processor.py to:
+   for item in receipt_items:
+       product = normalize_and_find_product(
+           product_name=item.product_name,
+           brand=item.brand,
+           category_l1=item.category_l1
+       )
+       if not product:
+           product = create_product(...)
+       
+       item.product_id = product.id
+       item.category_id = find_category(...)
+       item.save()
+   ```
+
+### After Migration 018 (Price Snapshots)
+
+1. **Initial Backfill**
+   ```sql
+   SELECT * FROM backfill_all_price_snapshots();
+   ```
+
+2. **Set up Daily Cron Job**
+   ```sql
+   SELECT aggregate_prices_for_date(CURRENT_DATE);
+   ```
+
+### After Migration 019 (Categorization Rules)
+
+1. **Import Initial Rules**
+   ```bash
+   cd backend
+   python import_category_rules.py
+   ```
+
+2. **Review & Correct Rules**
+   - System generates `output/standardization_preview/standardization_summary_*.csv`
+   - Manually correct categories
+   - Re-import corrected CSV
 
 ## 🚨 Important Notes
 
@@ -133,7 +264,7 @@ backend/database/
 ## 📞 Questions?
 
 If you're unsure which migrations to run, ask yourself:
-- **Is this a brand new database?** → Run production list (skip 008, 011)
+- **Is this a brand new database?** → Run production list (001-019, skip 008/011)
 - **Did I already run 008?** → You must run 011 to fix it
 - **Am I starting fresh in production?** → Run production list only
 
@@ -152,4 +283,74 @@ AND conname = 'receipts_current_stage_check';
 
 -- Expected result:
 -- CHECK (current_stage IN ('ocr', 'llm_primary', 'llm_fallback', 'manual'))
+
+-- Verify all tables were created
+SELECT tablename 
+FROM pg_tables 
+WHERE schemaname = 'public' 
+  AND tablename IN (
+    'users', 'receipts', 'receipt_processing_runs', 
+    'receipt_items', 'receipt_summaries',
+    'brands', 'categories', 'products', 
+    'product_categorization_rules', 'price_snapshots'
+  )
+ORDER BY tablename;
+
+-- Check indexes
+SELECT indexname, tablename 
+FROM pg_indexes 
+WHERE schemaname = 'public' 
+ORDER BY tablename, indexname;
+
+-- Verify triggers
+SELECT trigger_name, event_object_table 
+FROM information_schema.triggers 
+WHERE trigger_schema = 'public'
+ORDER BY event_object_table, trigger_name;
 ```
+
+## 🆘 Troubleshooting
+
+### If Migration Fails
+
+1. **Check error message** in SQL Editor output
+2. **Common issues:**
+   - Missing prerequisite migrations (check dependencies)
+   - Data constraint violations
+   - Permissions issues
+
+3. **Rollback:**
+   - Each migration is wrapped in `BEGIN/COMMIT`
+   - If it fails, changes are automatically rolled back
+
+4. **Manual cleanup** (if needed):
+   ```sql
+   DROP TABLE IF EXISTS price_snapshots CASCADE;
+   DROP TABLE IF EXISTS product_categorization_rules CASCADE;
+   DROP TABLE IF EXISTS products CASCADE;
+   DROP TABLE IF EXISTS categories CASCADE;
+   DROP TABLE IF EXISTS brands CASCADE;
+   DROP MATERIALIZED VIEW IF EXISTS latest_prices;
+   ```
+
+## 📚 Related Documentation
+
+All documentation files are stored in the `documents/` folder:
+
+- **REFACTORING_SUMMARY.md** - Migration refactoring history (2026-02-11)
+- **PRODUCT_CATALOG_DESIGN.md** - Product system design (migrations 014-018)
+- **CHECK_USER_CREATION.md** - Migration 013 details (auto-create users)
+- **2026-01-31_MIGRATION_NOTES.md** - Detailed data backfill procedures
+- **2026-01-30 MIGRATION_NOTES.md** - Historical migration notes
+- **FILE_CLEANUP_ANALYSIS.md** - File management decisions
+
+### 📝 Documentation Policy
+
+**All future documentation files must be placed in `documents/` folder:**
+- Migration design documents
+- Historical notes and records
+- Analysis and decision-making documentation
+- Troubleshooting guides
+- Developer references
+
+**Do NOT create new documentation files in the root `database/` folder.**
