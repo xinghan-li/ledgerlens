@@ -54,7 +54,7 @@ def check_duplicate_by_hash(
     supabase = _get_client()
     
     try:
-        res = supabase.table("receipts").select("id, uploaded_at, current_status").eq(
+        res = supabase.table("receipt_status").select("id, uploaded_at, current_status").eq(
             "user_id", user_id
         ).eq("file_hash", file_hash).limit(1).execute()
         
@@ -77,7 +77,7 @@ def check_duplicate_by_hash(
 
 def create_receipt(user_id: str, raw_file_url: Optional[str] = None, file_hash: Optional[str] = None) -> str:
     """
-    Create a new receipt record in receipts table.
+    Create a new receipt record in receipt_status table.
     
     Args:
         user_id: User identifier (UUID string)
@@ -103,7 +103,7 @@ def create_receipt(user_id: str, raw_file_url: Optional[str] = None, file_hash: 
     logger.info(f"[DEBUG] Attempting to insert receipt with payload: {payload}")
     
     try:
-        res = supabase.table("receipts").insert(payload).execute()
+        res = supabase.table("receipt_status").insert(payload).execute()
         if not res.data:
             raise ValueError("Failed to create receipt, no data returned")
         receipt_id = res.data[0]["id"]
@@ -232,7 +232,7 @@ def update_receipt_status(
     supabase = _get_client()
     
     try:
-        supabase.table("receipts").update({
+        supabase.table("receipt_status").update({
             "current_status": current_status,
             "current_stage": current_stage,
         }).eq("id", receipt_id).execute()
@@ -256,7 +256,7 @@ def update_receipt_file_url(
     supabase = _get_client()
     
     try:
-        supabase.table("receipts").update({
+        supabase.table("receipt_status").update({
             "raw_file_url": raw_file_url,
         }).eq("id", receipt_id).execute()
         logger.info(f"Updated receipt {receipt_id}: raw_file_url={raw_file_url}")
@@ -316,8 +316,8 @@ def verify_user_exists(user_id: str) -> bool:
     try:
         # Note: Need service role key to query auth.users
         # If using anon key, may need to verify via Supabase Auth API or other methods
-        # Here try to indirectly verify via receipts table query (if user has receipt records)
-        res = supabase.table("receipts").select("user_id").eq("user_id", user_id).limit(1).execute()
+        # Here try to indirectly verify via receipt_status table query (if user has receipt records)
+        res = supabase.table("receipt_status").select("user_id").eq("user_id", user_id).limit(1).execute()
         # If can query (or query doesn't error), user might exist
         return True
     except Exception as e:
@@ -332,7 +332,7 @@ def save_receipt_summary(
     receipt_data: Dict[str, Any]
 ) -> str:
     """
-    Save receipt summary data to receipt_summaries table.
+    Save receipt summary data to record_summaries table.
     
     Args:
         receipt_id: Receipt ID (UUID string)
@@ -399,7 +399,7 @@ def save_receipt_summary(
     }
     
     try:
-        res = supabase.table("receipt_summaries").insert(payload).execute()
+        res = supabase.table("record_summaries").insert(payload).execute()
         if not res.data:
             raise ValueError("Failed to create receipt summary, no data returned")
         summary_id = res.data[0]["id"]
@@ -410,13 +410,51 @@ def save_receipt_summary(
         raise
 
 
+def _resolve_category_id(supabase: Client, category_str: Optional[str]) -> Optional[str]:
+    """
+    Resolve category string (e.g. "Grocery > Produce > Fruit") to category_id (level-3).
+    Uses category_migration_mapping or categories.path.
+    """
+    if not category_str or not category_str.strip():
+        return None
+    parts = [p.strip() for p in category_str.split(">")]
+    if len(parts) < 3:
+        return None
+    l1, l2, l3 = parts[0], parts[1], parts[2]
+    try:
+        # Try category_migration_mapping first
+        res = (
+            supabase.table("category_migration_mapping")
+            .select("new_category_id")
+            .eq("old_l1", l1)
+            .eq("old_l2", l2)
+            .eq("old_l3", l3)
+            .limit(1)
+            .execute()
+        )
+        if res.data and res.data[0].get("new_category_id"):
+            return str(res.data[0]["new_category_id"])
+        # Fallback: match categories by path (Grocery/Produce/Fruit)
+        path = f"{l1}/{l2}/{l3}"
+        cat = supabase.table("categories").select("id").eq("path", path).limit(1).execute()
+        if cat.data and cat.data[0].get("id"):
+            return str(cat.data[0]["id"])
+    except Exception as e:
+        logger.debug(f"Category resolution failed for '{category_str}': {e}")
+    return None
+
+
 def save_receipt_items(
     receipt_id: str,
     user_id: str,
     items_data: List[Dict[str, Any]]
 ) -> List[str]:
     """
-    Save receipt items to receipt_items table.
+    Save receipt items to record_items table.
+    
+    All quantities and prices stored as integers (x100):
+    - quantity: 1.5 -> 150, 2 -> 200
+    - unit_price, line_total, etc.: dollars -> cents
     
     Args:
         receipt_id: Receipt ID (UUID string)
@@ -452,45 +490,47 @@ def save_receipt_items(
             logger.warning(f"Skipping item '{product_name}' without line_total")
             continue
         
-        # Extract brand if available
-        brand = item.get("brand")
+        # Convert to integers (x100): quantity, unit_price, line_total, original_price, discount_amount
+        def _to_cents(val) -> Optional[int]:
+            if val is None:
+                return None
+            try:
+                return int(round(float(val) * 100))
+            except (TypeError, ValueError):
+                return None
+
+        def _to_quantity(val) -> Optional[int]:
+            if val is None:
+                return None
+            try:
+                return int(round(float(val) * 100))
+            except (TypeError, ValueError):
+                return None
+
+        line_total_cents = _to_cents(line_total)
+        if line_total_cents is None or line_total_cents < 0:
+            logger.warning(f"Skipping item '{product_name}' with invalid line_total")
+            continue
+
+        # Resolve category string to category_id (level-3 FK)
+        category_id = _resolve_category_id(supabase, item.get("category"))
         
-        # Extract category (for now just save as TEXT, Phase 2 will link to categories table)
-        category = item.get("category")
-        category_l1 = None
-        category_l2 = None
-        category_l3 = None
-        
-        # Try to parse category string (e.g., "Grocery > Produce > Fruit")
-        if category:
-            parts = [p.strip() for p in category.split(">")]
-            if len(parts) >= 1:
-                category_l1 = parts[0]
-            if len(parts) >= 2:
-                category_l2 = parts[1]
-            if len(parts) >= 3:
-                category_l3 = parts[2]
-        
-        # Check for sale/discount
         is_on_sale = item.get("is_on_sale", False)
-        original_price = item.get("original_price")
-        discount_amount = item.get("discount_amount")
+        original_price = _to_cents(item.get("original_price"))
+        discount_amount = _to_cents(item.get("discount_amount"))
         
         item_payload = {
             "receipt_id": receipt_id,
             "user_id": user_id,
             "product_name": product_name,
-            "brand": brand,
-            "quantity": float(quantity) if quantity else None,
+            "quantity": _to_quantity(quantity),
             "unit": unit,
-            "unit_price": float(unit_price) if unit_price else None,
-            "line_total": float(line_total),
+            "unit_price": _to_cents(unit_price),
+            "line_total": line_total_cents,
             "on_sale": is_on_sale,
-            "original_price": float(original_price) if original_price else None,
-            "discount_amount": float(discount_amount) if discount_amount else None,
-            "category_l1": category_l1,
-            "category_l2": category_l2,
-            "category_l3": category_l3,
+            "original_price": original_price,
+            "discount_amount": discount_amount,
+            "category_id": category_id,
             "item_index": idx,
         }
         
@@ -501,7 +541,7 @@ def save_receipt_items(
         return []
     
     try:
-        res = supabase.table("receipt_items").insert(items_payload).execute()
+        res = supabase.table("record_items").insert(items_payload).execute()
         if not res.data:
             raise ValueError("Failed to create receipt items, no data returned")
         item_ids = [item["id"] for item in res.data]

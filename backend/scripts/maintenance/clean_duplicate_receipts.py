@@ -81,7 +81,7 @@ def find_duplicate_receipts(user_id: str = None) -> List[Dict[str, Any]]:
                 'raw_file_url', raw_file_url
             ) ORDER BY uploaded_at ASC
         ) as receipts
-    FROM receipts
+    FROM receipt_status
     WHERE file_hash IS NOT NULL
     """
     
@@ -104,7 +104,7 @@ def find_duplicate_receipts(user_id: str = None) -> List[Dict[str, Any]]:
             print("⚠️  RPC method failed, using alternative method...")
             where_clause = f".eq('user_id', '{user_id}')" if user_id else ""
             
-            all_receipts_query = supabase.table("receipts").select("id, user_id, file_hash, uploaded_at, current_status, current_stage, raw_file_url").order("uploaded_at")
+            all_receipts_query = supabase.table("receipt_status").select("id, user_id, file_hash, uploaded_at, current_status, current_stage, raw_file_url").order("uploaded_at")
             if user_id:
                 all_receipts_query = all_receipts_query.eq("user_id", user_id)
             
@@ -142,11 +142,11 @@ def get_receipt_related_data_count(receipt_id: str) -> Dict[str, int]:
     """获取某个小票的关联数据数量"""
     try:
         # Count receipt_items
-        items_result = supabase.table("receipt_items").select("id", count="exact").eq("receipt_id", receipt_id).execute()
+        items_result = supabase.table("record_items").select("id", count="exact").eq("receipt_id", receipt_id).execute()
         items_count = items_result.count if items_result.count else 0
         
         # Count receipt_summaries
-        summaries_result = supabase.table("receipt_summaries").select("id", count="exact").eq("receipt_id", receipt_id).execute()
+        summaries_result = supabase.table("record_summaries").select("id", count="exact").eq("receipt_id", receipt_id).execute()
         summaries_count = summaries_result.count if summaries_result.count else 0
         
         # Count receipt_processing_runs
@@ -181,16 +181,16 @@ def delete_receipt_and_related_data(receipt_id: str, dry_run: bool = True) -> bo
     try:
         # Delete in correct order (children first due to foreign key constraints)
         # 1. receipt_items
-        supabase.table("receipt_items").delete().eq("receipt_id", receipt_id).execute()
+        supabase.table("record_items").delete().eq("receipt_id", receipt_id).execute()
         
         # 2. receipt_summaries
-        supabase.table("receipt_summaries").delete().eq("receipt_id", receipt_id).execute()
+        supabase.table("record_summaries").delete().eq("receipt_id", receipt_id).execute()
         
         # 3. receipt_processing_runs
         supabase.table("receipt_processing_runs").delete().eq("receipt_id", receipt_id).execute()
         
         # 4. receipts (CASCADE should handle remaining references)
-        supabase.table("receipts").delete().eq("id", receipt_id).execute()
+        supabase.table("receipt_status").delete().eq("id", receipt_id).execute()
         
         print(f"  ✅ Deleted receipt {receipt_id}")
         return True

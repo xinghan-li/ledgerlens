@@ -91,7 +91,7 @@ English
 Module Classification: Future Module (PricePeek)
 
 The price_snapshots table is reserved for a future price aggregation system (PricePeek).
-It is intended to store aggregated price data derived from receipt_items, enabling cross-user price tracking, trend analysis, and crowd-sourced price comparison.
+It is intended to store aggregated price data derived from record_items, enabling cross-user price tracking, trend analysis, and crowd-sourced price comparison.
 
 At the current LedgerLens MVP stage:
 
@@ -110,7 +110,7 @@ This table represents a planned expansion module and is intentionally separated 
 模块分类：未来模块（PricePeek）
 
 price_snapshots 表用于未来的价格聚合系统（PricePeek）。
-它的设计目标是从 receipt_items 中提取数据进行跨用户价格统计、趋势分析以及价格对比。
+它的设计目标是从 record_items 中提取数据进行跨用户价格统计、趋势分析以及价格对比。
 
 在当前 LedgerLens MVP 阶段：
 
@@ -264,33 +264,30 @@ Primary Key: id (uuid)
 Purpose: Routing which library prompts to use per prompt_key and scope (default|chain|location)
 Fields: id, prompt_key, library_id (FK → prompt_library), scope, chain_id, location_id, priority, is_active
 
-Table: receipt_items
-Primary Key:
-- id (uuid)
+Table: record_items
+Primary Key: id (uuid)
+Purpose: Individual line items from receipts (all users, high-volume table)
 
-Fields:
+Fields (post-024):
 - id (uuid)
 - receipt_id (uuid, FK → receipts.id)
 - user_id (uuid, FK → users.id)
 - product_name (text)
-- product_name_clean (text)
-- brand (text)
-- quantity (numeric)
+- product_name_clean (text, optional)
+- quantity (bigint, x100 e.g. 1.5→150, 2→200)
 - unit (text)
-- unit_price (numeric)
-- line_total (numeric)
+- unit_price (bigint, cents)
+- line_total (bigint, cents)
 - on_sale (boolean)
-- original_price (numeric)
-- discount_amount (numeric)
-- category_l1 (text)
-- category_l2 (text)
-- category_l3 (text)
-- ocr_coordinates (jsonb)
-- ocr_confidence (numeric)
+- original_price (bigint, cents, nullable)
+- discount_amount (bigint, cents, nullable)
+- category_id (uuid, FK → categories, level-3/leaf; L1/L2 via JOIN)
 - item_index (integer)
 - product_id (uuid, FK → products.id)
-- category_id (uuid, FK → categories.id)
 - created_at (timestamptz)
+
+Removed (024): brand, category_l1/l2/l3, ocr_coordinates, ocr_confidence
+Removed (MVP): record_items_enriched view
 
 Table: receipt_processing_runs
 Primary Key:
@@ -311,7 +308,7 @@ Fields:
 - validation_status (enum: pass, needs_review, unknown)
 - created_at (timestamptz)
 
-Table: receipt_summaries
+Table: record_summaries
 Primary Key:
 - id (uuid)
 
@@ -337,7 +334,7 @@ Fields:
 - created_at (timestamptz)
 - updated_at (timestamptz)
 
-Table: receipts
+Table: receipt_status
 Primary Key:
 - id (uuid)
 

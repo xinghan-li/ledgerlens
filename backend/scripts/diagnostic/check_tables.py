@@ -29,10 +29,10 @@ print("-" * 60)
 
 tables_to_check = [
     'users',
-    'receipts',
+    'receipt_status',
     'receipt_processing_runs',
-    'receipt_summaries',
-    'receipt_items',
+    'record_summaries',
+    'record_items',
     'brands',
     'categories',
     'products',

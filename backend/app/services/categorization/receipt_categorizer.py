@@ -37,7 +37,7 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
     
     try:
         # 检查 receipt 状态
-        receipt = supabase.table("receipts")\
+        receipt = supabase.table("receipt_status")\
             .select("id, user_id, current_status, current_stage")\
             .eq("id", receipt_id)\
             .single()\
@@ -115,7 +115,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     
     # 2. 检查是否已经 categorize 过
     if not force:
-        existing_summary = supabase.table("receipt_summaries")\
+        existing_summary = supabase.table("record_summaries")\
             .select("id")\
             .eq("receipt_id", receipt_id)\
             .execute()
@@ -129,7 +129,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             }
     
     # 3. 读取 receipt 和 processing run
-    receipt = supabase.table("receipts")\
+    receipt = supabase.table("receipt_status")\
         .select("id, user_id")\
         .eq("id", receipt_id)\
         .single()\
@@ -156,8 +156,8 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     # 4. 如果 force=True，删除旧数据
     if force:
         try:
-            supabase.table("receipt_items").delete().eq("receipt_id", receipt_id).execute()
-            supabase.table("receipt_summaries").delete().eq("receipt_id", receipt_id).execute()
+            supabase.table("record_items").delete().eq("receipt_id", receipt_id).execute()
+            supabase.table("record_summaries").delete().eq("receipt_id", receipt_id).execute()
             logger.info(f"Deleted existing categorization data for {receipt_id}")
         except Exception as e:
             logger.warning(f"Failed to delete old data: {e}")
@@ -192,7 +192,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         logger.error(f"❌ Failed to save receipt_items: {e}")
         # 如果 items 保存失败，回滚 summary
         try:
-            supabase.table("receipt_summaries").delete().eq("id", summary_id).execute()
+            supabase.table("record_summaries").delete().eq("id", summary_id).execute()
         except Exception as rollback_error:
             logger.warning(f"Failed to rollback summary {summary_id}: {rollback_error}")
         return {

@@ -33,9 +33,9 @@ If you're setting up a **brand new production database**, run these migrations i
    - Updates Costco Lynnwood store address to canonical format
    - ⚠️ Only needed if you have Costco Lynnwood data
 
-7. **012_add_receipt_items_and_summaries.sql** - Receipt data denormalization
-   - Creates `receipt_items` table for individual line items
-   - Creates `receipt_summaries` table for receipt-level metadata
+7. **012_add_record_items_and_summaries.sql** - Receipt data denormalization
+   - Creates `record_items` table for individual line items
+   - Creates `record_summaries` table for receipt-level metadata
    - Enables efficient querying, aggregation, and API export
 
 8. **013_auto_create_user_on_signup.sql** - Auto-create user on signup
@@ -51,8 +51,8 @@ If you're setting up a **brand new production database**, run these migrations i
     - Creates unified product catalog for cross-receipt aggregation
     - **Depends on**: 015 (categories)
 
-11. **017_link_receipt_items_to_products.sql** - Link receipt items to products
-    - Adds `product_id` and `category_id` foreign keys to receipt_items
+11. **017_link_record_items_to_products.sql** - Link receipt items to products
+    - Adds `product_id` and `category_id` foreign keys to record_items
     - **Depends on**: 016 (products catalog)
 
 12. **018_add_price_snapshots.sql** - Price snapshots for PricePeek
@@ -81,6 +81,12 @@ If you're setting up a **brand new production database**, run these migrations i
 18. **023_seed_prompt_library.sql** - Seed prompt data (run after 023)
     - Inserts receipt_parse_base, package_price_discount, deposit_and_fee, membership_card, user_template, schema
     - Binds all to prompt_key='receipt_parse', scope='default'
+
+19. **024_simplify_record_items.sql** - Simplify record_items (MVP)
+    - Drops brand, category_l1/2/3, ocr_coordinates, ocr_confidence
+    - All quantities/prices as BIGINT (quantity x100, prices in cents)
+    - Drops record_items_enriched view
+    - Updates aggregate_prices_for_date for new schema
 
 ### ❌ Skip These (Deprecated Migrations):
 
@@ -113,11 +119,11 @@ If you already have a database with data and ran 008:
 006_add_validation_status.sql
 007_add_chain_name_to_store_locations.sql
 010_update_costco_lynnwood_address.sql (optional)
-012_add_receipt_items_and_summaries.sql
+012_add_record_items_and_summaries.sql
 013_auto_create_user_on_signup.sql
 015_add_categories_tree.sql
 016_add_products_catalog.sql
-017_link_receipt_items_to_products.sql
+017_link_record_items_to_products.sql
 018_add_price_snapshots.sql
 019_add_categorization_rules.sql
 020_drop_brands_table.sql
@@ -125,6 +131,7 @@ If you already have a database with data and ran 008:
 022_simplify_products.sql
 023_prompt_library_and_binding.sql
 023_seed_prompt_library.sql
+024_simplify_record_items.sql
 ```
 
 ### 📊 Execution Order (with Dependencies):
@@ -176,10 +183,11 @@ If you already have a database with data and ran 008:
 | 021 | Simplify categories | ✅ Production |
 | 022 | Simplify products | ✅ Production |
 | 023 | Prompt library + binding | ✅ Production |
+| 024 | Simplify record_items | ✅ Production |
 
 ## 🎯 Current Stage Values (Final)
 
-After running production migrations, `receipts.current_stage` supports:
+After running production migrations, `receipt_status.current_stage` supports:
 - `'ocr'` - OCR processing stage
 - `'llm_primary'` - Primary LLM processing (Gemini/OpenAI)
 - `'llm_fallback'` - Fallback LLM processing
@@ -233,12 +241,12 @@ backend/database/
 1. **Product Normalization Service**
    - Extract normalized_name from product_name
    - Match or create products
-   - Link receipt_items to products
+   - Link record_items to products
 
 2. **Backfill Existing Data**
    ```python
    # Update workflow_processor.py to:
-   for item in receipt_items:
+   for item in record_items:
        product = normalize_and_find_product(
            product_name=item.product_name,
            brand=item.brand,
@@ -296,13 +304,13 @@ If you're unsure which migrations to run, ask yourself:
 After running migrations, verify correct schema:
 
 ```sql
--- Check receipts constraint
+-- Check receipt_status constraint
 SELECT 
     conname, 
     pg_get_constraintdef(oid) 
 FROM pg_constraint 
-WHERE conrelid = 'receipts'::regclass 
-AND conname = 'receipts_current_stage_check';
+WHERE conrelid = 'receipt_status'::regclass 
+AND conname LIKE '%current_stage%';
 
 -- Expected result:
 -- CHECK (current_stage IN ('ocr', 'llm_primary', 'llm_fallback', 'manual'))
@@ -312,8 +320,8 @@ SELECT tablename
 FROM pg_tables 
 WHERE schemaname = 'public' 
   AND tablename IN (
-    'users', 'receipts', 'receipt_processing_runs', 
-    'receipt_items', 'receipt_summaries',
+    'users', 'receipt_status', 'receipt_processing_runs', 
+    'record_items', 'record_summaries',
     'brands', 'categories', 'products', 
     'product_categorization_rules', 'price_snapshots'
   )

@@ -73,7 +73,7 @@ supabase = _get_client()
 
 # 1. 获取所有成功的小票
 print("\n1. 查询成功的小票...")
-receipts = supabase.table("receipts")\
+receipts = supabase.table("receipt_status")\
     .select("id, user_id, uploaded_at")\
     .eq("current_status", "success")\
     .order("uploaded_at", desc=True)\

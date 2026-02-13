@@ -85,7 +85,7 @@ except Exception as e:
 print("\n3️⃣ Verifying data...")
 supabase = _get_client()
 
-summary = supabase.table("receipt_summaries").select("*").eq("receipt_id", test_receipt_id).execute()
+summary = supabase.table("record_summaries").select("*").eq("receipt_id", test_receipt_id).execute()
 if summary.data:
     print("✅ receipt_summary verified")
     s = summary.data[0]
@@ -95,11 +95,13 @@ if summary.data:
 else:
     print("❌ receipt_summary not found")
 
-items = supabase.table("receipt_items").select("id, product_name, line_total").eq("receipt_id", test_receipt_id).execute()
+items = supabase.table("record_items").select("id, product_name, line_total").eq("receipt_id", test_receipt_id).execute()
 if items.data:
     print(f"✅ {len(items.data)} receipt_items verified")
     for idx, item in enumerate(items.data[:3], 1):
-        print(f"   {idx}. {item.get('product_name')} - ${item.get('line_total')}")
+        lt = item.get("line_total")
+        amt = f"${lt/100:.2f}" if lt is not None else "N/A"
+        print(f"   {idx}. {item.get('product_name')} - {amt}")
     if len(items.data) > 3:
         print(f"   ... and {len(items.data) - 3} more")
 else:

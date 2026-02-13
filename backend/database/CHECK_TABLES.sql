@@ -7,9 +7,9 @@
 SELECT 
   table_name,
   CASE 
-    WHEN table_name IN ('users', 'receipts', 'receipt_processing_runs', 'store_chains', 'store_locations') 
+    WHEN table_name IN ('users', 'receipt_status', 'receipt_processing_runs', 'store_chains', 'store_locations') 
       THEN '✅ Core (Migration 001)'
-    WHEN table_name IN ('receipt_summaries', 'receipt_items') 
+    WHEN table_name IN ('record_summaries', 'record_items') 
       THEN '📦 Migration 012'
     WHEN table_name = 'brands' 
       THEN '⚠️ Deprecated (014, run 020 to drop)'
