@@ -6,6 +6,15 @@ The migrations in this folder are **deprecated** and should **NOT** be run on fr
 
 ## 📁 Files in This Folder
 
+### 014_add_brands_table.sql ❌
+- **Purpose**: Created brands table for product brand normalization
+- **Why Deprecated**: 2026-02-12 - MVP simplification. High maintenance, low benefit.
+- **Status**: DO NOT RUN on fresh databases
+
+**What to do instead:**
+- **Existing DB** (ran 014+016): Run `020_drop_brands_table.sql` to remove brands and products.brand_id
+- **Fresh DB**: Skip 014, run 015 → 016 → ... → 020 (016 no longer depends on brands)
+
 ### 008_update_current_stage.sql ❌
 - **Purpose**: Expanded `receipts.current_stage` from 4 simple values to 8 granular values
 - **Why Deprecated**: This added unnecessary complexity that was later reverted

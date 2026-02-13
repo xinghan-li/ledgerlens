@@ -150,14 +150,14 @@ BEGIN
     RETURN;
   END IF;
   
-  -- 3. Try store-specific fuzzy match
+  -- 3. Try store-specific fuzzy match (similarity() returns real, cast to NUMERIC to match return type)
   IF p_store_chain_id IS NOT NULL THEN
     RETURN QUERY
     SELECT 
       r.id,
       r.category_id,
       r.match_type,
-      similarity(r.normalized_name, p_normalized_name) as similarity_score,
+      (similarity(r.normalized_name, p_normalized_name))::NUMERIC as similarity_score,
       TRUE as is_store_specific
     FROM product_categorization_rules r
     WHERE r.store_chain_id = p_store_chain_id
@@ -171,13 +171,13 @@ BEGIN
     END IF;
   END IF;
   
-  -- 4. Try universal fuzzy match
+  -- 4. Try universal fuzzy match (similarity() returns real, cast to NUMERIC to match return type)
   RETURN QUERY
   SELECT 
     r.id,
     r.category_id,
     r.match_type,
-    similarity(r.normalized_name, p_normalized_name) as similarity_score,
+    (similarity(r.normalized_name, p_normalized_name))::NUMERIC as similarity_score,
     FALSE as is_store_specific
   FROM product_categorization_rules r
   WHERE r.store_chain_id IS NULL

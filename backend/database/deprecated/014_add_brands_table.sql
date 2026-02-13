@@ -1,4 +1,16 @@
 -- ============================================
+-- ⚠️ DEPRECATED 2026-02-12 - DO NOT RUN ON FRESH DATABASES
+-- ============================================
+-- Migration 014: Add brands table
+--
+-- DECISION: Brands table deprecated per MVP principle. High maintenance, low benefit.
+-- Run migration 020_drop_brands_table.sql to remove brands from existing databases.
+-- For fresh installs: skip this migration; 016 has been updated to not require brands.
+--
+-- Original purpose: Normalize brand names for consistent brand-level analytics
+-- ============================================
+
+-- ============================================
 -- Migration 014: Add brands table
 -- ============================================
 -- Purpose: Normalize brand names for consistent brand-level analytics

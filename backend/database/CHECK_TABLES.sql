@@ -12,7 +12,7 @@ SELECT
     WHEN table_name IN ('receipt_summaries', 'receipt_items') 
       THEN '📦 Migration 012'
     WHEN table_name = 'brands' 
-      THEN '🏷️ Migration 014'
+      THEN '⚠️ Deprecated (014, run 020 to drop)'
     WHEN table_name = 'categories' 
       THEN '🗂️ Migration 015'
     WHEN table_name = 'products' 
