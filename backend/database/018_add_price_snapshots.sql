@@ -4,7 +4,7 @@
 -- Purpose: Aggregated price data for PricePeek (GasBuddy for groceries)
 --
 -- This table is:
--- - Derived from receipt_items (not source of truth)
+-- - Derived from record_items (not source of truth)
 -- - Updated via scheduled jobs
 -- - Optimized for fast price queries
 --
@@ -93,7 +93,7 @@ CREATE TRIGGER price_snapshots_updated_at
 -- ============================================
 -- 3. Comments
 -- ============================================
-COMMENT ON TABLE price_snapshots IS 'Aggregated price data for PricePeek price comparison (derived from receipt_items)';
+COMMENT ON TABLE price_snapshots IS 'Aggregated price data for PricePeek price comparison (derived from record_items)';
 COMMENT ON COLUMN price_snapshots.snapshot_date IS 'Date of this price snapshot (typically daily aggregation)';
 COMMENT ON COLUMN price_snapshots.sample_count IS 'Number of receipt observations contributing to this snapshot';
 COMMENT ON COLUMN price_snapshots.confidence_score IS 'Confidence in price accuracy (based on sample size, recency, etc.)';
@@ -142,7 +142,7 @@ RETURNS INT AS $$
 DECLARE
   rows_inserted INT := 0;
 BEGIN
-  -- Aggregate receipt_items data into price_snapshots
+  -- Aggregate record_items data into price_snapshots
   INSERT INTO price_snapshots (
     product_id,
     store_location_id,
@@ -200,9 +200,9 @@ BEGIN
       ELSE 'low'
     END as data_quality
     
-  FROM receipt_items ri
-  JOIN receipts r ON ri.receipt_id = r.id
-  JOIN receipt_summaries rs ON r.id = rs.receipt_id
+  FROM record_items ri
+  JOIN receipt_status r ON ri.receipt_id = r.id
+  JOIN record_summaries rs ON r.id = rs.receipt_id
   WHERE ri.product_id IS NOT NULL
     AND rs.store_location_id IS NOT NULL
     AND rs.receipt_date = target_date
@@ -240,7 +240,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION aggregate_prices_for_date IS 'Aggregate receipt_items into price_snapshots for a given date. Run daily via cron job.';
+COMMENT ON FUNCTION aggregate_prices_for_date IS 'Aggregate record_items into price_snapshots for a given date. Run daily via cron job.';
 
 -- ============================================
 -- 6. Helper function to aggregate all historical dates
@@ -256,10 +256,10 @@ DECLARE
   process_date DATE;
   rows INT;
 BEGIN
-  -- Get date range from receipt_summaries
+  -- Get date range from record_summaries
   SELECT MIN(receipt_date), MAX(receipt_date) 
   INTO start_date, end_date
-  FROM receipt_summaries
+  FROM record_summaries
   WHERE store_location_id IS NOT NULL;
   
   IF start_date IS NULL THEN
@@ -294,7 +294,7 @@ BEGIN
   RAISE NOTICE 'Created price_snapshots table and aggregation functions';
   RAISE NOTICE '';
   RAISE NOTICE 'Next steps:';
-  RAISE NOTICE '1. After backfilling products and receipt_items.product_id:';
+  RAISE NOTICE '1. After backfilling products and record_items.product_id:';
   RAISE NOTICE '   SELECT * FROM backfill_all_price_snapshots();';
   RAISE NOTICE '';
   RAISE NOTICE '2. Set up daily cron job to run:';

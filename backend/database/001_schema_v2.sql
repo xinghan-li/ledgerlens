@@ -86,7 +86,7 @@ comment on table users is 'User profile extension (extends Supabase auth.users)'
 -- ============================================
 -- 5. RECEIPTS 表（主表）
 -- ============================================
-create table receipts (
+create table receipt_status (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references users(id),
   uploaded_at timestamptz default now(),
@@ -100,21 +100,21 @@ create table receipts (
   check (current_status in ('success', 'failed', 'needs_review'))
 );
 
-create index receipts_user_id_idx on receipts(user_id);
-create index receipts_status_idx on receipts(current_status);
-create index receipts_stage_idx on receipts(current_stage);
-create index receipts_created_at_idx on receipts(created_at);
+create index receipt_status_user_id_idx on receipt_status(user_id);
+create index receipt_status_status_idx on receipt_status(current_status);
+create index receipt_status_stage_idx on receipt_status(current_stage);
+create index receipt_status_created_at_idx on receipt_status(created_at);
 
-comment on table receipts is 'Receipt upload records - tracks current status and stage';
-comment on column receipts.current_stage is 'Current processing stage: ocr, llm_primary, llm_fallback, manual';
-comment on column receipts.current_status is 'Current processing status: success, failed, needs_review';
+comment on table receipt_status is 'Receipt upload records - tracks current status and stage';
+comment on column receipt_status.current_stage is 'Current processing stage: ocr, llm_primary, llm_fallback, manual';
+comment on column receipt_status.current_status is 'Current processing status: success, failed, needs_review';
 
 -- ============================================
 -- 6. RECEIPT_PROCESSING_RUNS 表（处理历史）
 -- ============================================
 create table receipt_processing_runs (
   id uuid primary key default gen_random_uuid(),
-  receipt_id uuid not null references receipts(id) on delete cascade,
+  receipt_id uuid not null references receipt_status(id) on delete cascade,
   stage text not null,  -- ocr | llm | manual
   model_provider text,  -- tesseract, google_documentai, aws_textract, gemini, openai, etc.
   model_name text,  -- e.g., "gpt-4o-mini", "gemini-1.5-flash"
@@ -147,7 +147,7 @@ create table api_calls (
   id uuid primary key default gen_random_uuid(),
   call_type text not null,  -- 'ocr' | 'llm'
   provider text not null,  -- google_documentai, aws_textract, gemini, openai
-  receipt_id uuid references receipts(id),
+  receipt_id uuid references receipt_status(id),
   duration_ms int,  -- 耗时（毫秒）
   status text not null,  -- success, failed
   error_code text,  -- 如果失败
@@ -175,7 +175,7 @@ create table store_candidates (
   raw_name text not null,
   normalized_name text not null,
   source text not null,  -- ocr | llm | user
-  receipt_id uuid references receipts(id),
+  receipt_id uuid references receipt_status(id),
   suggested_chain_id uuid references store_chains(id),
   suggested_location_id uuid references store_locations(id),
   confidence_score numeric(3, 2),  -- 0.00 - 1.00
@@ -222,8 +222,8 @@ create trigger users_updated_at
   before update on users
   for each row execute function update_updated_at();
 
-create trigger receipts_updated_at 
-  before update on receipts
+create trigger receipt_status_updated_at 
+  before update on receipt_status
   for each row execute function update_updated_at();
   
 -- Note: receipt_processing_runs does not have updated_at (immutable history)

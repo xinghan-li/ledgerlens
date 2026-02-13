@@ -24,7 +24,7 @@ print("="*60)
 
 # 查询所有 receipts，按 file_hash 分组
 print("\n1. 按 file_hash 分组查询...")
-all_receipts = supabase.table("receipts")\
+all_receipts = supabase.table("receipt_status")\
     .select("id, user_id, file_hash, uploaded_at, current_status")\
     .order("uploaded_at")\
     .execute()

@@ -24,7 +24,7 @@ print("="*60)
 
 # 找一张 success 的小票
 print("\n1. 查找可以 categorize 的小票...")
-success_receipts = supabase.table("receipts")\
+success_receipts = supabase.table("receipt_status")\
     .select("id, user_id, current_status, uploaded_at")\
     .eq("current_status", "success")\
     .order("uploaded_at", desc=True)\
@@ -101,7 +101,7 @@ except Exception as e:
 # 验证数据
 print("\n4. 验证保存的数据...")
 
-summary = supabase.table("receipt_summaries")\
+summary = supabase.table("record_summaries")\
     .select("*")\
     .eq("receipt_id", receipt_id)\
     .execute()
@@ -115,7 +115,7 @@ if summary.data:
 else:
     print("❌ 没有 receipt_summary")
 
-items = supabase.table("receipt_items")\
+items = supabase.table("record_items")\
     .select("id, product_name, line_total")\
     .eq("receipt_id", receipt_id)\
     .execute()
@@ -123,7 +123,9 @@ items = supabase.table("receipt_items")\
 if items.data:
     print(f"✅ receipt_items: {len(items.data)} 个")
     for idx, item in enumerate(items.data[:3], 1):
-        print(f"   {idx}. {item.get('product_name')} - ${item.get('line_total')}")
+        lt = item.get("line_total")
+        amt = f"${lt/100:.2f}" if lt is not None else "N/A"
+        print(f"   {idx}. {item.get('product_name')} - {amt}")
     if len(items.data) > 3:
         print(f"   ... 还有 {len(items.data) - 3} 个")
 else:

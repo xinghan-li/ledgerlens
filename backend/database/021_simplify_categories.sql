@@ -21,7 +21,7 @@
 BEGIN;
 
 -- 0. Drop views that depend on categories columns
-DROP VIEW IF EXISTS receipt_items_enriched;
+DROP VIEW IF EXISTS record_items_enriched;
 
 -- 1. Drop display name column (content can be reproduced from normalized_name via title case)
 ALTER TABLE categories DROP COLUMN IF EXISTS name;
@@ -43,8 +43,8 @@ CREATE INDEX categories_name_trgm_idx ON categories USING gin(name gin_trgm_ops)
 -- 5. Update comments
 COMMENT ON COLUMN categories.name IS 'Category name (lowercase normalized, apply title case in frontend for display)';
 
--- 6. Recreate receipt_items_enriched (depends on categories.name)
-CREATE OR REPLACE VIEW receipt_items_enriched AS
+-- 6. Recreate record_items_enriched (depends on categories.name)
+CREATE OR REPLACE VIEW record_items_enriched AS
 SELECT 
   ri.id,
   ri.receipt_id,
@@ -69,17 +69,17 @@ SELECT
   sl.name as store_location_name,
   rs.receipt_date,
   ri.created_at
-FROM receipt_items ri
+FROM record_items ri
 LEFT JOIN products p ON ri.product_id = p.id
 LEFT JOIN categories c3 ON COALESCE(ri.category_id, p.category_id) = c3.id
 LEFT JOIN categories c2 ON c3.parent_id = c2.id
 LEFT JOIN categories c1 ON c2.parent_id = c1.id
-LEFT JOIN receipts r ON ri.receipt_id = r.id
-LEFT JOIN receipt_summaries rs ON r.id = rs.receipt_id
+LEFT JOIN receipt_status r ON ri.receipt_id = r.id
+LEFT JOIN record_summaries rs ON r.id = rs.receipt_id
 LEFT JOIN store_chains sc ON rs.store_chain_id = sc.id
 LEFT JOIN store_locations sl ON rs.store_location_id = sl.id;
 
-COMMENT ON VIEW receipt_items_enriched IS 'Enriched view of receipt_items with product, category, and store information';
+COMMENT ON VIEW record_items_enriched IS 'Enriched view of record_items with product, category, and store information';
 
 COMMIT;
 

@@ -37,7 +37,7 @@ print("=" * 80)
 print("\n1. Recent Receipts (last 10):")
 print("-" * 80)
 try:
-    receipts = supabase.table("receipts").select("*").order("uploaded_at", desc=True).limit(10).execute()
+    receipts = supabase.table("receipt_status").select("*").order("uploaded_at", desc=True).limit(10).execute()
     
     if receipts.data:
         print(f"Found {len(receipts.data)} recent receipts:\n")
@@ -92,7 +92,7 @@ print("\n2. Overall Statistics:")
 print("-" * 80)
 try:
     # Total receipts
-    receipts_count = supabase.table("receipts").select("id", count="exact").execute()
+    receipts_count = supabase.table("receipt_status").select("id", count="exact").execute()
     total_receipts = receipts_count.count if hasattr(receipts_count, 'count') else len(receipts_count.data)
     
     # Total processing runs

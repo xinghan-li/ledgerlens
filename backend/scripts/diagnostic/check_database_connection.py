@@ -83,7 +83,7 @@ def check_database_connection():
         
         # Clean up: delete test receipt
         try:
-            supabase.table("receipts").delete().eq("id", receipt_id).execute()
+            supabase.table("receipt_status").delete().eq("id", receipt_id).execute()
             print(f"   ✓ Test receipt deleted (cleanup)")
         except Exception as e:
             print(f"   ⚠ Warning: Could not delete test receipt: {e}")

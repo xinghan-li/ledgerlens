@@ -1257,7 +1257,7 @@ async def categorize_single_receipt(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    将 receipt_processing_runs.output_payload 标准化并保存到 receipt_items/summaries
+    将 receipt_processing_runs.output_payload 标准化并保存到 record_items/record_summaries
     
     前置条件：
     1. Receipt 必须存在

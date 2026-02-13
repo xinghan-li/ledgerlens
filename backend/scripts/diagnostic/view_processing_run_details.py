@@ -36,7 +36,7 @@ receipt_id = sys.argv[1] if len(sys.argv) > 1 else None
 if not receipt_id:
     # Get latest receipt
     print("No receipt_id provided, showing latest receipt...\n")
-    receipts = supabase.table("receipts").select("id, current_status, uploaded_at").order("uploaded_at", desc=True).limit(1).execute()
+    receipts = supabase.table("receipt_status").select("id, current_status, uploaded_at").order("uploaded_at", desc=True).limit(1).execute()
     if not receipts.data:
         print("ERROR: No receipts found")
         exit(1)

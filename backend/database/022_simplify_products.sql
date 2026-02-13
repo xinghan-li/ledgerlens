@@ -23,7 +23,7 @@
 BEGIN;
 
 -- 0. Drop views that reference products columns we're removing
-DROP VIEW IF EXISTS receipt_items_enriched;
+DROP VIEW IF EXISTS record_items_enriched;
 
 -- 1. Drop unique constraint (may include variant_type)
 ALTER TABLE products DROP CONSTRAINT IF EXISTS products_unique_key;
@@ -54,8 +54,8 @@ BEGIN
   END IF;
 END $$;
 
--- 4. Recreate receipt_items_enriched (without is_organic, etc.)
-CREATE OR REPLACE VIEW receipt_items_enriched AS
+-- 4. Recreate record_items_enriched (without is_organic, etc.)
+CREATE OR REPLACE VIEW record_items_enriched AS
 SELECT 
   ri.id,
   ri.receipt_id,
@@ -80,17 +80,17 @@ SELECT
   sl.name as store_location_name,
   rs.receipt_date,
   ri.created_at
-FROM receipt_items ri
+FROM record_items ri
 LEFT JOIN products p ON ri.product_id = p.id
 LEFT JOIN categories c3 ON COALESCE(ri.category_id, p.category_id) = c3.id
 LEFT JOIN categories c2 ON c3.parent_id = c2.id
 LEFT JOIN categories c1 ON c2.parent_id = c1.id
-LEFT JOIN receipts r ON ri.receipt_id = r.id
-LEFT JOIN receipt_summaries rs ON r.id = rs.receipt_id
+LEFT JOIN receipt_status r ON ri.receipt_id = r.id
+LEFT JOIN record_summaries rs ON r.id = rs.receipt_id
 LEFT JOIN store_chains sc ON rs.store_chain_id = sc.id
 LEFT JOIN store_locations sl ON rs.store_location_id = sl.id;
 
-COMMENT ON VIEW receipt_items_enriched IS 'Enriched view of receipt_items with product, category, and store information';
+COMMENT ON VIEW record_items_enriched IS 'Enriched view of record_items with product, category, and store information';
 
 COMMIT;
 

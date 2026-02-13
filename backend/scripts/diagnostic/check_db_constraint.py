@@ -36,7 +36,7 @@ print("=" * 60)
 print("\nStep 1: Check current data distribution...")
 try:
     # Query receipts table for current_stage values
-    result = supabase.table("receipts").select("current_stage, current_status").execute()
+    result = supabase.table("receipt_status").select("current_stage, current_status").execute()
     
     if result.data:
         stage_counts = {}

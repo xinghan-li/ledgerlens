@@ -1562,7 +1562,7 @@ async def _save_output(
     # Timeline data is still tracked in memory for duration calculations
     logger.debug("Skipping timeline and CSV file generation (data stored in database)")
     
-    # Note: Categorization (saving to receipt_items/receipt_summaries) is now done via
+    # Note: Categorization (saving to record_items/record_summaries) is now done via
     # a separate API endpoint (/api/receipt/categorize) after workflow completes successfully
 
 

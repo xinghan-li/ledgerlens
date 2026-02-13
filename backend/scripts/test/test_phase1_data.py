@@ -30,7 +30,7 @@ print("="*60)
 # 查找最近处理的小票
 print("\n1. 查找最近的成功小票...")
 try:
-    recent_receipts = supabase.table("receipts")\
+    recent_receipts = supabase.table("receipt_status")\
         .select("id, user_id, current_status, current_stage, uploaded_at")\
         .eq("current_status", "success")\
         .order("uploaded_at", desc=True)\
@@ -60,7 +60,7 @@ try:
     
     # 检查 receipt_summaries
     print("\n2. 检查 receipt_summaries...")
-    summary = supabase.table("receipt_summaries")\
+    summary = supabase.table("record_summaries")\
         .select("*")\
         .eq("receipt_id", test_receipt_id)\
         .execute()
@@ -78,7 +78,7 @@ try:
     
     # 检查 receipt_items
     print("\n3. 检查 receipt_items...")
-    items = supabase.table("receipt_items")\
+    items = supabase.table("record_items")\
         .select("*")\
         .eq("receipt_id", test_receipt_id)\
         .order("item_index")\
@@ -87,11 +87,14 @@ try:
     if items.data:
         print(f"✅ 找到 {len(items.data)} 个 receipt_items:")
         for idx, item in enumerate(items.data[:5], 1):
+            qty, up, lt = item.get("quantity"), item.get("unit_price"), item.get("line_total")
+            qty_str = f"{qty/100}" if qty is not None else "?"
+            up_str = f"${up/100:.2f}" if up is not None else "?"
+            lt_str = f"${lt/100:.2f}" if lt is not None else "?"
             print(f"   {idx}. {item.get('product_name')}")
-            print(f"      Brand: {item.get('brand')}")
-            print(f"      Quantity: {item.get('quantity')} {item.get('unit')}")
-            print(f"      Price: ${item.get('unit_price')} → ${item.get('line_total')}")
-            print(f"      Category: {item.get('category_l1')} > {item.get('category_l2')} > {item.get('category_l3')}")
+            print(f"      Quantity: {qty_str} {item.get('unit')}")
+            print(f"      Price: {up_str} → {lt_str}")
+            print(f"      Category ID: {item.get('category_id')}")
         if len(items.data) > 5:
             print(f"   ... 还有 {len(items.data) - 5} 个商品")
     else:
@@ -102,16 +105,16 @@ try:
     print("📊 Phase 1 数据覆盖率统计")
     print("="*60)
     
-    total_receipts = supabase.table("receipts")\
+    total_receipts = supabase.table("receipt_status")\
         .select("id", count="exact")\
         .eq("current_status", "success")\
         .execute()
     
-    total_summaries = supabase.table("receipt_summaries")\
+    total_summaries = supabase.table("record_summaries")\
         .select("id", count="exact")\
         .execute()
     
-    total_items = supabase.table("receipt_items")\
+    total_items = supabase.table("record_items")\
         .select("id", count="exact")\
         .execute()
     
