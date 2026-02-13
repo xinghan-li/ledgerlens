@@ -1,0 +1,251 @@
+normalized_name,store_chain_name,category_path,match_type,priority,source,notes
+# ============================================
+# Initial Categorization Rules
+# ============================================
+# Format:
+# - normalized_name: lowercase, no punctuation (e.g., "banana", "naan bread")
+# - store_chain_name: Store chain name (NULL = universal rule)
+# - category_path: Full category path (e.g., "Grocery/Produce/Fruit")
+# - match_type: exact, fuzzy, contains
+# - priority: Lower = higher priority (1-1000)
+# - source: seed, manual, auto
+# - notes: Human-readable explanation
+#
+# Strategy:
+# 1. Universal rules (store_chain_name = NULL) have lower priority (200+)
+# 2. Store-specific rules have higher priority (1-100)
+# 3. When multiple matches exist, store-specific rules win
+# ============================================
+
+# Produce - Fruit (Universal)
+banana,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: bananas are always fruit
+apple,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: apples are always fruit
+orange,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: oranges are always fruit
+grape,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: grapes are always fruit
+strawberry,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: strawberries are always fruit
+blueberry,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: blueberries are always fruit
+watermelon,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: watermelon is always fruit
+mango,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: mango is always fruit
+avocado,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: avocado is technically a fruit
+pineapple,NULL,Grocery/Produce/Fruit,fuzzy,200,seed,Universal: pineapple is always fruit
+
+# Produce - Vegetables (Universal)
+carrot,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: carrots are vegetables
+broccoli,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: broccoli is a vegetable
+cauliflower,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: cauliflower is a vegetable
+spinach,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: spinach is a vegetable
+lettuce,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: lettuce is a vegetable
+tomato,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: tomatoes sold as vegetables
+cucumber,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: cucumbers sold as vegetables
+bell pepper,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: peppers are vegetables
+onion,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: onions are vegetables
+potato,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: potatoes are vegetables
+sweet potato,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: sweet potatoes are vegetables
+mushroom,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: mushrooms sold as vegetables
+
+# Dairy (Universal)
+milk,NULL,Grocery/Dairy/Milk,fuzzy,200,seed,Universal: milk is dairy
+cheese,NULL,Grocery/Dairy/Cheese,fuzzy,200,seed,Universal: cheese is dairy
+yogurt,NULL,Grocery/Dairy/Yogurt,fuzzy,200,seed,Universal: yogurt is dairy
+butter,NULL,Grocery/Dairy/Butter & Eggs,fuzzy,200,seed,Universal: butter is dairy
+cream,NULL,Grocery/Dairy/Cream,fuzzy,200,seed,Universal: cream is dairy
+egg,NULL,Grocery/Dairy/Butter & Eggs,fuzzy,200,seed,Universal: eggs are in dairy section
+sour cream,NULL,Grocery/Dairy/Cream,fuzzy,200,seed,Universal: sour cream is dairy
+cottage cheese,NULL,Grocery/Dairy/Cheese,fuzzy,200,seed,Universal: cottage cheese is cheese
+cream cheese,NULL,Grocery/Dairy/Cheese,fuzzy,200,seed,Universal: cream cheese is cheese
+
+# Meat & Seafood (Universal)
+chicken,NULL,Grocery/Meat & Seafood/Chicken,fuzzy,200,seed,Universal: chicken is poultry
+beef,NULL,Grocery/Meat & Seafood/Beef,fuzzy,200,seed,Universal: beef is meat
+pork,NULL,Grocery/Meat & Seafood/Pork,fuzzy,200,seed,Universal: pork is meat
+salmon,NULL,Grocery/Meat & Seafood/Fish,fuzzy,200,seed,Universal: salmon is fish
+shrimp,NULL,Grocery/Meat & Seafood/Seafood,fuzzy,200,seed,Universal: shrimp is seafood
+turkey,NULL,Grocery/Meat & Seafood/Chicken,fuzzy,200,seed,Universal: turkey is poultry
+bacon,NULL,Grocery/Meat & Seafood/Pork,fuzzy,200,seed,Universal: bacon is pork
+sausage,NULL,Grocery/Meat & Seafood/Pork,fuzzy,200,seed,Universal: sausage usually pork
+ground beef,NULL,Grocery/Meat & Seafood/Beef,exact,200,seed,Universal: ground beef is beef
+steak,NULL,Grocery/Meat & Seafood/Beef,fuzzy,200,seed,Universal: steak is beef
+
+# Bakery (Universal)
+bread,NULL,Grocery/Bakery,fuzzy,200,seed,Universal: bread is bakery
+bagel,NULL,Grocery/Bakery,fuzzy,200,seed,Universal: bagels are bakery
+croissant,NULL,Grocery/Bakery,fuzzy,200,seed,Universal: croissants are bakery
+muffin,NULL,Grocery/Bakery,fuzzy,200,seed,Universal: muffins are bakery
+donut,NULL,Grocery/Bakery,fuzzy,200,seed,Universal: donuts are bakery
+cake,NULL,Grocery/Bakery,fuzzy,200,seed,Universal: cakes are bakery
+cookie,NULL,Grocery/Bakery,fuzzy,200,seed,Universal: cookies are bakery
+pie,NULL,Grocery/Bakery,fuzzy,200,seed,Universal: pies are bakery
+
+# Frozen (Universal)
+ice cream,NULL,Grocery/Frozen,fuzzy,200,seed,Universal: ice cream is frozen
+frozen pizza,NULL,Grocery/Frozen,exact,200,seed,Universal: frozen pizza is frozen
+frozen vegetable,NULL,Grocery/Frozen,contains,200,seed,Universal: frozen vegetables
+frozen fruit,NULL,Grocery/Frozen,contains,200,seed,Universal: frozen fruits
+frozen meal,NULL,Grocery/Frozen,contains,200,seed,Universal: frozen meals
+
+# Pantry (Universal)
+rice,NULL,Grocery/Pantry,fuzzy,200,seed,Universal: rice is pantry staple
+pasta,NULL,Grocery/Pantry,fuzzy,200,seed,Universal: pasta is pantry staple
+cereal,NULL,Grocery/Pantry,fuzzy,200,seed,Universal: cereal is pantry item
+flour,NULL,Grocery/Pantry,fuzzy,200,seed,Universal: flour is pantry staple
+sugar,NULL,Grocery/Pantry,fuzzy,200,seed,Universal: sugar is pantry staple
+salt,NULL,Grocery/Pantry,fuzzy,200,seed,Universal: salt is pantry staple
+oil,NULL,Grocery/Pantry,fuzzy,200,seed,Universal: cooking oil is pantry
+beans,NULL,Grocery/Pantry,fuzzy,200,seed,Universal: beans are pantry items
+canned,NULL,Grocery/Pantry,contains,200,seed,Universal: canned goods are pantry
+
+# Beverages (Universal)
+water,NULL,Grocery/Beverages,fuzzy,200,seed,Universal: water is beverage
+juice,NULL,Grocery/Beverages,fuzzy,200,seed,Universal: juice is beverage
+soda,NULL,Grocery/Beverages,fuzzy,200,seed,Universal: soda is beverage
+coffee,NULL,Grocery/Beverages,fuzzy,200,seed,Universal: coffee is beverage
+tea,NULL,Grocery/Beverages,fuzzy,200,seed,Universal: tea is beverage
+beer,NULL,Grocery/Beverages,fuzzy,200,seed,Universal: beer is beverage
+wine,NULL,Grocery/Beverages,fuzzy,200,seed,Universal: wine is beverage
+
+# Snacks (Universal)
+chips,NULL,Grocery/Snacks,fuzzy,200,seed,Universal: chips are snacks
+crackers,NULL,Grocery/Snacks,fuzzy,200,seed,Universal: crackers are snacks
+nuts,NULL,Grocery/Snacks,fuzzy,200,seed,Universal: nuts are snacks
+popcorn,NULL,Grocery/Snacks,fuzzy,200,seed,Universal: popcorn is a snack
+candy,NULL,Grocery/Snacks,fuzzy,200,seed,Universal: candy is a snack
+chocolate,NULL,Grocery/Snacks,fuzzy,200,seed,Universal: chocolate is a snack
+
+# Household (Universal)
+paper towel,NULL,Household/Paper Products,fuzzy,200,seed,Universal: paper towels are household
+toilet paper,NULL,Household/Paper Products,fuzzy,200,seed,Universal: toilet paper is household
+dish soap,NULL,Household/Cleaning,fuzzy,200,seed,Universal: dish soap is cleaning
+laundry detergent,NULL,Household/Cleaning,fuzzy,200,seed,Universal: detergent is cleaning
+bleach,NULL,Household/Cleaning,fuzzy,200,seed,Universal: bleach is cleaning
+trash bag,NULL,Household/Kitchen,fuzzy,200,seed,Universal: trash bags are household
+aluminum foil,NULL,Household/Kitchen,fuzzy,200,seed,Universal: foil is household
+plastic wrap,NULL,Household/Kitchen,fuzzy,200,seed,Universal: plastic wrap is household
+
+# Personal Care (Universal)
+shampoo,NULL,Personal Care,fuzzy,200,seed,Universal: shampoo is personal care
+conditioner,NULL,Personal Care,fuzzy,200,seed,Universal: conditioner is personal care
+soap,NULL,Personal Care,fuzzy,200,seed,Universal: soap is personal care
+toothpaste,NULL,Personal Care,fuzzy,200,seed,Universal: toothpaste is personal care
+toothbrush,NULL,Personal Care,fuzzy,200,seed,Universal: toothbrush is personal care
+deodorant,NULL,Personal Care,fuzzy,200,seed,Universal: deodorant is personal care
+lotion,NULL,Personal Care,fuzzy,200,seed,Universal: lotion is personal care
+
+# ============================================
+# STORE-SPECIFIC RULES (Higher Priority)
+# ============================================
+# These override universal rules for specific chains
+
+# Naan Bread - Different placement by store
+# Universal default: Deli (most common)
+naan,NULL,Grocery/Deli,fuzzy,250,seed,Universal default: naan usually in deli section
+
+# Walmart: Naan in Deli (ready-to-eat section)
+naan,Walmart,Grocery/Deli,fuzzy,50,seed,Walmart keeps naan in deli section
+
+# Costco: Naan in Bakery (packaged bread section)
+naan,Costco Wholesale,Grocery/Bakery,fuzzy,50,seed,Costco keeps naan in bakery section
+
+# Trader Joe's: Naan in Frozen (most TJ naan is frozen)
+naan,Trader Joe's,Grocery/Frozen,fuzzy,50,seed,Trader Joes keeps naan in frozen section
+
+# Target: Naan in Frozen
+naan,Target,Grocery/Frozen,fuzzy,50,seed,Target keeps naan in frozen section
+
+# Tortillas - Different by store
+# Universal default: Deli/Refrigerated
+tortilla,NULL,Grocery/Deli,fuzzy,250,seed,Universal default: tortillas in refrigerated section
+
+# Walmart: Tortillas in Bakery (shelf-stable)
+tortilla,Walmart,Grocery/Bakery,fuzzy,50,seed,Walmart keeps tortillas in bakery aisle
+
+# Costco: Tortillas in Bakery (bulk packs)
+tortilla,Costco Wholesale,Grocery/Bakery,fuzzy,50,seed,Costco keeps tortillas in bakery section
+
+# Trader Joe's: Tortillas in Deli (refrigerated)
+tortilla,Trader Joe's,Grocery/Deli,fuzzy,50,seed,Trader Joes keeps tortillas refrigerated
+
+# Guacamole - Fresh vs Refrigerated
+# Universal default: Deli (refrigerated prepared foods)
+guacamole,NULL,Grocery/Deli,fuzzy,250,seed,Universal default: guacamole in refrigerated deli
+
+# Costco: Guacamole in Produce (fresh-made daily)
+guacamole,Costco Wholesale,Grocery/Produce,fuzzy,50,seed,Costco makes fresh guacamole daily in produce
+
+# Trader Joe's: Guacamole in Deli
+guacamole,Trader Joe's,Grocery/Deli,fuzzy,50,seed,Trader Joes keeps guacamole in refrigerated section
+
+# Rotisserie Chicken
+# Universal default: Deli (hot prepared foods)
+rotisserie chicken,NULL,Grocery/Deli,exact,250,seed,Universal default: rotisserie chicken in deli
+
+# Costco: Rotisserie Chicken in Deli (hot food area)
+rotisserie chicken,Costco Wholesale,Grocery/Deli,exact,50,seed,Costco famous rotisserie chicken in deli
+
+# Walmart: Rotisserie Chicken in Deli
+rotisserie chicken,Walmart,Grocery/Deli,exact,50,seed,Walmart rotisserie chicken in deli
+
+# Hummus - Refrigerated prepared foods
+# Universal default: Deli
+hummus,NULL,Grocery/Deli,fuzzy,250,seed,Universal default: hummus in refrigerated deli
+
+# Costco: Hummus in Deli
+hummus,Costco Wholesale,Grocery/Deli,fuzzy,50,seed,Costco keeps hummus in refrigerated section
+
+# Trader Joe's: Hummus in Deli
+hummus,Trader Joe's,Grocery/Deli,fuzzy,50,seed,Trader Joes keeps hummus refrigerated
+
+# Salsa - Fresh vs Jarred
+# Universal default: Pantry (jarred salsa most common)
+salsa,NULL,Grocery/Pantry,fuzzy,250,seed,Universal default: jarred salsa in pantry
+
+# Store-specific for FRESH salsa
+fresh salsa,NULL,Grocery/Deli,contains,200,seed,Fresh salsa in refrigerated deli
+refrigerated salsa,NULL,Grocery/Deli,contains,200,seed,Refrigerated salsa in deli section
+
+# Organic Products (Store-specific sections)
+# Trader Joe's: Most organic products integrated into regular sections
+organic,Trader Joe's,NULL,contains,300,seed,Trader Joes integrates organic throughout store
+
+# Whole Foods: Organic products throughout (no special section)
+organic,Whole Foods Market,NULL,contains,300,seed,Whole Foods is all organic/natural
+
+# ============================================
+# EDGE CASES & AMBIGUOUS ITEMS
+# ============================================
+
+# Eggs - Dairy section despite not being dairy
+# (Already handled above with high priority)
+
+# Bacon - Can be Meat or Deli depending on packaging
+precooked bacon,NULL,Grocery/Deli,contains,150,seed,Pre-cooked bacon often in deli section
+raw bacon,NULL,Grocery/Meat & Seafood/Pork,contains,150,seed,Raw bacon in meat section
+
+# Pizza - Fresh vs Frozen
+fresh pizza,NULL,Grocery/Deli,contains,150,seed,Fresh pizza in deli/prepared foods
+take and bake,NULL,Grocery/Deli,contains,150,seed,Take-and-bake pizza in deli
+
+# ============================================
+# MATCHING STRATEGY EXAMPLES
+# ============================================
+# The find_categorization_rule() function will:
+#
+# Example 1: User buys "NAAN BREAD" at Costco
+#   1. Normalize: "naan bread" → "naan"
+#   2. Find store_chain_id for Costco
+#   3. Match: exact "naan" + store_chain="Costco" → Grocery/Bakery (priority 50)
+#   4. Result: Bakery (store-specific rule wins)
+#
+# Example 2: User buys "naan" at Safeway (not in CSV)
+#   1. Normalize: "naan"
+#   2. Store_chain_id for Safeway found
+#   3. No exact match for Safeway
+#   4. Fallback to universal: "naan" → Grocery/Deli (priority 250)
+#   5. Result: Deli (universal rule)
+#
+# Example 3: User buys "naan flatbread" at Walmart
+#   1. Normalize: "naan flatbread" → "naan flatbread"
+#   2. No exact match
+#   3. Fuzzy match: similarity("naan flatbread", "naan") = 0.95 > 0.90
+#   4. Check store: Walmart → Grocery/Deli (priority 50)
+#   5. Result: Deli (fuzzy + store-specific)
+# ============================================

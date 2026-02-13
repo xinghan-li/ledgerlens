@@ -1,6 +1,9 @@
 -- ============================================
 -- Migration 015: Add hierarchical categories table
 -- ============================================
+-- NOTE: Structure simplified by migration 021 (drops display_order, icon, color,
+--       product_count; renames normalized_name→name, drops display name).
+--
 -- Purpose: Replace flat category_l1/l2/l3 columns with flexible tree structure
 --
 -- Benefits:

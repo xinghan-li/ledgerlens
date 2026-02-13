@@ -116,14 +116,12 @@ SELECT DISTINCT ON (product_id, store_location_id)
   
   -- Denormalize for fast access
   p.normalized_name as product_name,
-  b.name as brand_name,
   sl.name as store_name,
   sl.city,
   sl.state
   
 FROM price_snapshots ps
 JOIN products p ON ps.product_id = p.id
-LEFT JOIN brands b ON p.brand_id = b.id
 JOIN store_locations sl ON ps.store_location_id = sl.id
 ORDER BY product_id, store_location_id, snapshot_date DESC;
 

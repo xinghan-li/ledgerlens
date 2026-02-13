@@ -1,15 +1,15 @@
 """
-Prompt Manager: Manage merchant-specific RAG prompts.
+Prompt Manager: Manage prompts for receipt parsing.
 
-Retrieve and cache merchant-specific prompts from Supabase.
-Now supports both legacy store_chain_prompts and new tag-based RAG system.
+Uses prompt_library + prompt_binding (replaces legacy tag-based RAG).
+Resolves prompts by scope: default + chain + location.
 """
 from supabase import create_client, Client
 from ..config import settings
 from typing import Optional, Dict, Any
 import logging
 import json
-from .tag_based_rag import detect_tags_from_ocr, combine_rag_into_prompt, load_rag_snippets
+from .prompt_loader import load_prompts_for_receipt_parse
 
 logger = logging.getLogger(__name__)
 
@@ -234,103 +234,79 @@ def format_prompt(
     initial_parse_result: Optional[Dict[str, Any]] = None
 ) -> tuple[str, str, Dict[str, Any]]:
     """
-    Format prompt, prepare to send to LLM.
-    Now supports tag-based RAG system and initial parse result.
+    Format prompt from prompt_library + prompt_binding, prepare to send to LLM.
     
     Args:
         raw_text: Original receipt text
         trusted_hints: High-confidence fields (confidence >= 0.95)
         prompt_config: Prompt configuration (if None, use default)
-        merchant_name: Merchant name for tag detection (optional)
-        store_chain_id: Store chain ID for tag detection (optional)
-        location_id: Store location ID for location-based tag detection (optional)
-        state: State/province code for location-based tag detection (optional)
-        country_code: Country code for location-based tag detection (optional)
-        initial_parse_result: Optional rule-based extraction result to guide LLM (optional)
+        merchant_name: Merchant name (for logging)
+        store_chain_id: Store chain ID for chain-scoped bindings
+        location_id: Store location ID for location-scoped bindings
+        state: State/province (for future fee policy injection)
+        country_code: Country code (for future fee policy injection)
+        initial_parse_result: Optional rule-based extraction result to guide LLM
         
     Returns:
         (system_message, user_message, rag_metadata) tuple
-        rag_metadata contains information about detected tags and loaded snippets
     """
     if prompt_config is None:
         prompt_config = get_default_prompt()
     
-    base_system_message = prompt_config.get("system_message") or _get_default_system_message()
-    base_prompt_template = prompt_config.get("prompt_template") or _get_default_prompt_template()
-    
-    # Detect tags from OCR text, merchant name, and location
-    tag_names = []
-    rag_metadata = {
-        "detected_tags": [],
-        "tag_details": [],
-        "snippets_loaded": {
-            "system_messages": 0,
-            "prompt_additions": 0,
-            "extraction_rules": 0,
-            "validation_rules": 0,
-            "examples": 0
-        }
+    rag_metadata: Dict[str, Any] = {
+        "library_parts_loaded": 0,
+        "user_template_from_library": False,
+        "schema_from_library": False,
     }
     
-    if raw_text or merchant_name or location_id or state or country_code:
-        try:
-            tag_names = detect_tags_from_ocr(
-                raw_text=raw_text or "",
-                merchant_name=merchant_name,
-                store_chain_id=store_chain_id,
-                location_id=location_id,
-                state=state,
-                country_code=country_code
-            )
-            if tag_names:
-                logger.info(f"Detected tags for RAG: {tag_names}")
-                rag_metadata["detected_tags"] = tag_names
-        except Exception as e:
-            logger.warning(f"Failed to detect tags: {e}", exc_info=True)
-    
-    # Load RAG snippets and combine with base prompt
-    if tag_names:
-        snippets = load_rag_snippets(tag_names)
-        system_message, prompt_template = combine_rag_into_prompt(
-            base_system_message=base_system_message,
-            base_prompt_template=base_prompt_template,
-            tag_names=tag_names
+    # Load prompts from prompt_library + prompt_binding
+    try:
+        loaded = load_prompts_for_receipt_parse(
+            prompt_key="receipt_parse",
+            store_chain_id=store_chain_id,
+            location_id=location_id,
         )
-        
-        # Record snippet counts
-        rag_metadata["snippets_loaded"] = {
-            "system_messages": len(snippets.get("system_messages", [])),
-            "prompt_additions": len(snippets.get("prompt_additions", [])),
-            "extraction_rules": len(snippets.get("extraction_rules", [])),
-            "validation_rules": len(snippets.get("validation_rules", [])),
-            "examples": len(snippets.get("examples", []))
-        }
-        
-        # Record tag details
-        from .tag_based_rag import _tag_cache
-        for tag_name in tag_names:
-            tag = _tag_cache.get(tag_name)
-            if tag:
-                rag_metadata["tag_details"].append({
-                    "tag_name": tag_name,
-                    "tag_type": tag.get("tag_type"),
-                    "priority": tag.get("priority", 0)
-                })
+    except Exception as e:
+        logger.warning(f"Failed to load prompts from library: {e}, using defaults", exc_info=True)
+        loaded = {"system_parts": [], "user_template": None, "schema": None}
+    
+    # Build system message from loaded parts (or fallback to default)
+    if loaded["system_parts"]:
+        # Fill placeholders in system parts: store_specific_region_rules, location_specific_rules, additional_rules
+        filled_parts = []
+        for part in loaded["system_parts"]:
+            filled = part.replace("{store_specific_region_rules}", "").replace(
+                "{location_specific_rules}", ""
+            ).replace("{additional_rules}", "")
+            filled_parts.append(filled)
+        system_message = "\n\n".join(filled_parts)
+        rag_metadata["library_parts_loaded"] = len(loaded["system_parts"])
     else:
-        system_message = base_system_message
-        prompt_template = base_prompt_template
+        system_message = prompt_config.get("system_message") or _get_default_system_message()
+    
+    # User template: use library or fallback
+    prompt_template = loaded.get("user_template") or prompt_config.get("prompt_template") or _get_default_prompt_template()
+    rag_metadata["user_template_from_library"] = loaded.get("user_template") is not None
+    
+    # Schema: use library or fallback
+    output_schema = prompt_config.get("output_schema")
+    schema_str = loaded.get("schema")
+    if schema_str:
+        try:
+            output_schema = json.loads(schema_str)
+        except Exception:
+            output_schema = output_schema or _get_default_output_schema()
+        rag_metadata["schema_from_library"] = True
+    else:
+        output_schema = output_schema or _get_default_output_schema()
     
     # Format trusted_hints
     trusted_hints_str = json.dumps(trusted_hints, indent=2, ensure_ascii=False)
     
-    # Format output_schema
-    output_schema = prompt_config.get("output_schema")
+    # Format output_schema for user message
     if isinstance(output_schema, str):
-        # If already a string, use directly
         output_schema_str = output_schema
     else:
-        # If dict, convert to JSON string
-        output_schema = output_schema or _get_default_output_schema()
         output_schema_str = json.dumps(output_schema, indent=2, ensure_ascii=False)
     
     # Add initial parse result to user message if available
@@ -381,4 +357,6 @@ def clear_cache():
     """Clear prompt cache (for testing or after updating prompts)."""
     global _prompt_cache
     _prompt_cache.clear()
+    from .prompt_loader import clear_cache as clear_loader_cache
+    clear_loader_cache()
     logger.info("Prompt cache cleared")

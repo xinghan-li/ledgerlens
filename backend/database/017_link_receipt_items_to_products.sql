@@ -59,10 +59,8 @@ SELECT
   -- Product info
   ri.product_name as raw_product_name,
   p.normalized_name as product_normalized_name,
-  b.name as brand_name,
   p.size as product_size,
   p.unit_type as product_unit_type,
-  p.is_organic,
   
   -- Category hierarchy
   c1.name as category_l1,
@@ -90,7 +88,6 @@ SELECT
   
 FROM receipt_items ri
 LEFT JOIN products p ON ri.product_id = p.id
-LEFT JOIN brands b ON p.brand_id = b.id
 LEFT JOIN categories c3 ON COALESCE(ri.category_id, p.category_id) = c3.id
 LEFT JOIN categories c2 ON c3.parent_id = c2.id
 LEFT JOIN categories c1 ON c2.parent_id = c1.id
@@ -99,7 +96,7 @@ LEFT JOIN receipt_summaries rs ON r.id = rs.receipt_id
 LEFT JOIN store_chains sc ON rs.store_chain_id = sc.id
 LEFT JOIN store_locations sl ON rs.store_location_id = sl.id;
 
-COMMENT ON VIEW receipt_items_enriched IS 'Enriched view of receipt_items with product, brand, category, and store information';
+COMMENT ON VIEW receipt_items_enriched IS 'Enriched view of receipt_items with product, category, and store information';
 
 -- ============================================
 -- 6. Verification

@@ -11,14 +11,15 @@ from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Add app directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add backend directory to path (scripts moved to backend/scripts/tools/)
+backend_dir = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(backend_dir))
 
 # Fix Windows encoding
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # Load environment variables
-load_dotenv(dotenv_path=".env")
+load_dotenv(dotenv_path=backend_dir / ".env")
 
 from app.services.database.supabase_client import _get_client
 from app.services.standardization.product_normalizer import standardize_product
@@ -104,35 +105,17 @@ for receipt in receipts.data:
     output_payload = runs.data[0].get("output_payload", {})
     items = output_payload.get("items", [])
     
-    # 获取 store 信息
-    store_name = None
-    store_chain_id = None
-    
-    # 首先从 output_payload 中获取 merchant_name
-    receipt_data = output_payload.get("receipt", {})
-    merchant_name = receipt_data.get("merchant_name")
-    
-    # 然后尝试从 receipt_summaries 获取 store_chain_id
-    try:
-        summary = supabase.table("receipt_summaries")\
-            .select("store_name, store_chain_id")\
-            .eq("receipt_id", receipt_id)\
-            .single()\
-            .execute()
-        
-        if summary.data:
-            store_name = summary.data.get('store_name') or merchant_name
-            store_chain_id = summary.data.get('store_chain_id')
-    except Exception:
-        # receipt_summaries 可能不存在，使用 merchant_name
-        store_name = merchant_name
+    # 获取 store 信息：以 output_payload._metadata 的 location_id / chain_id 为准（workflow 已匹配）
+    meta = output_payload.get("_metadata", {})
+    store_location_id = meta.get("location_id")
+    store_chain_id = meta.get("chain_id")
     
     if items:
         receipt_count += 1
         for item in items:
             item['receipt_id'] = receipt_id
             item['receipt_date'] = receipt.get('uploaded_at', '')[:10]
-            item['store_name'] = store_name
+            item['store_location_id'] = store_location_id
             item['store_chain_id'] = store_chain_id
             all_items.append(item)
 
@@ -151,6 +134,8 @@ for item in all_items:
         standardized = standardize_product(item)
         standardized['receipt_id'] = item.get('receipt_id')
         standardized['receipt_date'] = item.get('receipt_date')
+        standardized['store_location_id'] = item.get('store_location_id')
+        standardized['store_chain_id'] = item.get('store_chain_id')
         standardized_items.append(standardized)
     except Exception as e:
         print(f"⚠️  标准化失败: {item.get('product_name')} - {e}")
@@ -160,20 +145,19 @@ print(f"成功标准化 {len(standardized_items)} 个商品")
 # 4. 生成统计
 print("\n4. 生成统计信息...")
 
-# 统计唯一的标准化名称（按 store 分组）
+# 统计唯一的标准化名称（按 store_location_id 分组，便于与 store 关联）
 unique_normalized = {}
 for item in standardized_items:
     norm_name = item['normalized_name']
-    store_name = item.get('store_name', 'Unknown')
+    loc_id = item.get('store_location_id') or ''
     
     if norm_name:
-        # 使用 (normalized_name, store_name) 作为 key
-        key = (norm_name, store_name)
-        
+        key = (norm_name, loc_id)
         if key not in unique_normalized:
             unique_normalized[key] = {
                 'normalized_name': norm_name,
-                'store_name': store_name,
+                'store_location_id': loc_id,
+                'store_chain_id': item.get('store_chain_id') or '',
                 'count': 0,
                 'original_names': set(),
                 'brands': set(),
@@ -192,9 +176,8 @@ print(f"  - 标准化后: {len(unique_normalized)}")
 print(f"  - 压缩率: {len(unique_normalized) / len(set(i['original_name'] for i in standardized_items)) * 100:.1f}%")
 
 # 5. 输出 CSV
-# 使用项目根目录的 output 文件夹
-project_root = Path(__file__).parent.parent  # backend -> project root
-output_dir = project_root / "output" / "standardization_preview"
+# 使用项目根目录的 output 文件夹（backend_dir = backend，其 parent = 项目根）
+output_dir = backend_dir.parent / "output" / "standardization_preview"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -206,6 +189,8 @@ with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
     fieldnames = [
         'receipt_id',
         'receipt_date',
+        'store_location_id',
+        'store_chain_id',
         'original_name',
         'normalized_name',
         'brand',
@@ -226,6 +211,8 @@ with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer.writerow({
             'receipt_id': item.get('receipt_id', ''),
             'receipt_date': item.get('receipt_date', ''),
+            'store_location_id': item.get('store_location_id', ''),
+            'store_chain_id': item.get('store_chain_id', ''),
             'original_name': item.get('original_name', ''),
             'normalized_name': item.get('normalized_name', ''),
             'brand': item.get('brand', ''),
@@ -249,7 +236,8 @@ print(f"\n6. 生成汇总 CSV: {summary_path}")
 with open(summary_path, 'w', newline='', encoding='utf-8-sig') as f:
     fieldnames = [
         'normalized_name',
-        'store_name',
+        'store_location_id',
+        'store_chain_id',
         'count',
         'original_names',
         'brands',
@@ -264,12 +252,11 @@ with open(summary_path, 'w', newline='', encoding='utf-8-sig') as f:
     
     for key, stats in sorted(unique_normalized.items(), key=lambda x: x[1]['count'], reverse=True):
         norm_name = stats['normalized_name']
-        store_name = stats['store_name']
+        loc_id = stats.get('store_location_id', '')
         
-        # 找一个例子的价格和分类
-        example = next((i for i in standardized_items 
-                       if i['normalized_name'] == norm_name 
-                       and i.get('store_name') == store_name), None)
+        example = next((i for i in standardized_items
+                       if i['normalized_name'] == norm_name
+                       and (i.get('store_location_id') or '') == loc_id), None)
         example_price = example.get('unit_price', '') if example else ''
         example_cat_l1 = example.get('category_l1', '') if example else ''
         example_cat_l2 = example.get('category_l2', '') if example else ''
@@ -277,7 +264,8 @@ with open(summary_path, 'w', newline='', encoding='utf-8-sig') as f:
         
         writer.writerow({
             'normalized_name': norm_name,
-            'store_name': store_name,
+            'store_location_id': loc_id,
+            'store_chain_id': stats.get('store_chain_id', ''),
             'count': stats['count'],
             'original_names': ' | '.join(sorted(stats['original_names'])),
             'brands': ' | '.join(sorted(stats['brands'])),

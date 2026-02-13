@@ -20,14 +20,15 @@ from pathlib import Path
 from typing import Dict, Optional, List
 from dotenv import load_dotenv
 
-# Add app directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add backend directory to path (scripts moved to backend/scripts/tools/)
+backend_dir = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(backend_dir))
 
 # Fix Windows encoding
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # Load environment variables
-load_dotenv(dotenv_path=".env")
+load_dotenv(dotenv_path=backend_dir / ".env")
 
 from app.services.database.supabase_client import _get_client
 

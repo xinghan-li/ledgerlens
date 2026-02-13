@@ -54,11 +54,10 @@ comment on table store_locations is 'Specific store locations (e.g., Costco Lynn
 comment on column store_locations.name is 'Location-specific name for matching';
 
 -- ============================================
--- 3. STORE_CHAIN_PROMPTS 表 (已废弃，使用 tag-based RAG 系统)
+-- 3. STORE_CHAIN_PROMPTS 表 (已废弃)
 -- ============================================
--- NOTE: store_chain_prompts 表已被 tag-based RAG 系统替代
--- 新的系统使用 prompt_tags, prompt_snippets, tag_matching_rules 表
--- 参见 009_tag_based_rag_system.sql
+-- NOTE: store_chain_prompts 已废弃。Prompt 系统使用 prompt_library + prompt_binding
+-- 参见 023_prompt_library_and_binding.sql
 
 -- ============================================
 -- 4. USERS 表（扩展auth.users）
