@@ -472,7 +472,23 @@ def save_receipt_items(
         return []
     
     supabase = _get_client()
-    
+
+    def _to_cents(val) -> Optional[int]:
+        if val is None:
+            return None
+        try:
+            return int(round(float(val) * 100))
+        except (TypeError, ValueError):
+            return None
+
+    def _to_quantity(val) -> Optional[int]:
+        if val is None:
+            return None
+        try:
+            return int(round(float(val) * 100))
+        except (TypeError, ValueError):
+            return None
+
     # Prepare batch insert
     items_payload = []
     for idx, item in enumerate(items_data):
@@ -490,23 +506,6 @@ def save_receipt_items(
             logger.warning(f"Skipping item '{product_name}' without line_total")
             continue
         
-        # Convert to integers (x100): quantity, unit_price, line_total, original_price, discount_amount
-        def _to_cents(val) -> Optional[int]:
-            if val is None:
-                return None
-            try:
-                return int(round(float(val) * 100))
-            except (TypeError, ValueError):
-                return None
-
-        def _to_quantity(val) -> Optional[int]:
-            if val is None:
-                return None
-            try:
-                return int(round(float(val) * 100))
-            except (TypeError, ValueError):
-                return None
-
         line_total_cents = _to_cents(line_total)
         if line_total_cents is None or line_total_cents < 0:
             logger.warning(f"Skipping item '{product_name}' with invalid line_total")

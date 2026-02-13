@@ -270,7 +270,7 @@ Purpose: Individual line items from receipts (all users, high-volume table)
 
 Fields (post-024):
 - id (uuid)
-- receipt_id (uuid, FK → receipts.id)
+- receipt_id (uuid, FK → receipt_status.id)
 - user_id (uuid, FK → users.id)
 - product_name (text)
 - product_name_clean (text, optional)
@@ -295,7 +295,7 @@ Primary Key:
 
 Fields:
 - id (uuid)
-- receipt_id (uuid, FK → receipts.id)
+- receipt_id (uuid, FK → receipt_status.id)
 - stage (enum: ocr, llm, manual)
 - model_provider (text)
 - model_name (text)
@@ -392,7 +392,7 @@ Fields:
 - raw_name (text)
 - normalized_name (text)
 - source (enum: ocr, llm, user)
-- receipt_id (uuid, FK → receipts.id)
+- receipt_id (uuid, FK → receipt_status.id)
 - suggested_chain_id (uuid, FK → store_chains.id)
 - suggested_location_id (uuid, FK → store_locations.id)
 - confidence_score (numeric)
