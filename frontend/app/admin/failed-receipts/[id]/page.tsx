@@ -1,0 +1,460 @@
+'use client'
+
+import { useEffect, useState, useCallback } from 'react'
+import { createClient } from '@/lib/supabase'
+import { useRouter, useParams } from 'next/navigation'
+import Link from 'next/link'
+
+const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
+type PrefillItem = {
+  product_name: string
+  quantity: number | null
+  unit: string | null
+  unit_price: number | null
+  line_total: number | null
+  on_sale: boolean
+  original_price: number | null
+  discount_amount: number | null
+}
+
+type Prefill = {
+  store_name: string | null
+  store_address: string | null
+  receipt_date: string | null
+  subtotal: number | null
+  tax: number | null
+  total: number | null
+  currency: string | null
+  payment_method: string | null
+  payment_last4: string | null
+  cashier: string | null
+}
+
+type ReceiptDetail = {
+  id: string
+  user_id: string
+  uploaded_at: string
+  current_status: string
+  current_stage: string | null
+  raw_file_url: string | null
+  failure_reason: string | null
+  run_stage?: string | null
+  prefill: Prefill
+  prefill_items: PrefillItem[]
+}
+
+function toInputDate(d: string | null | undefined): string {
+  if (!d) return ''
+  try {
+    const dt = new Date(d)
+    return dt.toISOString().slice(0, 10)
+  } catch {
+    return ''
+  }
+}
+
+function numToStr(v: number | null | undefined): string {
+  if (v == null) return ''
+  return String(v)
+}
+
+export default function FailedReceiptEditPage() {
+  const params = useParams()
+  const router = useRouter()
+  const id = params?.id as string
+  const [detail, setDetail] = useState<ReceiptDetail | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [token, setToken] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [imageObjectUrl, setImageObjectUrl] = useState<string | null>(null)
+
+  // Form state: summary
+  const [storeName, setStoreName] = useState('')
+  const [storeAddress, setStoreAddress] = useState('')
+  const [cashier, setCashier] = useState('')
+  const [receiptDate, setReceiptDate] = useState('')
+  const [subtotal, setSubtotal] = useState('')
+  const [tax, setTax] = useState('')
+  const [total, setTotal] = useState('')
+  const [currency, setCurrency] = useState('USD')
+  const [paymentMethod, setPaymentMethod] = useState('')
+  const [paymentLast4, setPaymentLast4] = useState('')
+
+  // Form state: items (array of editable rows)
+  const [items, setItems] = useState<Array<{
+    product_name: string
+    quantity: string
+    unit: string
+    unit_price: string
+    line_total: string
+    on_sale: boolean
+    original_price: string
+    discount_amount: string
+  }>>([])
+
+  const fetchDetail = useCallback(async () => {
+    if (!id || !token) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${apiUrl}/api/admin/failed-receipts/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) throw new Error(res.status === 404 ? '小票不存在' : await res.text())
+      const data: ReceiptDetail = await res.json()
+      setDetail(data)
+      const p = data.prefill || {}
+      setStoreName(p.store_name ?? '')
+      setStoreAddress(p.store_address ?? '')
+      setCashier(p.cashier ?? '')
+      setReceiptDate(toInputDate(p.receipt_date))
+      setSubtotal(numToStr(p.subtotal))
+      setTax(numToStr(p.tax))
+      setTotal(numToStr(p.total))
+      setCurrency(p.currency ?? 'USD')
+      setPaymentMethod(p.payment_method ?? '')
+      setPaymentLast4(p.payment_last4 ?? '')
+      const list = (data.prefill_items || []).map((it) => ({
+        product_name: it.product_name ?? '',
+        quantity: numToStr(it.quantity),
+        unit: it.unit ?? '',
+        unit_price: numToStr(it.unit_price),
+        line_total: numToStr(it.line_total),
+        on_sale: it.on_sale ?? false,
+        original_price: numToStr(it.original_price),
+        discount_amount: numToStr(it.discount_amount),
+      }))
+      if (list.length === 0) list.push({ product_name: '', quantity: '', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' })
+      setItems(list)
+      // Fetch image via API (raw_file_url may be local path; API serves or redirects)
+      if (data.raw_file_url && token) {
+        try {
+          const imgRes = await fetch(`${apiUrl}/api/admin/receipt-image/${id}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+          if (imgRes.ok) {
+            const blob = await imgRes.blob()
+            const url = URL.createObjectURL(blob)
+            setImageObjectUrl(url)
+          }
+        } catch {
+          // Ignore image load failure
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '加载失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [id, token])
+
+  useEffect(() => {
+    return () => {
+      if (imageObjectUrl) URL.revokeObjectURL(imageObjectUrl)
+    }
+  }, [imageObjectUrl])
+
+  useEffect(() => {
+    const supabase = createClient()
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setToken(session?.access_token ?? null)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (token && id) fetchDetail()
+  }, [token, id, fetchDetail])
+
+  const addRow = () => {
+    setItems((prev) => [...prev, { product_name: '', quantity: '', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])
+  }
+
+  const removeRow = (index: number) => {
+    setItems((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const updateItem = (index: number, field: string, value: string | boolean) => {
+    setItems((prev) => {
+      const next = [...prev]
+      if (!next[index]) return next
+      ;(next[index] as Record<string, unknown>)[field] = value
+      return next
+    })
+  }
+
+  // 检查是否有行：quantity 和 unit_price 都有值，但 quantity*unit_price !== line_total
+  const invalidRows = items.filter((it) => {
+    const qty = it.quantity.trim() ? parseFloat(it.quantity) : NaN
+    const price = it.unit_price.trim() ? parseFloat(it.unit_price) : NaN
+    const lt = it.line_total.trim() ? parseFloat(it.line_total) : NaN
+    if (isNaN(qty) || isNaN(price) || isNaN(lt)) return false
+    return Math.abs(qty * price - lt) >= 0.01
+  })
+
+  const handleSubmit = async () => {
+    if (!token || !id) return
+    if (invalidRows.length > 0) {
+      setError('Some rows have quantity × unit price ≠ line total. Please fix the highlighted red rows.')
+      return
+    }
+    const totalNum = total.trim() ? parseFloat(total) : NaN
+    if (isNaN(totalNum)) {
+      setError('Please fill Total')
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    setSuccessMessage(null)
+    try {
+      const summary = {
+        store_name: storeName.trim() || undefined,
+        store_address: storeAddress.trim() || undefined,
+        receipt_date: receiptDate.trim() || undefined,
+        subtotal: subtotal.trim() ? parseFloat(subtotal) : undefined,
+        tax: tax.trim() ? parseFloat(tax) : undefined,
+        total: totalNum,
+        currency: currency.trim() || 'USD',
+        payment_method: paymentMethod.trim() || undefined,
+        payment_last4: paymentLast4.trim() || undefined,
+      }
+      const itemsPayload = items
+        .filter((it) => (it.product_name || '').trim())
+        .map((it) => ({
+          product_name: it.product_name.trim(),
+          quantity: it.quantity.trim() ? parseFloat(it.quantity) : undefined,
+          unit: it.unit.trim() || undefined,
+          unit_price: it.unit_price.trim() ? parseFloat(it.unit_price) : undefined,
+          line_total: it.line_total.trim() ? parseFloat(it.line_total) : undefined,
+          on_sale: it.on_sale,
+          original_price: it.original_price.trim() ? parseFloat(it.original_price) : undefined,
+          discount_amount: it.discount_amount.trim() ? parseFloat(it.discount_amount) : undefined,
+        }))
+      const res = await fetch(`${apiUrl}/api/admin/failed-receipts/${id}/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ summary, items: itemsPayload }),
+      })
+      const data = res.ok ? await res.json().catch(() => ({})) : await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || '提交失败')
+      setSuccessMessage('已保存，小票状态已更新为 success')
+      setTimeout(() => router.push('/admin/failed-receipts'), 1500)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '提交失败')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleCancel = () => {
+    router.push('/admin/failed-receipts')
+  }
+
+  if (!token) {
+    return <div className="text-center py-8 text-gray-500">请先登录</div>
+  }
+
+  if (loading) {
+    return <p className="text-gray-500">加载中...</p>
+  }
+
+  if (error && !detail) {
+    return (
+      <div>
+        <p className="text-red-600">{error}</p>
+        <Link href="/admin/failed-receipts" className="mt-4 inline-block text-blue-600 hover:underline">返回列表</Link>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">手动修正小票</h2>
+        <Link href="/admin/failed-receipts" className="text-sm text-blue-600 hover:underline">← 返回列表</Link>
+      </div>
+      {detail?.failure_reason && (
+        <div className="p-2 bg-amber-50 text-amber-800 rounded text-sm">
+          失败原因：{detail.failure_reason}
+        </div>
+      )}
+      {error && (
+        <div className="p-2 bg-red-100 text-red-700 rounded text-sm flex items-center justify-between gap-2">
+          <span>{error}</span>
+          <button type="button" className="shrink-0 text-red-700 hover:text-red-900" onClick={() => setError(null)} aria-label="关闭">×</button>
+        </div>
+      )}
+      {successMessage && (
+        <div className="p-2 bg-green-100 text-green-800 rounded text-sm flex items-center justify-between gap-2">
+          <span>{successMessage}</span>
+          <button type="button" className="shrink-0 text-green-800 hover:text-green-900" onClick={() => setSuccessMessage(null)} aria-label="关闭">×</button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left: receipt image */}
+        <div className="lg:col-span-1">
+          <div className="bg-white rounded-lg shadow p-4 sticky top-4">
+            <p className="text-sm font-medium text-gray-700 mb-2">小票图片</p>
+            {(detail?.raw_file_url && imageObjectUrl) ? (
+              <img src={imageObjectUrl} alt="Receipt" className="w-full border rounded object-contain max-h-[70vh]" />
+            ) : detail?.raw_file_url ? (
+              <div className="w-full aspect-[3/4] border rounded bg-gray-100 flex items-center justify-center text-gray-500 text-sm">
+                加载中...
+              </div>
+            ) : (
+              <div className="w-full aspect-[3/4] border rounded bg-gray-100 flex items-center justify-center text-gray-500 text-sm">
+                暂无图片
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right: form */}
+        <div className="lg:col-span-2 space-y-6">
+          <div className="bg-white rounded-lg shadow p-4">
+            <p className="text-sm font-medium text-gray-700 mb-3">店名 / 地址 / 收银员</p>
+            <div className="grid grid-cols-1 gap-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">店名</span>
+                <input className="border rounded px-2 py-1" value={storeName} onChange={(e) => setStoreName(e.target.value)} placeholder="Store name" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">地址</span>
+                <input className="border rounded px-2 py-1" value={storeAddress} onChange={(e) => setStoreAddress(e.target.value)} placeholder="Address" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">收银员</span>
+                <input className="border rounded px-2 py-1" value={cashier} onChange={(e) => setCashier(e.target.value)} placeholder="Cashier (optional)" />
+              </label>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow p-4">
+            <p className="text-sm font-medium text-gray-700 mb-3">商品行（可增删）</p>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm border-collapse">
+                <thead>
+                  <tr className="border-b border-gray-200">
+                    <th className="text-left py-2 pr-4 font-medium text-gray-700" style={{ minWidth: 200 }}>Product name</th>
+                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-20">Quantity</th>
+                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-16">Unit</th>
+                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-20">Unit price</th>
+                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-20">Line total</th>
+                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-14">On sale</th>
+                    <th className="text-left py-2 w-12" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((row, index) => {
+                    const qty = row.quantity.trim() ? parseFloat(row.quantity) : NaN
+                    const price = row.unit_price.trim() ? parseFloat(row.unit_price) : NaN
+                    const lt = row.line_total.trim() ? parseFloat(row.line_total) : NaN
+                    const hasQtyAndPrice = !isNaN(qty) && !isNaN(price)
+                    const expectedLineTotal = hasQtyAndPrice ? qty * price : NaN
+                    const lineTotalMismatch = hasQtyAndPrice && !isNaN(lt) && Math.abs(expectedLineTotal - lt) >= 0.01
+                    return (
+                      <tr key={index} className={`border-b border-gray-100 ${lineTotalMismatch ? 'bg-red-100' : ''}`}>
+                        <td className="py-1.5 pr-4">
+                          <input className="w-full min-w-[180px] border border-gray-200 rounded px-1.5 py-0.5 text-sm" placeholder="product name" value={row.product_name} onChange={(e) => updateItem(index, 'product_name', e.target.value)} />
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <input className="w-full max-w-16 border border-gray-200 rounded px-1 py-0.5 text-sm" placeholder="quantity" value={row.quantity} onChange={(e) => updateItem(index, 'quantity', e.target.value)} />
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <input className="w-full max-w-12 border border-gray-200 rounded px-1 py-0.5 text-sm" placeholder="unit" value={row.unit} onChange={(e) => updateItem(index, 'unit', e.target.value)} />
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <input className="w-full max-w-20 border border-gray-200 rounded px-1 py-0.5 text-sm" placeholder="unit price" value={row.unit_price} onChange={(e) => updateItem(index, 'unit_price', e.target.value)} />
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <input className="w-full max-w-20 border border-gray-200 rounded px-1 py-0.5 text-sm" placeholder="line total" value={row.line_total} onChange={(e) => updateItem(index, 'line_total', e.target.value)} />
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <label className="flex items-center gap-1">
+                            <input type="checkbox" checked={row.on_sale} onChange={(e) => updateItem(index, 'on_sale', e.target.checked)} />
+                          </label>
+                        </td>
+                        <td className="py-1.5">
+                          <button type="button" className="text-red-600 hover:underline" onClick={() => removeRow(index)}>Delete</button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  {(() => {
+                    const itemsSum = Math.round(items.reduce((acc, it) => {
+                      const v = it.line_total.trim() ? parseFloat(it.line_total) : NaN
+                      return acc + (isNaN(v) ? 0 : v)
+                    }, 0))
+                    const capturedSubtotal = subtotal.trim() ? parseFloat(subtotal) : NaN
+                    const sumMatchesSubtotal = !isNaN(capturedSubtotal) && itemsSum === Math.round(capturedSubtotal)
+                    return (
+                      <tr className="bg-white border-t-2 border-gray-200">
+                        <td colSpan={4} className="py-2 pr-4 text-right font-medium text-gray-600">Total:</td>
+                        <td className="py-2 pr-2">
+                          <span className={`font-semibold ${sumMatchesSubtotal ? 'text-green-600' : 'text-gray-800'}`}>
+                            {itemsSum} cents
+                          </span>
+                        </td>
+                        <td colSpan={2} />
+                      </tr>
+                    )
+                  })()}
+                </tfoot>
+              </table>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">Compare above total with captured Subtotal below. Green = match.</p>
+            <button type="button" className="mt-2 px-3 py-1 border rounded text-sm bg-gray-100 hover:bg-gray-200" onClick={addRow}>+ 增加一行</button>
+          </div>
+
+          <div className="bg-white rounded-lg shadow p-4">
+            <p className="text-sm font-medium text-gray-700 mb-3">总价与支付</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">日期</span>
+                <input type="date" className="border rounded px-2 py-1" value={receiptDate} onChange={(e) => setReceiptDate(e.target.value)} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">Subtotal</span>
+                <input className="border rounded px-2 py-1" value={subtotal} onChange={(e) => setSubtotal(e.target.value)} placeholder="0.00" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">Tax</span>
+                <input className="border rounded px-2 py-1" value={tax} onChange={(e) => setTax(e.target.value)} placeholder="0.00" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">Total *</span>
+                <input className="border rounded px-2 py-1" value={total} onChange={(e) => setTotal(e.target.value)} placeholder="0.00" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">Currency</span>
+                <input className="border rounded px-2 py-1" value={currency} onChange={(e) => setCurrency(e.target.value)} placeholder="USD" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">支付方式</span>
+                <input className="border rounded px-2 py-1" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} placeholder="credit_card / cash" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-gray-500">卡号后四位</span>
+                <input className="border rounded px-2 py-1" value={paymentLast4} onChange={(e) => setPaymentLast4(e.target.value)} placeholder="1234" maxLength={4} />
+              </label>
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <button type="button" className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50" disabled={submitting || invalidRows.length > 0} onClick={handleSubmit}>
+              {submitting ? 'Submitting...' : 'Submit'}
+            </button>
+            <button type="button" className="px-4 py-2 border rounded hover:bg-gray-100" onClick={handleCancel}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

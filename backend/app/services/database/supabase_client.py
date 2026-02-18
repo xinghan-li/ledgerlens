@@ -329,7 +329,10 @@ def verify_user_exists(user_id: str) -> bool:
 def save_receipt_summary(
     receipt_id: str,
     user_id: str,
-    receipt_data: Dict[str, Any]
+    receipt_data: Dict[str, Any],
+    *,
+    chain_id: Optional[str] = None,
+    location_id: Optional[str] = None,
 ) -> str:
     """
     Save receipt summary data to record_summaries table.
@@ -338,6 +341,8 @@ def save_receipt_summary(
         receipt_id: Receipt ID (UUID string)
         user_id: User ID (UUID string)
         receipt_data: Receipt-level data from LLM output
+        chain_id: Optional store chain ID from workflow metadata (use when available)
+        location_id: Optional store location ID from workflow metadata (use when available)
         
     Returns:
         summary_id (UUID string)
@@ -363,21 +368,37 @@ def save_receipt_summary(
     if not total:
         raise ValueError("total is required in receipt_data")
     
-    # Try to match store_chain and store_location
-    store_chain_id = None
-    store_location_id = None
-    
-    if merchant_name:
+    # Prefer chain_id/location_id from workflow metadata or caller (already matched by address_matcher)
+    store_chain_id = chain_id
+    store_location_id = location_id
+
+    if store_chain_id is None and merchant_name:
+        # Try get_store_chain (address_matcher fuzzy match) first for best match including location
         try:
-            # Try to find existing store chain using exact match first
+            match_result = get_store_chain(merchant_name, receipt_data.get("merchant_address"))
+            if match_result.get("matched") and match_result.get("chain_id"):
+                store_chain_id = match_result.get("chain_id")
+                store_location_id = store_location_id or match_result.get("location_id")
+                logger.info(f"Matched store via get_store_chain: {merchant_name} -> chain_id={store_chain_id}, location_id={store_location_id}")
+        except Exception as e:
+            logger.debug(f"get_store_chain failed for {merchant_name}: {e}")
+
+    if store_chain_id is None and merchant_name:
+        try:
+            # Fallback: exact then case-insensitive match on store_chains.name
             chain_result = supabase.table("store_chains").select("id").eq("name", merchant_name).limit(1).execute()
             if chain_result.data and len(chain_result.data) > 0:
                 store_chain_id = chain_result.data[0]["id"]
-                logger.info(f"Matched store chain: {merchant_name} -> {store_chain_id}")
+                logger.info(f"Matched store chain (exact): {merchant_name} -> {store_chain_id}")
             else:
-                # If exact match fails, use rapidfuzz or pg_trgm for similarity matching
-                # For now, just log that no match was found
-                logger.debug(f"Store chain not found for: {merchant_name}")
+                chains = supabase.table("store_chains").select("id, name").eq("is_active", True).execute()
+                if chains.data:
+                    merchant_lower = (merchant_name or "").lower()
+                    for c in chains.data:
+                        if (c.get("name") or "").lower() == merchant_lower:
+                            store_chain_id = c["id"]
+                            logger.info(f"Matched store chain (case-insensitive): {merchant_name} -> {store_chain_id}")
+                            break
         except Exception as e:
             logger.warning(f"Failed to match store chain: {e}")
     
@@ -551,6 +572,129 @@ def save_receipt_items(
         raise
 
 
+def enqueue_unmatched_items_to_classification_review(receipt_id: str) -> int:
+    """
+    After saving record_items, enqueue rows that have no category_id into
+    classification_review for admin review. Dedupe: do not insert if there is
+    already a pending row with the same (raw_product_name, store_chain_id).
+
+    Calls LLM (Gemini) to pre-fill category_id, size, unit_type as unconfirmed.
+
+    Args:
+        receipt_id: Receipt ID (UUID string)
+
+    Returns:
+        Number of new rows inserted into classification_review.
+    """
+    import asyncio
+
+    supabase = _get_client()
+    inserted = 0
+
+    try:
+        # Get store_chain_id and chain name for this receipt
+        summary = (
+            supabase.table("record_summaries")
+            .select("store_chain_id")
+            .eq("receipt_id", receipt_id)
+            .limit(1)
+            .execute()
+        )
+        store_chain_id = summary.data[0]["store_chain_id"] if summary.data else None
+        store_chain_name = None
+        if store_chain_id:
+            sc = supabase.table("store_chains").select("name").eq("id", store_chain_id).limit(1).execute()
+            if sc.data:
+                store_chain_name = sc.data[0].get("name")
+
+        # Get record_items for this receipt with no category_id
+        items = (
+            supabase.table("record_items")
+            .select("id, product_name")
+            .eq("receipt_id", receipt_id)
+            .is_("category_id", "null")
+            .execute()
+        )
+        if not items.data:
+            return 0
+
+        # Filter to items we'll actually enqueue (no dedupe hit)
+        to_enqueue: List[Dict[str, Any]] = []
+        for row in items.data:
+            raw_name = (row.get("product_name") or "").strip()
+            if not raw_name:
+                continue
+            q = (
+                supabase.table("classification_review")
+                .select("id")
+                .eq("raw_product_name", raw_name)
+                .eq("status", "pending")
+            )
+            if store_chain_id is None:
+                q = q.is_("store_chain_id", "null")
+            else:
+                q = q.eq("store_chain_id", store_chain_id)
+            existing = q.limit(1).execute()
+            if existing.data:
+                continue
+            to_enqueue.append({"source_record_item_id": row["id"], "raw_product_name": raw_name})
+
+        if not to_enqueue:
+            return 0
+
+        # LLM pre-fill: suggest category, size, unit_type (avoid asyncio.run on main thread)
+        raw_names = [r["raw_product_name"] for r in to_enqueue]
+        suggestions: List[Dict[str, Any]] = []
+        try:
+            from app.services.admin.classification_llm import suggest_classifications
+            try:
+                _loop = asyncio.get_running_loop()
+            except RuntimeError:
+                _loop = None
+            if _loop is None:
+                suggestions = asyncio.run(suggest_classifications(raw_names, store_chain_name))
+            else:
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=1) as _pool:
+                    _f = _pool.submit(
+                        lambda: asyncio.run(suggest_classifications(raw_names, store_chain_name))
+                    )
+                    suggestions = _f.result()
+        except Exception as e:
+            logger.warning(f"Classification LLM pre-fill failed: {e}")
+
+        suggestion_map = {s["raw_product_name"]: s for s in suggestions}
+
+        for r in to_enqueue:
+            raw_name = r["raw_product_name"]
+            sugg = suggestion_map.get(raw_name, {})
+            payload = {
+                "raw_product_name": raw_name,
+                "source_record_item_id": r["source_record_item_id"],
+                "store_chain_id": store_chain_id,
+                "status": "pending",
+            }
+            if sugg.get("category_id"):
+                payload["category_id"] = sugg["category_id"]
+            if sugg.get("size_quantity") is not None:
+                payload["size_quantity"] = sugg["size_quantity"]
+            if sugg.get("size_unit"):
+                payload["size_unit"] = sugg["size_unit"]
+            if sugg.get("package_type"):
+                payload["package_type"] = sugg["package_type"]
+            supabase.table("classification_review").insert(payload).execute()
+            inserted += 1
+
+        if inserted:
+            logger.info(
+                f"Enqueued {inserted} unmatched items to classification_review for receipt {receipt_id}"
+            )
+    except Exception as e:
+        logger.warning(f"Failed to enqueue unmatched items to classification_review: {e}")
+
+    return inserted
+
+
 def get_store_chain(
     chain_name: str,
     store_address: Optional[str] = None
@@ -618,6 +762,36 @@ def get_store_chain(
         logger.info(f"Store chain not found: {chain_name}, will create candidate after LLM processing")
     
     return result
+
+
+def backfill_record_summaries_for_store_chain(chain_id: str, chain_name: str) -> int:
+    """
+    After a new store_chain is approved, set store_chain_id on record_summaries
+    that have matching store_name but currently store_chain_id is null.
+    """
+    if not chain_id or not (chain_name or "").strip():
+        return 0
+    supabase = _get_client()
+    name_lower = (chain_name or "").strip().lower()
+    try:
+        res = (
+            supabase.table("record_summaries")
+            .select("id")
+            .is_("store_chain_id", "null")
+            .execute()
+        )
+        ids_to_update = [
+            r["id"] for r in (res.data or [])
+            if (r.get("store_name") or "").strip().lower() == name_lower
+        ]
+        if not ids_to_update:
+            return 0
+        supabase.table("record_summaries").update({"store_chain_id": chain_id}).in_("id", ids_to_update).execute()
+        logger.info(f"Backfilled store_chain_id={chain_id} for {len(ids_to_update)} record_summaries (store_name ~ {chain_name})")
+        return len(ids_to_update)
+    except Exception as e:
+        logger.warning(f"backfill_record_summaries_for_store_chain failed: {e}")
+        return 0
 
 
 def create_store_candidate(

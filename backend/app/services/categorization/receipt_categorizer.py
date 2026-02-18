@@ -7,6 +7,7 @@ Receipt Categorizer
 3. 更新 catalog (products, brands, categories)
 4. 保存到 receipt_items, receipt_summaries
 """
+import json
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
@@ -14,10 +15,36 @@ from datetime import datetime
 from ..database.supabase_client import (
     _get_client,
     save_receipt_summary,
-    save_receipt_items
+    save_receipt_items,
+    enqueue_unmatched_items_to_classification_review,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_dict(value: Any) -> Dict[str, Any]:
+    """Ensure value is a dict; if it's a JSON string, parse it. Otherwise return {}."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value) if value.strip() else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def _single_row(data: Any) -> Optional[Dict[str, Any]]:
+    """Normalize Supabase .data: single row as dict or list of one -> dict."""
+    if data is None:
+        return None
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and len(data) == 1:
+        return data[0] if isinstance(data[0], dict) else None
+    return None
 
 
 def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
@@ -43,10 +70,9 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
             .single()\
             .execute()
         
-        if not receipt.data:
+        receipt_data = _single_row(receipt.data)
+        if not receipt_data:
             return False, f"Receipt {receipt_id} not found"
-        
-        receipt_data = receipt.data
         
         # 必须是 success 状态
         if receipt_data.get("current_status") != "success":
@@ -65,8 +91,8 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
         if not runs.data:
             return False, "No successful LLM processing run found"
         
-        run_data = runs.data[0]
-        output_payload = run_data.get("output_payload")
+        run_data = runs.data[0] if isinstance(runs.data, list) else runs.data
+        output_payload = _ensure_dict(run_data.get("output_payload") if isinstance(run_data, dict) else None)
         
         if not output_payload:
             return False, "output_payload is empty"
@@ -135,7 +161,10 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         .single()\
         .execute()
     
-    user_id = receipt.data.get("user_id")
+    receipt_row = _single_row(receipt.data)
+    if not receipt_row:
+        return {"success": False, "receipt_id": receipt_id, "message": "Receipt not found"}
+    user_id = receipt_row.get("user_id")
     
     run = supabase.table("receipt_processing_runs")\
         .select("output_payload")\
@@ -147,9 +176,15 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         .single()\
         .execute()
     
-    output_payload = run.data.get("output_payload", {})
+    run_row = _single_row(run.data)
+    if not run_row:
+        return {"success": False, "receipt_id": receipt_id, "message": "No processing run found"}
+    output_payload = _ensure_dict(run_row.get("output_payload"))
     receipt_data = output_payload.get("receipt", {})
     items_data = output_payload.get("items", [])
+    metadata = output_payload.get("_metadata", {})
+    chain_id = metadata.get("chain_id")
+    location_id = metadata.get("location_id")
     
     logger.info(f"Retrieved output_payload: {len(items_data)} items")
     
@@ -168,7 +203,9 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         summary_id = save_receipt_summary(
             receipt_id=receipt_id,
             user_id=user_id,
-            receipt_data=receipt_data
+            receipt_data=receipt_data,
+            chain_id=chain_id,
+            location_id=location_id,
         )
         logger.info(f"✅ Saved receipt_summary: {summary_id}")
     except Exception as e:
@@ -200,7 +237,15 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             "receipt_id": receipt_id,
             "message": f"Failed to save items: {str(e)}"
         }
-    
+
+    # 6b. Enqueue unmatched items (no category_id) to classification_review for admin review (with dedupe)
+    try:
+        enqueued = enqueue_unmatched_items_to_classification_review(receipt_id)
+        if enqueued:
+            logger.info(f"✅ Enqueued {enqueued} unmatched items to classification_review")
+    except Exception as e:
+        logger.warning(f"Failed to enqueue unmatched items to classification_review: {e}")
+
     # 7. 返回成功结果
     result = {
         "success": True,

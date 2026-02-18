@@ -43,6 +43,7 @@ from ..processors.text.data_cleaner import clean_llm_result
 from ..processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
 from ..processors.validation.pipeline import process_receipt_pipeline
 from ..processors.validation.store_config_loader import get_store_config_for_receipt
+from ..services.categorization.receipt_categorizer import categorize_receipt
 
 logger = logging.getLogger(__name__)
 
@@ -589,13 +590,21 @@ async def process_receipt_workflow(
                         error_message=str(e)
                     )
                     update_receipt_status(db_receipt_id, current_status="failed", current_stage="ocr")
+                    # Save image for manual review (strategy B: failed/needs_review only)
+                    image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+                    if image_path:
+                        try:
+                            update_receipt_file_url(db_receipt_id, image_path)
+                        except Exception as url_err:
+                            logger.warning(f"Failed to update receipt file URL: {url_err}")
                 except Exception as db_error:
                     logger.warning(f"Failed to save failed LLM run: {db_error}")
             
-            # Fallback to another LLM
+            # Fallback to another LLM (pass image_bytes for manual review if fallback also fails)
             return await _fallback_to_other_llm(
-                google_ocr_data, filename, receipt_id, timeline, 
-                failed_provider=llm_provider, error=str(e), db_receipt_id=db_receipt_id
+                google_ocr_data, filename, receipt_id, timeline,
+                failed_provider=llm_provider, error=str(e), db_receipt_id=db_receipt_id, user_id=user_id,
+                image_bytes=image_bytes
             )
         
         if first_llm_result is None:
@@ -639,6 +648,15 @@ async def process_receipt_workflow(
                         update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_primary")
                     except Exception as e:
                         logger.warning(f"Failed to update receipt status: {e}")
+                    # Categorize: save to record_summaries/record_items, enqueue unmatched to classification_review
+                    try:
+                        cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+                        if cat_result.get("success"):
+                            logger.info(f"✅ Categorization completed for receipt {db_receipt_id}")
+                        else:
+                            logger.warning(f"Categorization skipped for {db_receipt_id}: {cat_result.get('message')}")
+                    except Exception as cat_err:
+                        logger.warning(f"Categorization failed for {db_receipt_id}: {cat_err}")
                 
                 # Record API call for statistics
                 llm_duration = _get_duration_from_timeline(timeline, f"{llm_provider}_llm")
@@ -671,6 +689,15 @@ async def process_receipt_workflow(
                         update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_primary")
                     except Exception as e:
                         logger.warning(f"Failed to update receipt status: {e}")
+                    # Categorize: save to record_summaries/record_items, enqueue unmatched to classification_review
+                    try:
+                        cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+                        if cat_result.get("success"):
+                            logger.info(f"✅ Categorization completed for receipt {db_receipt_id}")
+                        else:
+                            logger.warning(f"Categorization skipped for {db_receipt_id}: {cat_result.get('message')}")
+                    except Exception as cat_err:
+                        logger.warning(f"Categorization failed for {db_receipt_id}: {cat_err}")
                 
                 # Record API call for statistics
                 llm_duration = _get_duration_from_timeline(timeline, f"{llm_provider}_llm")
@@ -695,10 +722,16 @@ async def process_receipt_workflow(
             # Sum check failed, introduce AWS OCR + GPT-4o-mini secondary processing
             logger.warning(f"Sum check failed for {receipt_id}, triggering backup check")
             
-            # Update stage to sum_check_failed
+            # Update stage and save image for manual review (strategy B: needs_review)
             if db_receipt_id:
                 try:
                     update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="manual")
+                    image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+                    if image_path:
+                        try:
+                            update_receipt_file_url(db_receipt_id, image_path)
+                        except Exception as url_err:
+                            logger.warning(f"Failed to update receipt file URL: {url_err}")
                 except Exception as e:
                     logger.warning(f"Failed to update receipt stage to sum_check_failed: {e}")
             
@@ -714,6 +747,16 @@ async def process_receipt_workflow(
         timeline.start("save_error")
         await _save_error(receipt_id, timeline, error=str(e), filename=filename)
         timeline.end("save_error")
+        
+        # Save image for failed-receipts / manual review so admin can see the receipt
+        if db_receipt_id and image_bytes and filename:
+            try:
+                image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+                if image_path:
+                    update_receipt_file_url(db_receipt_id, image_path)
+                    logger.info(f"Saved image for failed receipt {db_receipt_id}: {image_path}")
+            except Exception as img_err:
+                logger.warning(f"Failed to save image for failed receipt: {img_err}")
         
         # Record API call (error)
         record_api_call(
@@ -909,6 +952,15 @@ async def _backup_check_with_aws_ocr(
                 update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_fallback")
             except Exception as e:
                 logger.warning(f"Failed to update receipt status: {e}")
+            # Categorize: save to record_summaries/record_items, enqueue unmatched to classification_review
+            try:
+                cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+                if cat_result.get("success"):
+                    logger.info(f"✅ Categorization completed for receipt {db_receipt_id}")
+                else:
+                    logger.warning(f"Categorization skipped for {db_receipt_id}: {cat_result.get('message')}")
+            except Exception as cat_err:
+                logger.warning(f"Categorization failed for {db_receipt_id}: {cat_err}")
         
         # Save debug files
         await _save_debug_files(
@@ -1281,7 +1333,9 @@ async def _fallback_to_other_llm(
     timeline: TimelineRecorder,
     failed_provider: str,
     error: str,
-    db_receipt_id: Optional[str] = None
+    db_receipt_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    image_bytes: Optional[bytes] = None
 ) -> Dict[str, Any]:
     """First LLM failed, fallback to another LLM."""
     other_provider = "openai" if failed_provider == "gemini" else "gemini"
@@ -1336,7 +1390,7 @@ async def _fallback_to_other_llm(
         
         if sum_check_passed:
             timeline.start("save_output")
-            await _save_output(receipt_id, llm_result, timeline, google_ocr_data, user_id=user_id)
+            await _save_output(receipt_id, llm_result, timeline, google_ocr_data, user_id=user_id or "dummy")
             timeline.end("save_output")
             
             # Update receipt status
@@ -1345,6 +1399,15 @@ async def _fallback_to_other_llm(
                     update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_fallback")
                 except Exception as e:
                     logger.warning(f"Failed to update receipt status: {e}")
+                # Categorize: save to record_summaries/record_items, enqueue unmatched to classification_review
+                try:
+                    cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+                    if cat_result.get("success"):
+                        logger.info(f"✅ Categorization completed for receipt {db_receipt_id}")
+                    else:
+                        logger.warning(f"Categorization skipped for {db_receipt_id}: {cat_result.get('message')}")
+                except Exception as cat_err:
+                    logger.warning(f"Categorization failed for {db_receipt_id}: {cat_err}")
             
             # Record API call
             llm_duration = _get_duration_from_timeline(timeline, f"{other_provider}_llm_fallback")
@@ -1399,7 +1462,7 @@ async def _fallback_to_other_llm(
                 first_llm_result=llm_result,
                 sum_check_details=sum_check_details,
                 error=f"{failed_provider.upper()} failed, {other_provider.upper()} sum check also failed",
-                image_bytes=None,  # No image_bytes in this function
+                image_bytes=image_bytes,
                 filename=filename,
                 db_receipt_id=db_receipt_id
             )
@@ -1443,7 +1506,7 @@ async def _fallback_to_other_llm(
             timeline=timeline,
             google_ocr_data=google_ocr_data,
             error=f"Both LLMs failed. {failed_provider.upper()}: {error}, {other_provider.upper()}: {e}",
-            image_bytes=None,  # No image_bytes in this function
+            image_bytes=image_bytes,
             filename=filename,
             db_receipt_id=db_receipt_id
         )

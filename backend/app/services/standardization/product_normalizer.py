@@ -79,6 +79,25 @@ def normalize_product_name(raw_name: str) -> str:
     return name.strip()
 
 
+def normalize_name_for_storage(raw_name: str) -> str:
+    """
+    Minimal normalization for storage: lowercase, trim, singularize.
+    Used when saving classification_review.normalized_name or writing to
+    product_categorization_rules / products to avoid duplicates.
+    """
+    if not raw_name or not isinstance(raw_name, str):
+        return ""
+    name = raw_name.lower().strip()
+    if not name:
+        return ""
+    # Simple singularize: trailing -es / -s
+    if name.endswith("es") and len(name) > 3:
+        name = name[:-2]
+    elif name.endswith("s") and len(name) > 2 and not name.endswith("ss"):
+        name = name[:-1]
+    return name.strip()
+
+
 def extract_brand_from_name(raw_name: str) -> Optional[str]:
     """
     从商品名中提取品牌
