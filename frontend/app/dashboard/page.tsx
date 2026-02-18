@@ -173,12 +173,20 @@ export default function DashboardPage() {
           <h1 className="text-2xl font-bold text-gray-900">
             LedgerLens Dashboard
           </h1>
-          <button
-            onClick={handleLogout}
-            className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition"
-          >
-            登出
-          </button>
+          <div className="flex items-center gap-4">
+            <a
+              href="/admin/classification-review"
+              className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition"
+            >
+              Admin
+            </a>
+            <button
+              onClick={handleLogout}
+              className="px-4 py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition"
+            >
+              登出
+            </button>
+          </div>
         </div>
       </header>
 
@@ -224,28 +232,51 @@ export default function DashboardPage() {
               </p>
             </div>
           ) : uploadResult ? (
-            // Success Result
+            // 有结果：根据 success 显示成功或失败 banner
             <div className="space-y-4">
-              <div className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <span className="text-3xl">✅</span>
-                  <div>
-                    <p className="font-semibold text-green-900">处理成功！</p>
-                    <p className="text-sm text-green-600">
-                      状态: {uploadResult.status || 'completed'}
-                    </p>
+              {uploadResult.success === true ? (
+                <div className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl">✅</span>
+                    <div>
+                      <p className="font-semibold text-green-900">处理成功！</p>
+                      <p className="text-sm text-green-600">
+                        状态: {uploadResult.status || 'completed'}
+                      </p>
+                    </div>
                   </div>
+                  <button
+                    onClick={() => {
+                      setUploadResult(null)
+                      setUploadError(null)
+                    }}
+                    className="px-4 py-2 text-sm bg-white border border-green-300 text-green-700 rounded-lg hover:bg-green-50"
+                  >
+                    重新上传
+                  </button>
                 </div>
-                <button
-                  onClick={() => {
-                    setUploadResult(null)
-                    setUploadError(null)
-                  }}
-                  className="px-4 py-2 text-sm bg-white border border-green-300 text-green-700 rounded-lg hover:bg-green-50"
-                >
-                  重新上传
-                </button>
-              </div>
+              ) : (
+                <div className="flex items-center justify-between p-4 bg-red-50 border border-red-200 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl">❌</span>
+                    <div>
+                      <p className="font-semibold text-red-900">处理失败</p>
+                      <p className="text-sm text-red-600 mt-1">
+                        {uploadResult.error || uploadResult.status || '未知错误'}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setUploadResult(null)
+                      setUploadError(null)
+                    }}
+                    className="px-4 py-2 text-sm bg-white border border-red-300 text-red-700 rounded-lg hover:bg-red-50"
+                  >
+                    重新上传
+                  </button>
+                </div>
+              )}
 
               {/* JSON Result Display */}
               <div className="border-2 border-gray-200 rounded-lg overflow-hidden">

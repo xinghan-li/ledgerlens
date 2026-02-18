@@ -20,7 +20,8 @@ Example curl request:
 curl -X POST "http://127.0.0.1:8000/api/receipts/ocr" \
   -F "file=@/path/to/receipt.jpg"
 """
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Security
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Security, Body
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -1023,23 +1024,13 @@ async def process_receipt_workflow_bulk_endpoint(
         )
 
 
-# ==================== RAG Management Endpoints ====================
+# ==================== Admin (require_admin dependency) ====================
 
 def require_admin(user_id: str = Depends(get_current_user)) -> str:
     """
     Dependency to require admin or super_admin user class.
-    
-    Args:
-        user_id: User ID from JWT token
-        
-    Returns:
-        user_id if user is admin/super_admin
-        
-    Raises:
-        HTTPException: 403 if user is not admin/super_admin
     """
     from .services.database.supabase_client import _get_client
-    
     try:
         supabase = _get_client()
         res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
@@ -1053,19 +1044,375 @@ def require_admin(user_id: str = Depends(get_current_user)) -> str:
                     detail=f"Access denied. Required: admin or super_admin, got: {user_class}"
                 )
         else:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found in database"
-            )
+            raise HTTPException(status_code=404, detail="User not found in database")
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to check user class: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to verify user permissions"
-        )
+        raise HTTPException(status_code=500, detail="Failed to verify user permissions")
 
+
+# ==================== Admin Classification Review Endpoints ====================
+
+@app.get("/api/admin/classification-review/suggest-normalized", tags=["Admin - Classification Review"])
+async def admin_suggest_normalized_names(
+    q: Optional[str] = None,
+    limit: int = 20,
+    user_id: str = Depends(require_admin),
+):
+    """Suggest normalized_name from products and product_categorization_rules for autocomplete. Admin only."""
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    seen = set()
+    out = []
+    if q and len(q.strip()) >= 1:
+        qn = q.strip().lower()
+        for table in ("products", "product_categorization_rules"):
+            res = supabase.table(table).select("normalized_name").ilike("normalized_name", f"%{qn}%").limit(limit).execute()
+            for r in (res.data or []):
+                n = (r.get("normalized_name") or "").strip()
+                if n and n not in seen:
+                    seen.add(n)
+                    out.append(n)
+                    if len(out) >= limit:
+                        break
+            if len(out) >= limit:
+                break
+    return {"suggestions": out[:limit]}
+
+
+@app.get("/api/admin/classification-review", tags=["Admin - Classification Review"])
+async def admin_list_classification_review(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    user_id: str = Depends(require_admin),
+):
+    """List classification_review rows; filter by status (pending, confirmed, etc.). Admin only."""
+    from .services.admin.classification_review_service import list_classification_review
+    rows, total = list_classification_review(status=status, limit=limit, offset=offset)
+    return {"data": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@app.patch("/api/admin/classification-review/{cr_id}", tags=["Admin - Classification Review"])
+async def admin_patch_classification_review(
+    cr_id: str,
+    body: dict = Body(default_factory=dict),
+    user_id: str = Depends(require_admin),
+):
+    """Update a classification_review row (normalized_name, category_id, status, etc.). Admin only."""
+    from .services.admin.classification_review_service import update_classification_review
+    try:
+        row = update_classification_review(
+            cr_id,
+            normalized_name=body.get("normalized_name"),
+            category_id=body.get("category_id"),
+            store_chain_id=body.get("store_chain_id"),
+            size_quantity=body.get("size_quantity"),
+            size_unit=body.get("size_unit"),
+            package_type=body.get("package_type"),
+            match_type=body.get("match_type"),
+            status=body.get("status"),
+        )
+        return row
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/admin/classification-review/{cr_id}/confirm", tags=["Admin - Classification Review"])
+async def admin_confirm_classification_review(
+    cr_id: str,
+    body: Optional[dict] = Body(None),
+    user_id: str = Depends(require_admin),
+):
+    """
+    Confirm a row: write to product_categorization_rules and products, set status=confirmed.
+    If body has "force_different_name": true, skip similarity check.
+    Returns 409 if similar normalized_name exists and force_different_name not set.
+    """
+    from .services.admin.classification_review_service import confirm_classification_review
+    body = body or {}
+    force = body.get("force_different_name", False)
+    try:
+        result = confirm_classification_review(cr_id, confirmed_by=user_id, force_different_name=force)
+        if result.get("similar_to"):
+            raise HTTPException(
+                status_code=409,
+                detail={"similar_to": result["similar_to"], "message": result.get("message", "")},
+            )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/admin/classification-review/{cr_id}", tags=["Admin - Classification Review"])
+async def admin_delete_classification_review(
+    cr_id: str,
+    user_id: str = Depends(require_admin),
+):
+    """Hard-delete a classification_review row. Use to remove duplicate or unwanted entries. Admin only."""
+    from .services.admin.classification_review_service import delete_classification_review
+    try:
+        delete_classification_review(cr_id)
+        return {"success": True, "id": cr_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ==================== Admin Store Review (store_candidates) ====================
+
+@app.get("/api/admin/store-review", tags=["Admin - Store Review"])
+async def admin_list_store_review(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    user_id: str = Depends(require_admin),
+):
+    """List store_candidates; filter by status (pending, approved, rejected). Admin only."""
+    from .services.admin.store_review_service import list_store_candidates
+    rows, total = list_store_candidates(status=status, limit=limit, offset=offset)
+    return {"data": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/admin/store-review/chains", tags=["Admin - Store Review"])
+async def admin_list_store_chains(
+    active_only: bool = True,
+    user_id: str = Depends(require_admin),
+):
+    """List store_chains for dropdown (add as location of). Admin only."""
+    from .services.admin.store_review_service import list_store_chains
+    return {"data": list_store_chains(active_only=active_only)}
+
+
+@app.patch("/api/admin/store-review/{candidate_id}", tags=["Admin - Store Review"])
+async def admin_patch_store_review(
+    candidate_id: str,
+    body: dict = Body(default_factory=dict),
+    user_id: str = Depends(require_admin),
+):
+    """Update a store_candidates row (raw_name, normalized_name, status, rejection_reason). Admin only."""
+    from .services.admin.store_review_service import update_store_candidate
+    try:
+        row = update_store_candidate(
+            candidate_id,
+            raw_name=body.get("raw_name"),
+            normalized_name=body.get("normalized_name"),
+            status=body.get("status"),
+            rejection_reason=body.get("rejection_reason"),
+        )
+        return row
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/admin/store-review/{candidate_id}/approve", tags=["Admin - Store Review"])
+async def admin_approve_store_review(
+    candidate_id: str,
+    body: Optional[dict] = Body(None),
+    user_id: str = Depends(require_admin),
+):
+    """
+    Approve a store candidate: create store_chain and/or store_location, set status=approved.
+    Body: chain_name (for new chain), add_as_location_of_chain_id (to add only location to existing chain),
+    location_name, address_line1, city, state, zip_code, country_code.
+    """
+    from .services.admin.store_review_service import approve_store_candidate
+    body = body or {}
+    try:
+        result = approve_store_candidate(
+            candidate_id,
+            approved_by=user_id,
+            chain_name=body.get("chain_name"),
+            add_as_location_of_chain_id=body.get("add_as_location_of_chain_id"),
+            location_name=body.get("location_name"),
+            address_line1=body.get("address_line1"),
+            address_line2=body.get("address_line2"),
+            city=body.get("city"),
+            state=body.get("state"),
+            zip_code=body.get("zip_code"),
+            country_code=body.get("country_code"),
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/admin/store-review/{candidate_id}/reject", tags=["Admin - Store Review"])
+async def admin_reject_store_review(
+    candidate_id: str,
+    body: Optional[dict] = Body(None),
+    user_id: str = Depends(require_admin),
+):
+    """Reject a store candidate. Body: rejection_reason (optional)."""
+    from .services.admin.store_review_service import reject_store_candidate
+    body = body or {}
+    try:
+        result = reject_store_candidate(
+            candidate_id,
+            reviewed_by=user_id,
+            rejection_reason=body.get("rejection_reason"),
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ==================== Admin Failed Receipts (manual correct) ====================
+
+@app.get("/api/admin/failed-receipts", tags=["Admin - Failed Receipts"])
+async def admin_list_failed_receipts(
+    limit: int = 50,
+    offset: int = 0,
+    user_id: str = Depends(require_admin),
+):
+    """List failed/needs_review receipts with failure reason. Admin only."""
+    from .services.admin.failed_receipts_service import list_failed_receipts
+    rows, total = list_failed_receipts(limit=limit, offset=offset)
+    return {"data": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/admin/failed-receipts/{receipt_id}", tags=["Admin - Failed Receipts"])
+async def admin_get_failed_receipt(
+    receipt_id: str,
+    user_id: str = Depends(require_admin),
+):
+    """Get one failed receipt for manual correct (prefill from DB or last run). Admin only."""
+    from .services.admin.failed_receipts_service import get_failed_receipt_for_edit
+    row = get_failed_receipt_for_edit(receipt_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    return row
+
+
+@app.post("/api/admin/failed-receipts/{receipt_id}/submit", tags=["Admin - Failed Receipts"])
+async def admin_submit_failed_receipt_correction(
+    receipt_id: str,
+    body: dict = Body(...),
+    user_id: str = Depends(require_admin),
+):
+    """Submit manually corrected receipt data. Creates/updates record_summaries and record_items, sets status=success. Admin only."""
+    from .services.admin.failed_receipts_service import submit_manual_correction
+    summary = body.get("summary") or {}
+    items = body.get("items") or []
+    try:
+        result = submit_manual_correction(receipt_id=receipt_id, summary=summary, items=items)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/admin/failed-receipts/{receipt_id}", tags=["Admin - Failed Receipts"])
+async def admin_delete_failed_receipt(
+    receipt_id: str,
+    user_id: str = Depends(require_admin),
+):
+    """Hard-delete a failed/needs_review receipt and all related records. Admin only."""
+    from .services.admin.failed_receipts_service import (
+        delete_receipt_hard,
+        get_failed_receipt_for_edit,
+        FAILED_STATUSES,
+    )
+    row = get_failed_receipt_for_edit(receipt_id)
+    if not row or row.get("current_status") not in FAILED_STATUSES:
+        raise HTTPException(status_code=404, detail="Receipt not found or not in failed/needs_review")
+    try:
+        delete_receipt_hard(receipt_id)
+        return {"success": True, "receipt_id": receipt_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/admin/receipt-image/{receipt_id}", tags=["Admin - Failed Receipts"])
+async def admin_get_receipt_image(
+    receipt_id: str,
+    user_id: str = Depends(require_admin),
+):
+    """Serve receipt image for failed/needs_review receipts. raw_file_url may be local path or HTTP URL. Admin only."""
+    from pathlib import Path
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    res = supabase.table("receipt_status").select("raw_file_url").eq("id", receipt_id).limit(1).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    raw_url = (res.data[0].get("raw_file_url") or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=404, detail="No image for this receipt")
+    # If HTTP/HTTPS, redirect (frontend should use raw_url directly; this endpoint for local paths)
+    if raw_url.lower().startswith(("http://", "https://")):
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=raw_url)
+    # Local path: resolve relative to project root
+    project_root = Path(__file__).resolve().parents[2]
+    file_path = (project_root / raw_url).resolve()
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Image file not found")
+    # Infer media type from extension
+    suffix = file_path.suffix.lower()
+    media = "image/jpeg" if suffix in (".jpg", ".jpeg") else "image/png" if suffix == ".png" else "application/octet-stream"
+    return FileResponse(str(file_path), media_type=media)
+
+
+# ==================== Admin Categories Endpoints ====================
+
+@app.get("/api/admin/categories", tags=["Admin - Categories"])
+async def admin_get_categories_tree(
+    active_only: bool = True,
+    user_id: str = Depends(require_admin),
+):
+    """Get categories tree (flat list with id, parent_id, name, path, level). Admin only."""
+    from .services.admin.categories_admin_service import get_categories_tree
+    return {"data": get_categories_tree(active_only=active_only)}
+
+
+@app.post("/api/admin/categories", tags=["Admin - Categories"])
+async def admin_create_category(
+    body: dict = Body(...),
+    user_id: str = Depends(require_admin),
+):
+    """Create category. Body: parent_id (null for L1), name, level. Returns 409 if same name under same parent. Admin only."""
+    from .services.admin.categories_admin_service import create_category
+    try:
+        row = create_category(
+            parent_id=body.get("parent_id"),
+            name=body.get("name", ""),
+            level=int(body.get("level", 1)),
+        )
+        return row
+    except ValueError as e:
+        if str(e) == "already_exists":
+            raise HTTPException(status_code=409, detail="Category with same name under same parent already exists")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.patch("/api/admin/categories/{cat_id}", tags=["Admin - Categories"])
+async def admin_update_category(
+    cat_id: str,
+    body: dict = Body(default_factory=dict),
+    user_id: str = Depends(require_admin),
+):
+    """Update category name. Admin only."""
+    from .services.admin.categories_admin_service import update_category
+    try:
+        return update_category(cat_id, name=body.get("name"))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/admin/categories/{cat_id}", tags=["Admin - Categories"])
+async def admin_delete_category(
+    cat_id: str,
+    user_id: str = Depends(require_admin),
+):
+    """Soft delete category (set is_active=false). Admin only."""
+    from .services.admin.categories_admin_service import delete_category_soft
+    try:
+        delete_category_soft(cat_id)
+        return {"message": "deleted"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ==================== RAG Management Endpoints ====================
 
 @app.post("/api/receipt/initial-parse", tags=["Receipts - Other"])
 async def initial_parse(file: UploadFile = File(...)):

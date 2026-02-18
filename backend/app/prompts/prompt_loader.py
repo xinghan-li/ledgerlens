@@ -135,6 +135,23 @@ def load_prompts_for_receipt_parse(
     return result
 
 
+def load_classification_prompt() -> Optional[str]:
+    """
+    Load the system prompt for classification (product category + size/unit inference).
+    Returns the prompt content or None if not found.
+    """
+    _populate_binding_cache()
+    bindings = _binding_cache.get("classification", [])
+    if not bindings:
+        logger.warning("[PromptLoader] No bindings for prompt_key=classification")
+        return None
+    # Use first (highest priority) system entry
+    for _pri, entry in bindings:
+        if entry.get("content_role") == "system":
+            return entry.get("content") or ""
+    return None
+
+
 def clear_cache():
     """Clear cache (for testing or after DB updates)."""
     global _binding_cache, _cache_populated
