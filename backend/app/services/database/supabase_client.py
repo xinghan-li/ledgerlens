@@ -642,12 +642,24 @@ def enqueue_unmatched_items_to_classification_review(receipt_id: str) -> int:
         if not to_enqueue:
             return 0
 
-        # LLM pre-fill: suggest category, size, unit_type
+        # LLM pre-fill: suggest category, size, unit_type (avoid asyncio.run on main thread)
         raw_names = [r["raw_product_name"] for r in to_enqueue]
         suggestions: List[Dict[str, Any]] = []
         try:
             from app.services.admin.classification_llm import suggest_classifications
-            suggestions = asyncio.run(suggest_classifications(raw_names, store_chain_name))
+            try:
+                _loop = asyncio.get_running_loop()
+            except RuntimeError:
+                _loop = None
+            if _loop is None:
+                suggestions = asyncio.run(suggest_classifications(raw_names, store_chain_name))
+            else:
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=1) as _pool:
+                    _f = _pool.submit(
+                        lambda: asyncio.run(suggest_classifications(raw_names, store_chain_name))
+                    )
+                    suggestions = _f.result()
         except Exception as e:
             logger.warning(f"Classification LLM pre-fill failed: {e}")
 

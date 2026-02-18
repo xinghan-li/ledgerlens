@@ -68,19 +68,46 @@ def create_category(parent_id: Optional[str], name: str, level: int) -> Dict[str
     return res.data[0]
 
 
+def _update_descendant_paths(supabase, parent_id: str, new_parent_path: str) -> None:
+    """Recursively set path for all descendants to new_parent_path + '/' + child.name."""
+    children = (
+        supabase.table("categories")
+        .select("id, name")
+        .eq("parent_id", parent_id)
+        .execute()
+    )
+    for row in (children.data or []):
+        child_path = f"{new_parent_path}/{row['name']}".lstrip("/") if new_parent_path else (row.get("name") or "")
+        if not child_path:
+            continue
+        supabase.table("categories").update({"path": child_path}).eq("id", row["id"]).execute()
+        _update_descendant_paths(supabase, row["id"], child_path)
+
+
 def update_category(cat_id: str, name: Optional[str] = None) -> Dict[str, Any]:
-    """Update category name (and optionally path if we recalc)."""
+    """Update category name and path; recursively update paths of all descendants."""
     supabase = _get_client()
-    if not get_category(cat_id):
+    row = get_category(cat_id)
+    if not row:
         raise ValueError("Category not found")
-    payload = {}
-    if name is not None:
-        payload["name"] = (name or "").strip().lower() or None
-    if not payload:
-        return get_category(cat_id)
+    if name is None:
+        return row
+    new_name = (name or "").strip().lower()
+    if not new_name:
+        return row
+    parent_id = row.get("parent_id")
+    if parent_id is None:
+        new_path = new_name
+    else:
+        parent = get_category(parent_id)
+        if not parent:
+            raise ValueError("Parent category not found")
+        new_path = f"{parent.get('path', '')}/{new_name}".lstrip("/")
+    payload = {"name": new_name, "path": new_path}
     res = supabase.table("categories").update(payload).eq("id", cat_id).execute()
     if not res.data:
         raise ValueError("Category not found")
+    _update_descendant_paths(supabase, cat_id, new_path)
     return res.data[0]
 
 

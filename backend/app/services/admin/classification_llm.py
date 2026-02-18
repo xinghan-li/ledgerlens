@@ -94,7 +94,7 @@ async def suggest_classifications(
     results: List[Dict[str, Any]] = []
 
     def _parse_size(s: str) -> tuple:
-        """Parse '3.5 oz' -> (3.5, 'oz', None); '12ct' -> (12, 'ct', None)."""
+        """Parse '3.5 oz' -> (3.5, 'oz', None); '12ct' -> (12, 'ct', None). Requires number + unit suffix."""
         import re
         s = (s or "").strip()
         if not s:
@@ -106,6 +106,20 @@ async def suggest_classifications(
             except ValueError:
                 return (None, None, None)
         return (None, None, None)
+
+    def _parse_quantity_only(s: str) -> Optional[float]:
+        """Parse a string that may be just a number (e.g. '3.5') when LLM returns size and unit separately."""
+        import re
+        s = (s or "").strip()
+        if not s:
+            return None
+        m = re.match(r"^(\d+\.?\d*)\s*$", s) or re.match(r"^(\d+\.?\d*)", s)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                pass
+        return None
 
     for raw in raw_product_names:
         out: Dict[str, Any] = {
@@ -125,12 +139,21 @@ async def suggest_classifications(
                     out["category_id"] = _path_to_category_id(path, supabase)
                 s = (it.get("size") or "").strip()
                 u = (it.get("unit_type") or "").strip()
-                qty, unit, pkg = _parse_size(s or u or "")
+                # Prefer combined "3.5 oz" so _parse_size can extract both; else LLM may return size="3.5", unit_type="oz" separately
+                combined = f"{s} {u}".strip() if (s and u) else (s or u or "")
+                qty, unit, pkg = _parse_size(combined)
                 if qty is not None:
                     out["size_quantity"] = qty
                 if unit:
                     out["size_unit"] = unit
                 elif u:
+                    out["size_unit"] = u.lower()
+                # When LLM returns quantity in size and unit in unit_type, _parse_size("3.5") fails; fallback to numeric-only
+                if out.get("size_quantity") is None and s:
+                    q = _parse_quantity_only(s)
+                    if q is not None:
+                        out["size_quantity"] = q
+                if not out.get("size_unit") and u:
                     out["size_unit"] = u.lower()
                 if it.get("package_type"):
                     out["package_type"] = (it.get("package_type") or "").strip().lower()

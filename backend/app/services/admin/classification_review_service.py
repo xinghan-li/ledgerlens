@@ -267,7 +267,7 @@ def confirm_classification_review(cr_id: str, confirmed_by: str, force_different
         "usage_count": 1,
         "last_seen_date": receipt_date_value,
     }
-    q = supabase.table("products").select("id, usage_count").eq("normalized_name", normalized)
+    q = supabase.table("products").select("id").eq("normalized_name", normalized)
     if size_qty is None:
         q = q.is_("size_quantity", "null")
     else:
@@ -288,13 +288,15 @@ def confirm_classification_review(cr_id: str, confirmed_by: str, force_different
     product_id = None
     if existing.data:
         product_id = existing.data[0]["id"]
-        prev_usage = (existing.data[0].get("usage_count") or 0)
-        update_prod = {
-            "category_id": category_id,
-            "usage_count": prev_usage + 1,
-            "last_seen_date": receipt_date_value,
-        }
-        supabase.table("products").update(update_prod).eq("id", product_id).execute()
+        # Atomic increment to avoid race when multiple confirms hit the same product
+        supabase.rpc(
+            "increment_product_usage",
+            {
+                "p_product_id": product_id,
+                "p_category_id": category_id,
+                "p_last_seen_date": receipt_date_value,
+            },
+        ).execute()
     else:
         ins = supabase.table("products").insert(product_payload).execute()
         product_id = ins.data[0]["id"] if ins.data else None

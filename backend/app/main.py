@@ -1341,9 +1341,13 @@ async def admin_get_receipt_image(
     if raw_url.lower().startswith(("http://", "https://")):
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=raw_url)
-    # Local path: resolve relative to project root
+    # Local path: resolve relative to project root; guard against path traversal
     project_root = Path(__file__).resolve().parents[2]
     file_path = (project_root / raw_url).resolve()
+    try:
+        file_path.relative_to(project_root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Image file not found")
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Image file not found")
     # Infer media type from extension
