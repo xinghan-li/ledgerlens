@@ -140,6 +140,8 @@ export default function ClassificationReviewPage() {
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(true)
   const [token, setToken] = useState<string | null>(null)
+  const [backfillLoading, setBackfillLoading] = useState(false)
+  const [backfillResult, setBackfillResult] = useState<{ updated: number; total_processed: number; need_clean: number; need_onsale: number; need_product_id: number; message: string } | null>(null)
   const [categories, setCategories] = useState<{ id: string; name: string; path: string; level: number; parent_id: string | null }[]>([])
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -433,6 +435,49 @@ export default function ClassificationReviewPage() {
           </select>
         </label>
         <span className="text-sm text-gray-500">共 {total} 条</span>
+      </div>
+      {/* Record items 回填：方案 A 手动触发，后续可改为定时任务 */}
+      <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded">
+        <p className="text-sm text-gray-700 mb-2">
+          <strong>Record items 回填 (Backfill)</strong>：对全表 <code className="bg-gray-200 px-1 rounded">record_items</code> 做一次性补齐，不定时自动跑，需要时点击下方按钮执行。
+        </p>
+        <ul className="text-sm text-gray-600 list-disc list-inside mb-2">
+          <li><code>product_name_clean</code>：为空时用商品名规范化后写入</li>
+          <li><code>on_sale</code>：将「数量×单价」且无明确促销文案的项纠正为 false</li>
+          <li><code>product_id</code>：按 normalized_name + 小票门店链 匹配 <code>products</code> 表并回填</li>
+        </ul>
+        <p className="text-sm text-gray-500 mb-2">确认一批 Classification Review 后，可执行一次回填，使新产生的 product 关联到历史 record_items。</p>
+        <button
+          type="button"
+          disabled={backfillLoading}
+          onClick={async () => {
+            if (!token) return
+            setBackfillLoading(true)
+            setBackfillResult(null)
+            try {
+              const res = await fetch(`${apiUrl}/api/admin/classification-review/backfill-record-items?limit=0&batch=200`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+              })
+              const data = await res.json().catch(() => ({}))
+              if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Backfill 失败')
+              setBackfillResult(data)
+              setSuccessMessage(data.message || `已回填 ${data.updated ?? 0} 条`)
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Backfill 失败')
+            } finally {
+              setBackfillLoading(false)
+            }
+          }}
+          className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
+        >
+          {backfillLoading ? '执行中…' : '立即回填 (Backfill now)'}
+        </button>
+        {backfillResult && (
+          <p className="mt-2 text-sm text-gray-600">
+            本次：处理 {backfillResult.total_processed} 条，更新 {backfillResult.updated} 条（需补 clean: {backfillResult.need_clean}，需改 on_sale: {backfillResult.need_onsale}，需补 product_id: {backfillResult.need_product_id}）。
+          </p>
+        )}
       </div>
       {error && (
         <div className="mb-4 p-2 bg-red-100 text-red-700 rounded text-sm flex items-center justify-between gap-2">

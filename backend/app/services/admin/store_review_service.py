@@ -7,7 +7,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services.database.supabase_client import _get_client, backfill_record_summaries_for_store_chain
+from app.services.database.supabase_client import (
+    _get_client,
+    backfill_record_summaries_for_store_chain,
+    backfill_record_summaries_for_store_location,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +105,18 @@ def update_store_candidate(
     return res.data[0]
 
 
+def _normalize_country_code(code: Optional[str]) -> Optional[str]:
+    """Use US/CA only; never USA or CANADA for store_location.country_code."""
+    if not code or not isinstance(code, str):
+        return (code or "").strip() or None
+    s = code.strip().upper()
+    if s in ("USA", "UNITED STATES", "US"):
+        return "US"
+    if s in ("CANADA", "CA"):
+        return "CA"
+    return code.strip() or None
+
+
 def approve_store_candidate(
     candidate_id: str,
     approved_by: str,
@@ -114,6 +130,7 @@ def approve_store_candidate(
     state: Optional[str] = None,
     zip_code: Optional[str] = None,
     country_code: Optional[str] = None,
+    phone: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Approve a store_candidates row:
@@ -180,7 +197,9 @@ def approve_store_candidate(
     if zip_code is not None:
         loc_payload["zip_code"] = (zip_code or "").strip() or None
     if country_code is not None:
-        loc_payload["country_code"] = (country_code or "").strip() or None
+        loc_payload["country_code"] = _normalize_country_code(country_code)
+    if phone is not None:
+        loc_payload["phone"] = (phone or "").strip() or None
     # Fallback to metadata address if not provided
     if loc_payload.get("address_line1") is None and addr.get("address1"):
         loc_payload["address_line1"] = addr.get("address1")
@@ -191,10 +210,12 @@ def approve_store_candidate(
     if loc_payload.get("zip_code") is None and addr.get("zipcode"):
         loc_payload["zip_code"] = addr.get("zipcode")
     if loc_payload.get("country_code") is None and addr.get("country"):
-        loc_payload["country_code"] = addr.get("country")
+        loc_payload["country_code"] = _normalize_country_code(addr.get("country"))
 
-    supabase.table("store_locations").insert(loc_payload).execute()
-    logger.info(f"Created store_location for chain {chain_id}: {loc_name}")
+    loc_res = supabase.table("store_locations").insert(loc_payload).execute()
+    new_location_row = loc_res.data[0] if loc_res.data else None
+    new_location_id = new_location_row.get("id") if new_location_row else None
+    logger.info(f"Created store_location for chain {chain_id}: {loc_name} (id={new_location_id})")
 
     # Mark candidate as approved
     update_payload: Dict[str, Any] = {
@@ -207,7 +228,7 @@ def approve_store_candidate(
         update_payload.pop("reviewed_by", None)
     supabase.table("store_candidates").update(update_payload).eq("id", candidate_id).execute()
 
-    # Backfill record_summaries that have matching store_name but store_chain_id was null
+    # Backfill record_summaries: (1) set store_chain_id where store_name matches and chain_id was null
     try:
         chain_row = supabase.table("store_chains").select("name").eq("id", chain_id).limit(1).execute()
         if chain_row.data and chain_row.data[0].get("name"):
@@ -216,6 +237,16 @@ def approve_store_candidate(
                 logger.info(f"Backfilled {n} record_summaries with new store_chain_id after approval")
     except Exception as e:
         logger.warning(f"Backfill record_summaries after store approval: {e}")
+
+    # (2) 门店确认后：激活并更新所有与该地址关联的小票（store_location_id + 规范地址/店名）
+    if new_location_id and new_location_row:
+        try:
+            chain_name_for_loc = chain_row.data[0].get("name") if chain_row.data else None
+            n_loc = backfill_record_summaries_for_store_location(chain_id, new_location_id, new_location_row, chain_name=chain_name_for_loc)
+            if n_loc:
+                logger.info(f"Backfilled {n_loc} record_summaries with new store_location_id (address match) after approval")
+        except Exception as e:
+            logger.warning(f"Backfill record_summaries for store_location after approval: {e}")
 
     updated = get_one(candidate_id)
     return {"message": "approved", "row": updated, "chain_id": chain_id}

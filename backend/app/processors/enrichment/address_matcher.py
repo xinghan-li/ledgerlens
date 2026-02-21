@@ -8,113 +8,99 @@ Features:
 4. Standardize address formats
 """
 import logging
-from typing import Dict, Any, Optional, Tuple
+import re
+from typing import Dict, Any, Optional, Tuple, List
 from rapidfuzz import fuzz, process
 from ...services.database.supabase_client import _get_client
 from ...config import settings
 
 logger = logging.getLogger(__name__)
 
-# Cache for store locations
-_store_locations_cache: Dict[str, Dict[str, Any]] = {}
+# All locations with address_string (address-first matching; no single overwrite per chain)
+_locations_list: List[Dict[str, Any]] = []
+_locations_by_chain_name: Dict[str, List[Dict[str, Any]]] = {}
+_locations_by_location_name: Dict[str, Dict[str, Any]] = {}
 _cache_populated = False
 
 
+def _normalize_address_for_compare(s: Optional[str]) -> str:
+    if not s or not isinstance(s, str):
+        return ""
+    return " ".join(s.lower().replace("\n", " ").replace("\r", " ").split())
+
+
 def _populate_store_cache():
-    """Populate store locations cache from database."""
-    global _cache_populated, _store_locations_cache
-    
+    """Populate: list of all locations + address_string; index by chain/location name (multi-location chains not overwritten)."""
+    global _cache_populated, _locations_list, _locations_by_chain_name, _locations_by_location_name
+
     if _cache_populated:
         return
-    
     try:
         supabase = _get_client()
-        
-        # Query store_locations
         locations_response = supabase.table("store_locations").select("*").eq("is_active", True).execute()
-        
-        # Query store_chains
         chains_response = supabase.table("store_chains").select("*").eq("is_active", True).execute()
-        
-        # Build chain lookup
-        chains_by_id = {}
-        if chains_response.data:
-            for chain in chains_response.data:
-                chains_by_id[chain["id"]] = chain
-        
-        if locations_response.data:
-            for location in locations_response.data:
-                chain_id = location.get("chain_id")
-                chain = chains_by_id.get(chain_id, {}) if chain_id else {}
-                
-                chain_name = chain.get("name", "").lower() if chain else ""
-                location_name = location.get("name", "").lower()
-                
-                # Build location data structure
-                location_data = {
-                    "store_name": location.get("name", ""),  # Location name for matching
-                    "chain_name": chain.get("name", ""),  # Chain name
-                    "store_aliases": chain.get("aliases", []),
-                    "address_line1": location.get("address_line1"),
-                    "address_line2": location.get("address_line2"),
-                    "city": location.get("city"),
-                    "state": location.get("state"),
-                    "country": location.get("country_code"),
-                    "zip_code": location.get("zip_code"),
-                    "phone": location.get("phone"),
-                    "id": location.get("id"),
-                    "chain_id": location.get("chain_id"),
-                }
-                
-                # Index by chain name
-                if chain_name:
-                    _store_locations_cache[chain_name] = location_data
-                
-                # Also index by location name
-                if location_name:
-                    _store_locations_cache[location_name] = location_data
-                
-                # Index by chain aliases
-                if chain and chain.get("aliases"):
-                    for alias in chain.get("aliases", []):
-                        _store_locations_cache[alias.lower()] = location_data
-            
-            _cache_populated = True
-            logger.info(f"Loaded {len(locations_response.data)} store locations into cache")
-        else:
+        chains_by_id = {c["id"]: c for c in (chains_response.data or [])}
+
+        if not locations_response.data:
             logger.warning("No store locations found in database")
-    
+            _cache_populated = True
+            return
+
+        for location in locations_response.data:
+            chain_id = location.get("chain_id")
+            chain = chains_by_id.get(chain_id, {}) if chain_id else {}
+            chain_name_raw = chain.get("name", "")
+            chain_name = (chain_name_raw or "").lower()
+            location_name = (location.get("name") or "").lower()
+
+            location_data = {
+                "store_name": location.get("name", ""),
+                "chain_name": chain_name_raw,
+                "store_aliases": chain.get("aliases", []),
+                "address_line1": location.get("address_line1"),
+                "address_line2": location.get("address_line2"),
+                "city": location.get("city"),
+                "state": location.get("state"),
+                "country": location.get("country_code"),
+                "zip_code": location.get("zip_code"),
+                "phone": location.get("phone"),
+                "id": location.get("id"),
+                "chain_id": location.get("chain_id"),
+            }
+            addr_parts = [location_data["address_line1"] or ""]
+            if location_data.get("address_line2"):
+                addr_parts.append(str(location_data["address_line2"]).strip())
+            if location_data.get("city") and location_data.get("state") and location_data.get("zip_code"):
+                addr_parts.append(f"{location_data['city']}, {location_data['state']} {location_data['zip_code']}")
+            if location_data.get("country"):
+                addr_parts.append(location_data["country"])
+            location_data["address_string"] = "\n".join(p for p in addr_parts if p)
+
+            _locations_list.append(location_data)
+            if chain_name:
+                _locations_by_chain_name.setdefault(chain_name, []).append(location_data)
+            if location_name:
+                _locations_by_location_name[location_name] = location_data
+            if chain and chain.get("aliases"):
+                for alias in chain.get("aliases", []):
+                    _locations_by_chain_name.setdefault(alias.lower(), []).append(location_data)
+
+        _cache_populated = True
+        logger.info(f"Loaded {len(_locations_list)} store locations (address-first matching)")
     except Exception as e:
-        logger.error(
-            f"Failed to load store locations from database: {type(e).__name__}: {e}",
-            exc_info=True
-        )
+        logger.error(f"Failed to load store locations: {type(e).__name__}: {e}", exc_info=True)
 
 
 def match_store(
     store_name: Optional[str],
     store_address: Optional[str] = None,
     high_confidence_threshold: float = 0.85,
-    low_confidence_threshold: float = 0.50
+    low_confidence_threshold: float = 0.50,
+    address_match_threshold: float = 0.90,
 ) -> Dict[str, Any]:
     """
-    Match store name against canonical database using fuzzy matching.
-    
-    Args:
-        store_name: OCR-extracted store name
-        store_address: OCR-extracted address (optional, for disambiguation)
-        high_confidence_threshold: Threshold for high confidence match (0.0-1.0), default 0.85
-        low_confidence_threshold: Threshold for low confidence match (0.0-1.0), default 0.50
-    
-    Returns:
-        Dict with:
-        - 'matched': bool - Whether a high confidence match was found
-        - 'chain_id': Optional[str] - Matched chain_id (only if high confidence)
-        - 'location_id': Optional[str] - Matched location_id (only if high confidence)
-        - 'suggested_chain_id': Optional[str] - Suggested chain_id (if low confidence)
-        - 'suggested_location_id': Optional[str] - Suggested location_id (if low confidence)
-        - 'confidence_score': Optional[float] - Confidence score (0.0-1.0)
-        - 'location_data': Optional[Dict] - Full location data (if any match found)
+    Match store: **address-first** (receipt address fuzzy vs DB addresses; high confidence => that store).
+    If no address or address match fails, fall back to name matching (single-location chains only).
     """
     result = {
         "matched": False,
@@ -123,89 +109,128 @@ def match_store(
         "suggested_chain_id": None,
         "suggested_location_id": None,
         "confidence_score": None,
-        "location_data": None
+        "location_data": None,
     }
-    
     if not store_name:
         return result
-    
-    # Ensure cache is populated
+    _addr_preview = (store_address[:100] + "...") if store_address and len(store_address) > 100 else store_address
+    logger.info("[STORE_DEBUG] match_store IN: store_name=%r, store_address=%r", store_name, _addr_preview)
+
     _populate_store_cache()
-    
-    if not _store_locations_cache:
-        logger.warning("Store locations cache is empty")
+    if not _locations_list:
+        logger.warning("Store locations list is empty")
         return result
-    
-    # Normalize input
+
     store_name_lower = store_name.lower().strip()
-    
-    # Exact match first
-    if store_name_lower in _store_locations_cache:
-        matched_location = _store_locations_cache[store_name_lower]
-        logger.info(f"Exact match found for store: {store_name}")
+    addr_norm = _normalize_address_for_compare(store_address) if store_address else ""
+    logger.info("[STORE_DEBUG] match_store: addr_norm has %s chars (address path=%s)", len(addr_norm), bool(addr_norm))
+
+    # 1) When receipt has address: ONLY match by address. No match => do NOT fall back to name (never assign another location of same chain).
+    if addr_norm:
+        best_score = 0
+        best_location: Optional[Dict[str, Any]] = None
+        for loc in _locations_list:
+            db_addr = _normalize_address_for_compare(loc.get("address_string"))
+            if not db_addr:
+                continue
+            score = fuzz.token_sort_ratio(addr_norm, db_addr) / 100.0
+            if score > best_score:
+                best_score = score
+                best_location = loc
+        if best_location and best_score >= address_match_threshold:
+            chain_lower = (best_location.get("chain_name") or "").lower()
+            loc_name_lower = (best_location.get("store_name") or "").lower()
+            name_ok = (
+                fuzz.ratio(store_name_lower, chain_lower) >= 80
+                or fuzz.ratio(store_name_lower, loc_name_lower) >= 80
+                or store_name_lower in chain_lower
+                or chain_lower in store_name_lower
+            )
+            if name_ok:
+                logger.info(
+                    f"Address match: '{store_name}' + address -> {best_location.get('store_name')} (score: {best_score:.2f})"
+                )
+                result.update({
+                    "matched": True,
+                    "chain_id": best_location.get("chain_id"),
+                    "location_id": best_location.get("id"),
+                    "confidence_score": best_score,
+                    "location_data": best_location,
+                })
+                logger.info("[STORE_DEBUG] match_store OUT (address match): matched=True, location_id=%s", result.get("location_id"))
+                return result
+            logger.debug(f"Address match score {best_score:.2f} but store name mismatch, skipping")
+        # Had address but no DB location matched => no match (do not fall back to name; send to store_candidates)
+        logger.info(f"Receipt has address but no store_location matched (best score: {best_score:.2f}). Will not assign any location.")
+        logger.info("[STORE_DEBUG] match_store OUT (address path, no match): matched=False")
+        return result
+
+    # 2) No address on receipt: name-only (location name or single-location chain only)
+    if store_name_lower in _locations_by_location_name:
+        matched_location = _locations_by_location_name[store_name_lower]
+        logger.info(f"Exact location name match: {store_name} -> {matched_location.get('store_name')}")
         result.update({
             "matched": True,
             "chain_id": matched_location.get("chain_id"),
             "location_id": matched_location.get("id"),
             "confidence_score": 1.0,
-            "location_data": matched_location
+            "location_data": matched_location,
         })
+        logger.info("[STORE_DEBUG] match_store OUT (exact location name): matched=True, location_id=%s", result.get("location_id"))
         return result
-    
-    # Fuzzy match
-    # Build list of all searchable names
-    searchable_names = list(_store_locations_cache.keys())
-    
-    # Use rapidfuzz to find best match (with low threshold to get any match)
-    fuzzy_result = process.extractOne(
-        store_name_lower,
-        searchable_names,
-        scorer=fuzz.ratio,
-        score_cutoff=low_confidence_threshold * 100  # rapidfuzz uses 0-100 scale
-    )
-    
-    if fuzzy_result:
-        matched_name, score, _ = fuzzy_result
-        matched_location = _store_locations_cache[matched_name]
-        confidence = score / 100.0  # Convert to 0.0-1.0 scale
-        
-        if confidence >= high_confidence_threshold:
-            # High confidence match - use directly
-            logger.info(
-                f"High confidence match found for '{store_name}': "
-                f"'{matched_location['store_name']}' (score: {score:.1f}%)"
-            )
+
+    # Fuzzy by location names
+    loc_names = list(_locations_by_location_name.keys())
+    fuzzy_one = process.extractOne(store_name_lower, loc_names, scorer=fuzz.ratio, score_cutoff=low_confidence_threshold * 100)
+    if fuzzy_one:
+        name_key, score, _ = fuzzy_one
+        matched_location = _locations_by_location_name[name_key]
+        conf = score / 100.0
+        if conf >= high_confidence_threshold:
+            logger.info(f"Fuzzy location name match: '{store_name}' -> '{matched_location.get('store_name')}' ({score:.1f}%)")
             result.update({
                 "matched": True,
                 "chain_id": matched_location.get("chain_id"),
                 "location_id": matched_location.get("id"),
-                "confidence_score": confidence,
-                "location_data": matched_location
-            })
-        else:
-            # Low confidence match - return as suggestion
-            logger.info(
-                f"Low confidence match found for '{store_name}': "
-                f"'{matched_location['store_name']}' (score: {score:.1f}%) - will be saved as suggestion"
-            )
-            result.update({
-                "matched": False,  # Not matched, but has suggestion
-                "chain_id": None,  # Not high confidence, don't use directly
-                "location_id": None,
-                "confidence_score": confidence,
+                "confidence_score": conf,
                 "location_data": matched_location,
-                "suggested_chain_id": matched_location.get("chain_id"),
-                "suggested_location_id": matched_location.get("id")
             })
-        return result
-    
-    # No match found - provide detailed context for debugging
-    num_candidates = len(searchable_names)
-    logger.warning(
-        f"No match found for store '{store_name}'. "
-        f"Searched {num_candidates} candidates with threshold {low_confidence_threshold * 100:.1f}%. "
-        f"Consider adding this store to the database."
-    )
+            logger.info("[STORE_DEBUG] match_store OUT (fuzzy location name): matched=True, location_id=%s", result.get("location_id"))
+            return result
+
+    # By chain name: only accept if this chain has exactly one location (no disambiguation without address)
+    chain_names = list(_locations_by_chain_name.keys())
+    fuzzy_chain = process.extractOne(store_name_lower, chain_names, scorer=fuzz.ratio, score_cutoff=low_confidence_threshold * 100)
+    if fuzzy_chain:
+        chain_key, score, _ = fuzzy_chain
+        locations_for_chain = _locations_by_chain_name[chain_key]
+        conf = score / 100.0
+        if len(locations_for_chain) == 1 and conf >= high_confidence_threshold:
+            matched_location = locations_for_chain[0]
+            logger.info(f"Single-location chain match: '{store_name}' -> {matched_location.get('store_name')} ({score:.1f}%)")
+            result.update({
+                "matched": True,
+                "chain_id": matched_location.get("chain_id"),
+                "location_id": matched_location.get("id"),
+                "confidence_score": conf,
+                "location_data": matched_location,
+            })
+            logger.info("[STORE_DEBUG] match_store OUT (single-location chain): matched=True, location_id=%s", result.get("location_id"))
+            return result
+        if len(locations_for_chain) > 1:
+            logger.info(
+                f"Chain '{chain_key}' has {len(locations_for_chain)} locations; need address to disambiguate (have address: {bool(addr_norm)})"
+            )
+            if not addr_norm and conf >= low_confidence_threshold:
+                result["suggested_chain_id"] = locations_for_chain[0].get("chain_id")
+                result["suggested_location_id"] = locations_for_chain[0].get("id")
+                result["confidence_score"] = conf
+                result["location_data"] = locations_for_chain[0]
+                logger.info("[STORE_DEBUG] match_store OUT (multi-location chain, no address): suggested_location_id=%s", result.get("suggested_location_id"))
+                return result
+
+    logger.warning(f"No match for store '{store_name}' (address provided: {bool(addr_norm)}). Consider adding to database.")
+    logger.info("[STORE_DEBUG] match_store OUT (no match): matched=False")
     return result
 
 
@@ -227,6 +252,8 @@ def correct_address(
     receipt = llm_result.get("receipt", {})
     store_name = receipt.get("merchant_name")  # Keep merchant_name for backward compatibility
     store_address = receipt.get("merchant_address")
+    _addr_preview = (store_address[:100] + "...") if store_address and len(store_address) > 100 else store_address
+    logger.info("[STORE_DEBUG] correct_address IN: merchant_name=%r, merchant_address=%r", store_name, _addr_preview)
     
     if not store_name:
         logger.debug("No store name in receipt, skipping address correction")
@@ -234,6 +261,11 @@ def correct_address(
     
     # Match store
     match_result = match_store(store_name, store_address)
+    logger.info(
+        "[STORE_DEBUG] correct_address match_result: matched=%s, location_id=%s",
+        match_result.get("matched"),
+        match_result.get("location_id"),
+    )
     
     if not match_result.get("matched"):
         logger.debug(f"No canonical address found for: {store_name}")
@@ -310,20 +342,38 @@ def correct_address(
     return llm_result
 
 
+def _format_unit_for_address(address_line2: Optional[str]) -> Optional[str]:
+    """
+    From verified DB we have a single value (e.g. 101). Always output as "Unit 101"
+    so we don't depend on DB storing "Ste 101" vs "101". If DB already has a prefix
+    (Suite/Ste/Unit/Apt), normalize to "Unit <number>" for consistency.
+    """
+    if not address_line2 or not str(address_line2).strip():
+        return None
+    line2 = str(address_line2).strip()
+    # Already "Unit 101" / "Suite 101" / "Ste 101" / "Apt 101" / "#101" → extract number, output "Unit 101"
+    m = re.search(r"(?:Suite|Ste|Unit|Apt|#)\s*(\d+[\w-]*)", line2, re.I)
+    if m:
+        return f"Unit {m.group(1).strip()}"
+    # Bare number (e.g. "101") → "Unit 101"
+    if re.match(r"^\d+[\w-]*$", line2):
+        return f"Unit {line2}"
+    # Other (e.g. "Building B"): keep as-is
+    return line2
+
+
 def build_address_string(location: Dict[str, Any]) -> str:
     """
     Build standardized address string from location dict.
-    
-    Args:
-        location: Store location dict from database
-    
-    Returns:
-        Formatted address string
+    Uses verified DB values only; for address_line2 (unit/suite) we concat "Unit "
+    in front so output is canonical (e.g. "Unit 101") regardless of whether DB
+    stored "101" or "Ste 101".
     """
     parts = [location["address_line1"]]
     
-    if location.get("address_line2"):
-        parts.append(location["address_line2"])
+    line2 = _format_unit_for_address(location.get("address_line2"))
+    if line2:
+        parts.append(line2)
     
     # City, State Zip
     city_state_zip = f"{location['city']}, {location['state']} {location['zip_code']}"
@@ -420,25 +470,39 @@ def extract_address_components_from_string(address_str: Optional[str]) -> Dict[s
     else:
         components["address1"] = first_line
     
-    # Second to last line is usually city, state, zip
+    # Last line(s): city, state, zip. Common formats:
+    # A) One line: "Kirkland, WA 98034"
+    # B) Two lines: "Kirkland, WA" + "98034"
     if len(lines) > 1:
-        city_state_zip = lines[-1]
-        
-        # Pattern 1: "City, ST Zipcode" (e.g., "Fremont, CA 94555")
-        match = re.search(r'^(.*?),\s*([A-Z]{2})\s+([A-Z0-9\s\-]+)$', city_state_zip)
-        if match:
-            components["city"] = match.group(1).strip()
-            components["state"] = match.group(2).strip()
-            components["zipcode"] = match.group(3).strip()
+        last_line = lines[-1].strip()
+        # Check if last line is zip-only (e.g. "98034" or "98034-1234")
+        zip_only = re.match(r'^[A-Z0-9\s\-]{3,12}$', last_line) and re.search(r'\d', last_line)
+        if len(lines) >= 2 and zip_only:
+            # Format B: second-to-last is "City, ST"
+            city_state_line = lines[-2].strip()
+            match = re.search(r'^(.*?),\s*([A-Za-z]{2})\s*$', city_state_line, re.IGNORECASE)
+            if match:
+                components["city"] = match.group(1).strip()
+                components["state"] = match.group(2).strip().upper()
+                components["zipcode"] = last_line
+            else:
+                components["city"] = city_state_line
+                components["zipcode"] = last_line
         else:
-            # Pattern 2: "City, State" (no zipcode)
-            match = re.search(r'^(.*?),\s*([A-Z]{2})$', city_state_zip)
+            # Format A or single line: "City, ST Zip" or "City, ST"
+            city_state_zip = last_line
+            match = re.search(r'^(.*?),\s*([A-Z]{2})\s+([A-Z0-9\s\-]+)$', city_state_zip)
             if match:
                 components["city"] = match.group(1).strip()
                 components["state"] = match.group(2).strip()
+                components["zipcode"] = match.group(3).strip()
             else:
-                # Can't parse, put whole line in city
-                components["city"] = city_state_zip
+                match = re.search(r'^(.*?),\s*([A-Z]{2})\s*$', city_state_zip)
+                if match:
+                    components["city"] = match.group(1).strip()
+                    components["state"] = match.group(2).strip()
+                else:
+                    components["city"] = city_state_zip
     
     # Middle lines (if any) are address2, ONLY if address2 wasn't already set from suite parsing
     if len(lines) > 2 and not components["address2"]:
@@ -449,8 +513,10 @@ def extract_address_components_from_string(address_str: Optional[str]) -> Dict[s
 
 def clear_cache():
     """Clear store locations cache (for testing or after updates)."""
-    global _cache_populated, _store_locations_cache
-    _store_locations_cache.clear()
+    global _cache_populated, _locations_list, _locations_by_chain_name, _locations_by_location_name
+    _locations_list.clear()
+    _locations_by_chain_name.clear()
+    _locations_by_location_name.clear()
     _cache_populated = False
     logger.info("Store locations cache cleared")
 

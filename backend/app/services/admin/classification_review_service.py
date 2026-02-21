@@ -160,9 +160,12 @@ def _find_similar_normalized_name(supabase, normalized_name: str, threshold: flo
 def confirm_classification_review(cr_id: str, confirmed_by: str, force_different_name: bool = False) -> Dict[str, Any]:
     """
     Confirm a classification_review row: set status=confirmed, then write to
-    product_categorization_rules and products. If a very similar normalized_name
-    exists and force_different_name is False, returns {"similar_to": "..."} and does not write
-    (caller may retry with force_different_name=True or use similar name).
+    product_categorization_rules and products; backfill the source record_item and cascade
+    to all other unclassified record_items that match (same normalized_name + store_chain_id).
+    So when admin sets a default classification for a product, every "— — —" item that
+    matches gets updated to that default. User overrides (already classified) are unchanged.
+    If a very similar normalized_name exists and force_different_name is False, returns
+    {"similar_to": "..."} and does not write (caller may retry with force_different_name=True).
     """
     supabase = _get_client()
     row = get_one(cr_id)
@@ -301,23 +304,68 @@ def confirm_classification_review(cr_id: str, confirmed_by: str, force_different
         ins = supabase.table("products").insert(product_payload).execute()
         product_id = ins.data[0]["id"] if ins.data else None
 
-    # Backfill source record_item: product_id, product_name_clean, category_id, unit (package_type)
-    if source_ri_id and product_id:
-        backfill_ri: Dict[str, Any] = {
-            "product_id": product_id,
-            "product_name_clean": normalized,
-            "category_id": category_id,
-            "unit": package_type or None,
-        }
+    # Backfill payload for record_items: product_id, product_name_clean, category_id, unit (package_type)
+    backfill_ri: Dict[str, Any] = {
+        "product_name_clean": normalized,
+        "category_id": category_id,
+        "unit": package_type or None,
+    }
+    if product_id:
+        backfill_ri["product_id"] = product_id
+
+    # 1) Backfill the source record_item (the one that was in classification_review)
+    if source_ri_id:
         supabase.table("record_items").update(backfill_ri).eq("id", source_ri_id).execute()
 
-        # Refresh price_snapshots for the receipt's date so new product_id gets aggregated
-        if receipt_date_value:
-            try:
-                supabase.rpc("aggregate_prices_for_date", {"target_date": receipt_date_value}).execute()
-                logger.debug(f"Refreshed price_snapshots for date {receipt_date_value}")
-            except Exception as e:
-                logger.warning(f"Failed to refresh price_snapshots after confirm: {e}")
+    # 2) Cascade: update all other unclassified record_items that match (same normalized_name + store_chain)
+    #    so that "— — —" items get the new default classification when admin confirms a rule
+    try:
+        if store_chain_id:
+            rs = supabase.table("record_summaries").select("receipt_id").eq("store_chain_id", store_chain_id).execute()
+        else:
+            rs = supabase.table("record_summaries").select("receipt_id").is_("store_chain_id", "null").execute()
+        receipt_ids = [r["receipt_id"] for r in (rs.data or []) if r.get("receipt_id")]
+        if not receipt_ids:
+            pass
+        else:
+            # Fetch unclassified record_items for these receipts (batch to avoid too many IDs)
+            ids_to_cascade: List[str] = []
+            chunk = 200
+            for i in range(0, len(receipt_ids), chunk):
+                sub = receipt_ids[i : i + chunk]
+                items = (
+                    supabase.table("record_items")
+                    .select("id, product_name")
+                    .in_("receipt_id", sub)
+                    .is_("category_id", "null")
+                    .execute()
+                )
+                for row in (items.data or []):
+                    raw = (row.get("product_name") or "").strip()
+                    if not raw:
+                        continue
+                    if normalize_name_for_storage(raw) == normalized:
+                        ids_to_cascade.append(row["id"])
+            if ids_to_cascade:
+                # Exclude source so we don't double-update (already done above)
+                if source_ri_id:
+                    ids_to_cascade = [x for x in ids_to_cascade if x != source_ri_id]
+                if ids_to_cascade:
+                    for uid in ids_to_cascade:
+                        supabase.table("record_items").update(backfill_ri).eq("id", uid).execute()
+                    logger.info(
+                        f"Cascade: updated {len(ids_to_cascade)} unclassified record_items to category_id={category_id} (normalized_name={normalized!r}, store_chain_id={store_chain_id!r})"
+                    )
+    except Exception as e:
+        logger.warning(f"Cascade unclassified record_items after confirm failed: {e}")
+
+    # Refresh price_snapshots for the receipt's date so new product_id gets aggregated
+    if source_ri_id and product_id and receipt_date_value:
+        try:
+            supabase.rpc("aggregate_prices_for_date", {"target_date": receipt_date_value}).execute()
+            logger.debug(f"Refreshed price_snapshots for date {receipt_date_value}")
+        except Exception as e:
+            logger.warning(f"Failed to refresh price_snapshots after confirm: {e}")
 
     # Mark CR row as confirmed
     update_payload: Dict[str, Any] = {

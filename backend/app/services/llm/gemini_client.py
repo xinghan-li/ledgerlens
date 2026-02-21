@@ -1,7 +1,9 @@
 """
 Google Gemini LLM Client: Call Google Gemini API for receipt parsing.
+Supports text-only and vision (image + text) modes.
 """
 import google.genai as genai
+from google.genai import types
 from ...config import settings
 from typing import Dict, Any, Optional
 import logging
@@ -123,6 +125,93 @@ async def parse_receipt_with_gemini(
     except Exception as e:
         logger.error(f"Google Gemini API call failed: {e}")
         raise
+
+
+async def parse_receipt_with_gemini_vision(
+    image_bytes: bytes,
+    failure_context: str,
+    output_schema_json: str,
+    mime_type: str = "image/jpeg",
+    model: Optional[str] = None,
+    temperature: float = 0,
+) -> Dict[str, Any]:
+    """
+    Parse receipt by sending the receipt image + failure context to Gemini (vision).
+    Used when the first Gemini call (with OCR text) failed: we ask the model to look at
+    the image and correct the extraction, outputting the same structured JSON.
+
+    Args:
+        image_bytes: Raw image bytes (receipt photo).
+        failure_context: What went wrong in the previous attempt (error message / context).
+        output_schema_json: JSON string of the expected output schema (receipt + items + tbd).
+        mime_type: Image MIME type (e.g. image/jpeg, image/png).
+        model: Gemini model name (default from config).
+        temperature: Generation temperature.
+
+    Returns:
+        Parsed receipt JSON (same structure as text-based parse).
+    """
+    client = await _get_client()
+    model = model or settings.gemini_model
+
+    instruction = f"""You are parsing a receipt. A previous attempt using OCR text failed with the following context:
+
+{failure_context}
+
+Below is the actual receipt image. Look at the image and extract the receipt data correctly. Output valid JSON matching this schema exactly (same structure as before):
+
+{output_schema_json}
+
+Instructions:
+1. Extract all line items with product_name, quantity, unit, unit_price, line_total.
+2. Extract receipt-level fields: merchant_name, merchant_address, purchase_date, purchase_time, subtotal, tax, total, payment_method, card_last4 if visible.
+3. Ensure sum of line_totals ≈ subtotal and subtotal + tax + fees = total (±0.03).
+4. Output only the JSON object, no markdown or extra text."""
+
+    blob = types.Blob(data=image_bytes, mime_type=mime_type)
+    parts = [
+        types.Part(inline_data=blob),
+        types.Part(text=instruction),
+    ]
+
+    config = types.GenerateContentConfig(
+        temperature=temperature,
+        response_mime_type="application/json",
+    )
+
+    logger.info(f"Calling Gemini vision retry with model={model}, image size={len(image_bytes)} bytes")
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=parts,
+            config=config,
+        )
+    except Exception as api_error:
+        logger.error(f"Gemini vision retry API call failed: {type(api_error).__name__}: {api_error}")
+        raise
+
+    if hasattr(response, "text"):
+        content = response.text.strip()
+    elif hasattr(response, "candidates") and response.candidates:
+        c0 = response.candidates[0]
+        if hasattr(c0, "content"):
+            if hasattr(c0.content, "parts") and c0.content.parts:
+                content = c0.content.parts[0].text.strip()
+            elif hasattr(c0.content, "text"):
+                content = c0.content.text.strip()
+            else:
+                raise ValueError("Unexpected Gemini vision response format")
+        else:
+            raise ValueError("Unexpected Gemini vision response format")
+    else:
+        raise ValueError("Unexpected Gemini vision response format")
+
+    content = _extract_json_from_response(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON from Gemini vision response: {e}")
+        raise ValueError(f"Invalid JSON response from Gemini vision: {e}")
 
 
 def _extract_json_from_response(text: str) -> str:

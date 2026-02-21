@@ -27,13 +27,20 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional
 from .services.ocr.vision_client import ocr_document_bytes
-from .services.database.supabase_client import get_test_user_id
+from .services.database.supabase_client import (
+    get_test_user_id,
+    list_receipts_by_user,
+    get_receipt_detail_for_user,
+    update_record_item_category,
+    get_user_analytics_summary,
+)
 from .services.auth.jwt_auth import get_current_user, get_current_user_optional
 from .middleware.rate_limiter import check_workflow_rate_limit
 from .services.categorization.receipt_categorizer import (
     categorize_receipt,
     categorize_receipts_batch,
-    can_categorize_receipt
+    can_categorize_receipt,
+    smart_categorize_receipt_items,
 )
 from .models import ReceiptOCRResponse
 from .services.ocr.documentai_client import parse_receipt_documentai
@@ -394,6 +401,68 @@ async def get_authorization_token(request: AuthorizationRequest):
             status_code=500,
             detail=f"Failed to generate authorization token: {str(e)}"
         )
+
+
+@app.get("/api/auth/me", tags=["Authentication"])
+async def get_current_user_info(user_id: str = Depends(get_current_user)):
+    """Return current user id, email, and user_class. Used by frontend to show/hide Developer and role-specific UI."""
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    res = supabase.table("users").select("id, email, user_class").eq("id", user_id).limit(1).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="User not found")
+    row = res.data[0]
+    return {
+        "user_id": row.get("id"),
+        "email": row.get("email") or "",
+        "user_class": row.get("user_class") or "free",
+    }
+
+
+# 暂时：手机测相机时用固定用户拿 token，测完可删
+_DEV_USER_ID = "7981c0a1-6017-4a8c-b551-3fb4118cd798"
+
+
+@app.get("/api/auth/dev-token", tags=["Authentication"])
+async def get_dev_token():
+    """[暂时] 无鉴权返回指定用户的 JWT，仅当 ALLOW_DEV_TOKEN=1 时可用。用于手机测相机上传。"""
+    import os
+    import jwt
+    from datetime import datetime, timedelta, timezone
+    if os.getenv("ALLOW_DEV_TOKEN") != "1":
+        raise HTTPException(status_code=404, detail="Not available")
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    res = supabase.table("users").select("id, email").eq("id", _DEV_USER_ID).limit(1).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Dev user not found")
+    row = res.data[0]
+    user_id = row.get("id")
+    user_email = row.get("email") or ""
+    if not settings.supabase_jwt_secret:
+        raise HTTPException(status_code=500, detail="SUPABASE_JWT_SECRET not configured")
+    now = datetime.now(timezone.utc)
+    expiration_hours = 24 * 7
+    payload = {
+        "sub": user_id,
+        "email": user_email,
+        "aud": "authenticated",
+        "role": "authenticated",
+        "exp": int((now + timedelta(hours=expiration_hours)).timestamp()),
+        "iat": int(now.timestamp()),
+    }
+    token = jwt.encode(payload, settings.supabase_jwt_secret, algorithm="HS256")
+    return {"token": token, "user_id": user_id}
+
+
+@app.get("/api/analytics/summary", tags=["Receipts - Other"])
+async def get_analytics_summary(
+    user_id: str = Depends(get_current_user),
+    period: Optional[str] = None,
+    value: Optional[str] = None,
+):
+    """Aggregated spending by store, payment card, and category (L1/L2/L3). Amounts in cents. Auth required. Optional: period=month|quarter|year, value=e.g. 2026-01|2026-Q1|2026."""
+    return get_user_analytics_summary(user_id, period=period, value=value)
 
 
 @app.post("/api/receipt/goog-ocr", response_model=ReceiptOCRResponse, tags=["Receipts - OCR Model"])
@@ -759,6 +828,87 @@ async def process_receipt_workflow_endpoint(
             status_code=500,
             detail=f"Workflow processing failed: {str(e)}"
         )
+
+
+@app.get("/api/receipt/list", tags=["Receipts - Other"])
+async def list_my_receipts(
+    limit: int = 50,
+    offset: int = 0,
+    user_id: str = Depends(get_current_user),
+):
+    """List current user's receipts, most recent first. Auth required."""
+    rows = list_receipts_by_user(user_id=user_id, limit=limit, offset=offset)
+    return {"data": rows, "limit": limit, "offset": offset}
+
+
+@app.get("/api/receipt/{receipt_id}", tags=["Receipts - Other"])
+async def get_my_receipt(
+    receipt_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Get one receipt's full JSON (workflow-style). Must be owner. Auth required."""
+    detail = get_receipt_detail_for_user(receipt_id=receipt_id, user_id=user_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
+    return detail
+
+
+@app.post("/api/receipt/{receipt_id}/correct", tags=["Receipts - Other"])
+async def correct_my_receipt(
+    receipt_id: str,
+    body: dict = Body(...),
+    user_id: str = Depends(get_current_user),
+):
+    """Submit manual correction for own receipt. Same body as admin failed-receipts submit: { summary, items }."""
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    rec = supabase.table("receipt_status").select("id, user_id").eq("id", receipt_id).limit(1).execute()
+    if not rec.data or rec.data[0]["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
+    from .services.admin.failed_receipts_service import submit_manual_correction
+    summary = body.get("summary") or {}
+    items = body.get("items") or []
+    try:
+        result = submit_manual_correction(receipt_id=receipt_id, summary=summary, items=items)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/receipt/{receipt_id}", tags=["Receipts - Other"])
+async def delete_my_receipt(
+    receipt_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Permanently delete own receipt. Removes receipt and its record_items/summaries; does not affect products/price data. Auth required."""
+    from .services.admin.failed_receipts_service import delete_receipt_for_user
+    if not delete_receipt_for_user(receipt_id=receipt_id, user_id=user_id):
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
+    return {"success": True, "receipt_id": receipt_id}
+
+
+@app.get("/api/categories", tags=["Receipts - Other"])
+async def get_categories_for_user(user_id: str = Depends(get_current_user)):
+    """Get categories tree for dropdowns (id, parent_id, name, path, level). Auth required."""
+    from .services.admin.categories_admin_service import get_categories_tree
+    return {"data": get_categories_tree(active_only=True)}
+
+
+@app.patch("/api/receipt/{receipt_id}/item/{item_id}/category", tags=["Receipts - Other"])
+async def update_item_category(
+    receipt_id: str,
+    item_id: str,
+    body: dict = Body(...),
+    user_id: str = Depends(get_current_user),
+):
+    """Update one record_item's category_id. Body: { \"category_id\": \"uuid\" or null }. Must be receipt owner."""
+    category_id = body.get("category_id")
+    if category_id is not None and not isinstance(category_id, str):
+        category_id = str(category_id) if category_id else None
+    ok = update_record_item_category(receipt_id=receipt_id, item_id=item_id, user_id=user_id, category_id=category_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Item or receipt not found or access denied")
+    return {"success": True}
 
 
 @app.post("/api/receipt/coordinate-sum-check", tags=["Receipts - Other"])
@@ -1159,6 +1309,22 @@ async def admin_delete_classification_review(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@app.post("/api/admin/classification-review/backfill-record-items", tags=["Admin - Classification Review"])
+async def admin_backfill_record_items(
+    user_id: str = Depends(require_admin),
+    limit: int = 0,
+    batch: int = 200,
+):
+    """
+    Backfill record_items: product_name_clean (where NULL), on_sale→false (quantity×unit pricing),
+    product_id (link to products by normalized_name + store_chain). Admin only.
+    Same logic as scripts/maintenance/backfill_product_name_clean.py; use this to run on demand (e.g. after confirming items in Classification Review).
+    """
+    from .services.admin.record_items_backfill_service import run_record_items_backfill
+    result = run_record_items_backfill(limit=limit or 0, batch_size=batch, dry_run=False)
+    return {"success": True, **result}
+
+
 # ==================== Admin Store Review (store_candidates) ====================
 
 @app.get("/api/admin/store-review", tags=["Admin - Store Review"])
@@ -1214,7 +1380,7 @@ async def admin_approve_store_review(
     """
     Approve a store candidate: create store_chain and/or store_location, set status=approved.
     Body: chain_name (for new chain), add_as_location_of_chain_id (to add only location to existing chain),
-    location_name, address_line1, city, state, zip_code, country_code.
+    location_name, address_line1, city, state, zip_code, country_code, phone.
     """
     from .services.admin.store_review_service import approve_store_candidate
     body = body or {}
@@ -1231,6 +1397,7 @@ async def admin_approve_store_review(
             state=body.get("state"),
             zip_code=body.get("zip_code"),
             country_code=body.get("country_code"),
+            phone=body.get("phone"),
         )
         return result
     except ValueError as e:
@@ -1674,6 +1841,18 @@ async def categorize_batch_receipts(
     except Exception as e:
         logger.error(f"Error in batch categorization: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/receipt/{receipt_id}/smart-categorize", tags=["Receipts - Categorization"])
+async def smart_categorize_my_receipt(
+    receipt_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Categorize only items on this receipt that have no category_id (rules + LLM). Does not overwrite user-set categories."""
+    result = smart_categorize_receipt_items(receipt_id=receipt_id, user_id=user_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=404 if "not found" in (result.get("message") or "").lower() else 400, detail=result.get("message"))
+    return result
 
 
 @app.get("/api/receipt/categorize/check/{receipt_id}", tags=["Receipts - Categorization"])

@@ -11,7 +11,10 @@ from app.services.database.supabase_client import (
     get_store_chain,
     save_receipt_summary,
     save_receipt_items,
+    update_receipt_summary,
+    sync_receipt_items,
     update_receipt_status,
+    enqueue_unmatched_items_to_classification_review,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,9 +28,15 @@ def delete_receipt_hard(receipt_id: str) -> None:
     Clears api_calls/store_candidates.receipt_id then deletes receipt_status;
     CASCADE removes receipt_processing_runs, record_summaries, record_items.
     classification_review.source_record_item_id is SET NULL when record_items are removed.
+    Does not modify products, price_snapshots, or product_categorization_rules.
     """
+    _clear_receipt_refs_and_delete(receipt_id)
+    logger.info(f"Hard-deleted receipt {receipt_id}")
+
+
+def _clear_receipt_refs_and_delete(receipt_id: str) -> None:
+    """Clear api_calls/store_candidates.receipt_id then delete receipt_status (CASCADE removes runs, summaries, items)."""
     supabase = _get_client()
-    # 1. Clear references that do not CASCADE
     try:
         supabase.table("api_calls").update({"receipt_id": None}).eq("receipt_id", receipt_id).execute()
     except Exception as e:
@@ -36,9 +45,24 @@ def delete_receipt_hard(receipt_id: str) -> None:
         supabase.table("store_candidates").update({"receipt_id": None}).eq("receipt_id", receipt_id).execute()
     except Exception as e:
         logger.warning(f"Clear store_candidates.receipt_id: {e}")
-    # 2. Delete receipt_status (CASCADE deletes runs, record_summaries, record_items)
     supabase.table("receipt_status").delete().eq("id", receipt_id).execute()
-    logger.info(f"Hard-deleted receipt {receipt_id}")
+
+
+def delete_receipt_for_user(receipt_id: str, user_id: str) -> bool:
+    """
+    Permanently delete a receipt for the current user (ownership check).
+    Same effect as delete_receipt_hard: removes receipt_status and CASCADE removes
+    record_summaries, record_items, receipt_processing_runs. Does not touch
+    products, price_snapshots, or product_categorization_rules.
+    Returns True if deleted, False if receipt not found or not owned by user.
+    """
+    supabase = _get_client()
+    res = supabase.table("receipt_status").select("id").eq("id", receipt_id).eq("user_id", user_id).limit(1).execute()
+    if not res.data or len(res.data) == 0:
+        return False
+    _clear_receipt_refs_and_delete(receipt_id)
+    logger.info(f"User {user_id} deleted receipt {receipt_id}")
+    return True
 
 
 def list_failed_receipts(
@@ -150,14 +174,14 @@ def get_failed_receipt_for_edit(receipt_id: str) -> Optional[Dict[str, Any]]:
 
     if summary.data and items.data:
         s = summary.data[0]
-        # record_summaries stores dollars (subtotal, tax, total)
+        # record_summaries columns subtotal/tax/total store integer cents (migration 031)
         out["prefill"] = {
             "store_name": s.get("store_name"),
             "store_address": s.get("store_address"),
             "receipt_date": s.get("receipt_date"),
-            "subtotal": _safe_float(s.get("subtotal")),
-            "tax": _safe_float(s.get("tax")),
-            "total": _safe_float(s.get("total")),
+            "subtotal": _cents_to_dollars(s.get("subtotal")) or 0.0,
+            "tax": _cents_to_dollars(s.get("tax")) or 0.0,
+            "total": _cents_to_dollars(s.get("total")) or 0.0,
             "currency": s.get("currency") or "USD",
             "payment_method": s.get("payment_method"),
             "payment_last4": s.get("payment_last4"),
@@ -241,9 +265,10 @@ def submit_manual_correction(
     items: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """
-    Save manually corrected receipt: upsert record_summaries, replace record_items, set receipt status to success.
-    summary: store_name, store_address, receipt_date, subtotal, tax, total, currency, payment_method, payment_last4
-    items: list of { product_name, quantity, unit, unit_price, line_total, on_sale?, original_price?, discount_amount? }
+    Apply manual correction: update only changed summary fields; sync items (update/insert/delete by id).
+    Does not delete-and-recreate: record_summaries is updated in place; record_items are updated/inserted/deleted.
+    summary: store_name, store_address, receipt_date, subtotal, tax, total, currency, payment_method, payment_last4, purchase_time
+    items: list of { id?, product_name, quantity, unit, unit_price, line_total, ... }. id = existing record_items.id for update.
     """
     supabase = _get_client()
     receipt = (
@@ -265,7 +290,22 @@ def submit_manual_correction(
     except (TypeError, ValueError):
         raise ValueError("summary.total must be a number")
 
-    # Build receipt_data for save_receipt_summary
+    # Normalize card_last4 to digits only; time to HH:mm
+    raw_last4 = summary.get("payment_last4")
+    card_last4 = None
+    if raw_last4 is not None and str(raw_last4).strip():
+        digits = "".join(c for c in str(raw_last4).strip() if c.isdigit())
+        card_last4 = digits[-4:] if len(digits) >= 4 else (digits or None)
+    raw_time = summary.get("purchase_time")
+    purchase_time = None
+    if raw_time is not None and str(raw_time).strip():
+        s = str(raw_time).strip()
+        if ":" in s:
+            parts = s.split(":")
+            purchase_time = f"{parts[0].zfill(2)}:{parts[1]}" if len(parts) >= 2 else s[:5]
+        else:
+            purchase_time = s[:5]
+
     receipt_data = {
         "merchant_name": summary.get("store_name"),
         "merchant_address": summary.get("store_address"),
@@ -275,21 +315,14 @@ def submit_manual_correction(
         "total": total_float,
         "currency": summary.get("currency") or "USD",
         "payment_method": summary.get("payment_method"),
-        "card_last4": summary.get("payment_last4"),
+        "card_last4": card_last4,
         "country": summary.get("country"),
+        "cashier": summary.get("cashier"),
+        "merchant_phone": summary.get("merchant_phone"),
+        "purchase_time": purchase_time,
     }
 
-    # Delete existing record_summaries and record_items for this receipt
-    try:
-        supabase.table("record_items").delete().eq("receipt_id", receipt_id).execute()
-    except Exception as e:
-        logger.warning(f"Delete record_items: {e}")
-    try:
-        supabase.table("record_summaries").delete().eq("receipt_id", receipt_id).execute()
-    except Exception as e:
-        logger.warning(f"Delete record_summaries: {e}")
-
-    # Resolve store_chain_id / store_location_id so record_summaries is up to date
+    # Resolve store_chain_id / store_location_id when we have store name (for insert or update)
     chain_id = None
     location_id = None
     store_name = receipt_data.get("merchant_name") or ""
@@ -304,38 +337,78 @@ def submit_manual_correction(
         except Exception as e:
             logger.warning(f"get_store_chain during manual submit: {e}")
 
-    # Save summary (with resolved store_chain_id / store_location_id)
-    summary_id = save_receipt_summary(
+    # Build items_data for sync (include id when present so we update instead of insert)
+    items_data = []
+    for it in items:
+        product_name = (it.get("product_name") or "").strip()
+        if not product_name:
+            logger.info("[MANUAL_CORRECT_DEBUG] skip item: no product_name, raw=%s", it)
+            continue
+        if it.get("line_total") is None:
+            logger.info("[MANUAL_CORRECT_DEBUG] skip item: no line_total, product_name=%s", product_name[:50])
+            continue
+        items_data.append({
+            "id": it.get("id"),
+            "product_name": product_name,
+            "quantity": it.get("quantity"),
+            "unit": it.get("unit"),
+            "unit_price": it.get("unit_price"),
+            "line_total": it.get("line_total"),
+            "on_sale": it.get("on_sale"),
+            "is_on_sale": it.get("on_sale"),
+            "original_price": it.get("original_price"),
+            "discount_amount": it.get("discount_amount"),
+            "category": it.get("category"),
+            "category_id": it.get("category_id"),
+        })
+
+    logger.info(
+        "[MANUAL_CORRECT_DEBUG] receipt_id=%s raw_items=%d items_data=%d sample=%s",
+        receipt_id,
+        len(items),
+        len(items_data),
+        [
+            {"id": it.get("id"), "product_name": (it.get("product_name") or "")[:40], "line_total": it.get("line_total")}
+            for it in items_data[:3]
+        ],
+    )
+
+    summary_id = None
+    # Update existing summary or insert if none (e.g. first correct after failure)
+    updated = update_receipt_summary(
         receipt_id=receipt_id,
         user_id=user_id,
         receipt_data=receipt_data,
         chain_id=chain_id,
         location_id=location_id,
+        items_data=items_data if items_data else None,
     )
-    # Build items_data for save_receipt_items (expects dollars; it converts to cents/x100)
-    items_data = []
-    for it in items:
-        product_name = (it.get("product_name") or "").strip()
-        if not product_name:
-            continue
-        line_total = it.get("line_total")
-        if line_total is None:
-            continue
-        items_data.append({
-            "product_name": product_name,
-            "quantity": it.get("quantity"),
-            "unit": it.get("unit"),
-            "unit_price": it.get("unit_price"),
-            "line_total": line_total,
-            "is_on_sale": it.get("on_sale") or False,
-            "original_price": it.get("original_price"),
-            "discount_amount": it.get("discount_amount"),
-            "category": it.get("category"),
-        })
-
-    if items_data:
-        save_receipt_items(receipt_id=receipt_id, user_id=user_id, items_data=items_data)
+    if updated is not None:
+        summary_id = updated
+        logger.info("[MANUAL_CORRECT_DEBUG] path=UPDATE summary_id=%s calling sync_receipt_items", summary_id)
+        sync_receipt_items(receipt_id=receipt_id, user_id=user_id, items_data=items_data)
+    else:
+        logger.info("[MANUAL_CORRECT_DEBUG] path=INSERT (no existing record_summaries) calling save_receipt_summary + save_receipt_items")
+        summary_id = save_receipt_summary(
+            receipt_id=receipt_id,
+            user_id=user_id,
+            receipt_data=receipt_data,
+            chain_id=chain_id,
+            location_id=location_id,
+            items_data=items_data,
+        )
+        if items_data:
+            save_receipt_items(receipt_id=receipt_id, user_id=user_id, items_data=items_data)
+        else:
+            logger.warning("[MANUAL_CORRECT_DEBUG] items_data empty, save_receipt_items NOT called")
 
     update_receipt_status(receipt_id, current_status="success", current_stage="manual")
+    # Enqueue items without category (or universal-only) to classification_review so they get reviewed
+    try:
+        enqueued = enqueue_unmatched_items_to_classification_review(receipt_id)
+        if enqueued:
+            logger.info(f"Manual correction: enqueued {enqueued} item(s) to classification_review for receipt {receipt_id}")
+    except Exception as e:
+        logger.warning(f"Failed to enqueue items to classification_review after manual correction: {e}")
     logger.info(f"Manual correction submitted for receipt {receipt_id}, summary_id={summary_id}")
     return {"success": True, "receipt_id": receipt_id, "summary_id": summary_id, "items_count": len(items_data)}

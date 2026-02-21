@@ -102,8 +102,18 @@ async def process_receipt_with_llm_from_ocr(
     if merchant_name:
         # Try to get store address from OCR result for better matching
         store_address = unified_info.get("merchant_address")
+        logger.info(
+            "[STORE_DEBUG] OCR stage: merchant_name=%r, unified_info.merchant_address=%r",
+            merchant_name,
+            (store_address[:120] + "..." if store_address and len(store_address) > 120 else store_address),
+        )
         ocr_store_match = get_store_chain(merchant_name, store_address)
-        
+        logger.info(
+            "[STORE_DEBUG] OCR stage get_store_chain result: matched=%s, chain_id=%s, location_id=%s",
+            ocr_store_match.get("matched"),
+            ocr_store_match.get("chain_id"),
+            ocr_store_match.get("location_id"),
+        )
         if ocr_store_match.get("matched"):
             # High confidence match from OCR - use directly
             ocr_chain_id = ocr_store_match.get("chain_id")
@@ -235,19 +245,52 @@ async def process_receipt_with_llm_from_ocr(
     llm_confidence_score = ocr_confidence_score
     llm_matched = ocr_matched
     
-    # Extract merchant info from LLM result
+    # Extract merchant info from LLM result (need address for store match so we don't fall back to wrong location)
     llm_merchant_name = None
     llm_merchant_address = None
     if llm_result and "receipt" in llm_result:
         receipt_data = llm_result["receipt"]
         llm_merchant_name = receipt_data.get("merchant_name")
         llm_merchant_address = receipt_data.get("merchant_address")
-    
+        if not (llm_merchant_address or "").strip():
+            # Build address from parts so get_store_chain gets address and won't match by name only
+            parts = []
+            if receipt_data.get("address1"):
+                parts.append(str(receipt_data["address1"]).strip())
+            if receipt_data.get("address2"):
+                parts.append(str(receipt_data["address2"]).strip())
+            if receipt_data.get("city") or receipt_data.get("state") or receipt_data.get("zipcode"):
+                parts.append(", ".join(
+                    str(receipt_data.get(k) or "").strip()
+                    for k in ("city", "state", "zipcode")
+                    if (receipt_data.get(k) or "").strip()
+                ))
+            if receipt_data.get("country"):
+                parts.append(str(receipt_data["country"]).strip())
+            if parts:
+                llm_merchant_address = "\n".join(parts)
+                logger.info("[STORE_DEBUG] LLM stage: merchant_address was empty, built from parts: %r", (llm_merchant_address[:120] + "..." if len(llm_merchant_address) > 120 else llm_merchant_address))
+        else:
+            logger.info(
+                "[STORE_DEBUG] LLM stage: receipt.merchant_address (raw)=%r",
+                (llm_merchant_address[:120] + "..." if llm_merchant_address and len(llm_merchant_address) > 120 else llm_merchant_address),
+            )
+
     # If LLM extracted merchant info, try matching again (LLM may be more accurate)
     # Always retry with LLM data if available, even if OCR matched (LLM might have better info)
     if llm_merchant_name:
+        logger.info(
+            "[STORE_DEBUG] LLM stage calling get_store_chain: merchant_name=%r, address=%r",
+            llm_merchant_name,
+            (llm_merchant_address[:120] + "..." if llm_merchant_address and len(llm_merchant_address) > 120 else llm_merchant_address),
+        )
         llm_store_match = get_store_chain(llm_merchant_name, llm_merchant_address)
-        
+        logger.info(
+            "[STORE_DEBUG] LLM stage get_store_chain result: matched=%s, chain_id=%s, location_id=%s",
+            llm_store_match.get("matched"),
+            llm_store_match.get("chain_id"),
+            llm_store_match.get("location_id"),
+        )
         if llm_store_match.get("matched"):
             # High confidence match from LLM - use this instead (prefer LLM results)
             llm_chain_id = llm_store_match.get("chain_id")
@@ -272,7 +315,24 @@ async def process_receipt_with_llm_from_ocr(
     final_chain_id = llm_chain_id
     final_location_id = llm_location_id
     final_merchant_name = llm_merchant_name or merchant_name
-    
+    # Log who set the ids so we can trace wrong location (e.g. Lynnwood when receipt is Totem Lake)
+    if final_chain_id:
+        source = "LLM" if llm_matched else "OCR"
+        logger.info(
+            "[STORE_DEBUG] final_chain_id SOURCE=%s (location_id=%s). If wrong store, fix %s stage address passed to get_store_chain.",
+            source,
+            final_location_id,
+            source.lower(),
+        )
+    else:
+        logger.info("[STORE_DEBUG] final_chain_id SOURCE=None (no match), will_create_store_candidate=%s", bool(final_merchant_name and receipt_id))
+    logger.info(
+        "[STORE_DEBUG] LLM stage final: final_chain_id=%s, final_location_id=%s, will_create_store_candidate=%s",
+        final_chain_id,
+        final_location_id,
+        bool(final_merchant_name and not final_chain_id and receipt_id),
+    )
+
     # Step 9: Add metadata with final match results and RAG usage
     llm_result["_metadata"] = {
         "merchant_name": final_merchant_name,
