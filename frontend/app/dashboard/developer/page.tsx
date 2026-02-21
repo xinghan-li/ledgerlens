@@ -4,8 +4,8 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import type { User } from '@supabase/supabase-js'
-import DataAnalysisSection from './DataAnalysisSection'
-import { CameraCaptureButton } from './camera'
+import DataAnalysisSection from '../DataAnalysisSection'
+import { CameraCaptureButton } from '../camera'
 
 const apiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -19,13 +19,13 @@ type ReceiptListItem = {
   receipt_date?: string | null
 }
 
-export default function DashboardPage() {
+export default function DeveloperDashboardPage() {
   const [user, setUser] = useState<User | null>(null)
   const [token, setToken] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [developerAllowed, setDeveloperAllowed] = useState<boolean | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadWorkingHard, setUploadWorkingHard] = useState(false)
-  const [uploadBannerStep, setUploadBannerStep] = useState(0) // 0: writing, 1: escalated, 2: final check
   const [uploadResult, setUploadResult] = useState<any>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const workingHardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -172,10 +172,12 @@ export default function DashboardPage() {
     const getSession = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession()
+        
         if (session) {
           setUser(session.user)
           setToken(session.access_token)
         } else {
+          // 未登录，重定向到登录页
           router.push('/login')
         }
       } catch (error) {
@@ -188,8 +190,11 @@ export default function DashboardPage() {
 
     getSession()
 
+    // 监听认证状态变化
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
+        console.log('Auth state changed:', event)
+        
         if (session) {
           setUser(session.user)
           setToken(session.access_token)
@@ -209,6 +214,25 @@ export default function DashboardPage() {
   useEffect(() => {
     if (token) fetchReceiptList()
   }, [token, fetchReceiptList])
+
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    fetch(`${apiUrl()}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (cancelled) return
+        if (data?.user_class === 'super_admin') {
+          setDeveloperAllowed(true)
+        } else {
+          setDeveloperAllowed(false)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDeveloperAllowed(false)
+      })
+    return () => { cancelled = true }
+  }, [token])
 
   const fetchCategories = useCallback(async () => {
     if (!token) return
@@ -249,13 +273,6 @@ export default function DashboardPage() {
     setUploading(true)
     setUploadResult(null)
     setUploadError(null)
-    setUploadBannerStep(0)
-    const bannerTimeouts: ReturnType<typeof setTimeout>[] = []
-    bannerTimeouts.push(setTimeout(() => setUploadBannerStep(1), 25000))
-    bannerTimeouts.push(setTimeout(() => setUploadBannerStep(2), 55000))
-    const clearBannerTimers = (): void => {
-      bannerTimeouts.forEach((t) => clearTimeout(t))
-    }
 
     const formData = new FormData()
     formData.append('file', file)
@@ -266,10 +283,10 @@ export default function DashboardPage() {
       console.log('Token:', token?.substring(0, 50) + '...')
       console.log('文件:', file.name, file.type, file.size)
       
-      // 3 分钟超时（多步 LLM 可能需 2–3 分钟）；30s 后仅显示 “working hard” 提示，不报错
+      // 3 分钟超时；30s 后显示 “working hard” 提示
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 180000) // 3 min
-      workingHardTimerRef.current = setTimeout(() => setUploadWorkingHard(true), 30000) // 30s 后显示友好提示
+      const timeoutId = setTimeout(() => controller.abort(), 180000)
+      workingHardTimerRef.current = setTimeout(() => setUploadWorkingHard(true), 30000)
 
       try {
         const response = await fetch(`${apiUrl}/api/receipt/workflow`, {
@@ -282,7 +299,6 @@ export default function DashboardPage() {
         })
 
         clearTimeout(timeoutId)
-        clearBannerTimers()
         if (workingHardTimerRef.current) {
           clearTimeout(workingHardTimerRef.current)
           workingHardTimerRef.current = null
@@ -320,7 +336,6 @@ export default function DashboardPage() {
         }
       } catch (fetchError) {
         clearTimeout(timeoutId)
-        clearBannerTimers()
         if (workingHardTimerRef.current) {
           clearTimeout(workingHardTimerRef.current)
           workingHardTimerRef.current = null
@@ -329,12 +344,10 @@ export default function DashboardPage() {
       }
     } catch (error) {
       console.error('❌ 上传错误:', error)
-      clearBannerTimers()
       if (workingHardTimerRef.current) {
         clearTimeout(workingHardTimerRef.current)
         workingHardTimerRef.current = null
       }
-      // 更详细的错误提示
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
           setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
@@ -349,17 +362,21 @@ export default function DashboardPage() {
     } finally {
       setUploading(false)
       setUploadWorkingHard(false)
-      clearBannerTimers()
       if (workingHardTimerRef.current) {
         clearTimeout(workingHardTimerRef.current)
         workingHardTimerRef.current = null
       }
-      // 清空 input value，否则下次选同一文件时 onChange 不会触发（删除小票后未整页刷新时会出现）
       e.target.value = ''
     }
   }
 
-  if (loading) {
+  useEffect(() => {
+    if (developerAllowed === false) {
+      router.push('/dashboard')
+    }
+  }, [developerAllowed, router])
+
+  if (loading || developerAllowed === null) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
@@ -370,17 +387,33 @@ export default function DashboardPage() {
     )
   }
 
-  if (!user) {
+  if (!user || !developerAllowed) {
     return null
   }
 
   return (
     <>
       <main className="max-w-7xl mx-auto px-4 py-6 sm:py-8 sm:px-6 lg:px-8">
-        {/* Customer welcome: email only + upload & camera */}
+        {/* Developer welcome: email, User ID, JWT + upload & camera */}
         <div className="bg-white rounded-xl shadow p-4 sm:p-6 mb-6 sm:mb-8 flex flex-col sm:flex-row sm:flex-wrap sm:items-start sm:justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <h2 className="text-lg sm:text-xl font-semibold mb-1 sm:mb-2">Welcome back, {user.email}</h2>
+            <h2 className="text-lg sm:text-xl font-semibold mb-3 sm:mb-4">Welcome back</h2>
+            <div className="space-y-2 text-sm">
+              <p>
+                <span className="text-gray-600">Email: </span>
+                <span className="font-medium break-all">{user.email}</span>
+              </p>
+              <p>
+                <span className="text-gray-600">User ID: </span>
+                <span className="font-mono text-xs break-all">{user.id}</span>
+              </p>
+              <details className="pt-2">
+                <summary className="cursor-pointer text-blue-600 hover:text-blue-700 min-h-[44px] flex items-center sm:min-h-0">View JWT Token (for testing)</summary>
+                <div className="mt-2 p-3 bg-gray-50 rounded text-xs font-mono break-all">
+                  {token}
+                </div>
+              </details>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <input
@@ -417,59 +450,30 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* 上传中：bookkeeper 状态横幅（随等待时间切换） */}
-        {uploading && (
+        {uploading && uploadWorkingHard && (
           <div className="mb-4 p-4 sm:p-5 bg-blue-50 border border-blue-200 rounded-lg text-center animate-pulse">
-            {uploadBannerStep === 0 && (
-              <>
-                <p className="text-blue-900 font-medium text-base sm:text-lg mb-1">Your bookkeeper is writing busily…</p>
-                <p className="text-blue-700 text-sm">Reading your receipt — this may take a minute.</p>
-              </>
-            )}
-            {uploadBannerStep === 1 && (
-              <>
-                <p className="text-blue-900 font-medium text-base sm:text-lg mb-1">The bookkeeper has questions and is escalating.</p>
-                <p className="text-blue-700 text-sm">You can close this page and come back later — we’ll have it ready when they’re done.</p>
-              </>
-            )}
-            {uploadBannerStep === 2 && (
-              <>
-                <p className="text-blue-900 font-medium text-base sm:text-lg mb-1">Doing final check.</p>
-                <p className="text-blue-700 text-sm">Almost there — thank you for your patience.</p>
-              </>
-            )}
+            <p className="text-blue-900 font-medium text-base sm:text-lg mb-1">Your Smart AI Accountant is Working Hard.</p>
+            <p className="text-blue-700 text-sm">Feel free to come back later — this may take 2–3 minutes.</p>
           </div>
         )}
         {/* Upload success/error toasts */}
         {uploadResult?.success === true && (
-          <div className="mb-4 p-3 sm:p-4 bg-green-50 border border-green-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <span className="text-green-800 text-sm sm:text-base min-w-0">
-              ✅ Processed.
-              {(uploadResult.status === 'passed_after_fallback' || uploadResult.status === 'passed_after_vision_retry')
-                ? ' Final check complete.'
-                : ` Status: ${uploadResult.status || 'passed'}`}
-            </span>
+          <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between">
+            <span className="text-green-800">✅ Processed. Status: {uploadResult.status || 'passed'}</span>
             <button
               onClick={() => { setUploadResult(null); setUploadError(null) }}
-              className="text-sm text-green-700 hover:underline self-start sm:self-center min-h-[44px] sm:min-h-0"
+              className="text-sm text-green-700 hover:underline"
             >
               Dismiss
             </button>
           </div>
         )}
-        {/* 失败/需人工：bookkeeper 升级提示 */}
-        {(uploadError || (uploadResult && uploadResult.success === false)) && (
-          <div className="mb-4 p-3 sm:p-4 bg-amber-50 border border-amber-200 rounded-lg">
-            <p className="text-amber-900 font-medium text-sm sm:text-base mb-1">The bookkeeper had questions and escalated.</p>
-            <p className="text-amber-800 text-sm">You can close this page and come back later — we’ll have it ready when they’re done.</p>
-          </div>
-        )}
         {uploadError && (
-          <div className="mb-4 p-3 sm:p-4 bg-red-50 border border-red-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <span className="text-red-800 text-sm whitespace-pre-wrap min-w-0 break-words">{uploadError}</span>
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+            <span className="text-red-800 text-sm whitespace-pre-wrap">{uploadError}</span>
             <button
               onClick={() => { setUploadResult(null); setUploadError(null) }}
-              className="text-sm text-red-700 hover:underline self-start sm:self-center min-h-[44px] sm:min-h-0"
+              className="text-sm text-red-700 hover:underline"
             >
               Dismiss
             </button>
@@ -595,15 +599,10 @@ export default function DashboardPage() {
                                         if (v == null || v === '') return null
                                         const n = Number(v)
                                         if (Number.isInteger(n) && n >= 100) return (n / 100).toFixed(2)
-                                        return Number.isFinite(n) ? n.toFixed(2) : String(v)
+                                        return String(v)
                                       }
-                                      const preserveUpper = new Set(['US', 'CA', 'USA', 'UK', 'BC', 'WA'])
                                       const titleCase = (s: string) =>
-                                        s ? s.replace(/\w\S*/g, (w) => {
-                                          const u = w.toUpperCase()
-                                          if (preserveUpper.has(u)) return u
-                                          return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
-                                        }) : ''
+                                        s ? s.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()) : ''
                                       if (!rec && items.length === 0) return <span>(No data)</span>
                                       const displayName = chainName || titleCase(rec?.merchant_name || '') || rec?.merchant_name || ''
                                       const rawAddress = $(rec?.merchant_address)
@@ -1101,6 +1100,31 @@ export default function DashboardPage() {
 
         {/* Data Analysis */}
         <DataAnalysisSection token={token} />
+
+        {/* API Test Section — developer only */}
+        <div className="mt-8 bg-blue-50 rounded-xl p-6">
+          <h3 className="text-lg font-semibold text-blue-900 mb-3">
+            🧪 API test info
+          </h3>
+          <div className="space-y-2 text-sm text-blue-800">
+            <p>
+              <span className="font-semibold">Backend API: </span>
+              {apiUrl()}
+            </p>
+            <p>
+              <span className="font-semibold">Auth: </span>
+              <span className="text-green-600 font-semibold">✓ Authenticated</span>
+            </p>
+            <p>
+              <a href={`${apiUrl()}/docs`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">
+                → Open API docs (/doc)
+              </a>
+            </p>
+            <p className="pt-2 text-xs text-blue-600">
+              Open browser console (F12) for API response details
+            </p>
+          </div>
+        </div>
       </main>
     </>
   )

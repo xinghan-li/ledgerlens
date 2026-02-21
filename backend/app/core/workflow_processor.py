@@ -25,6 +25,7 @@ from ..services.llm.receipt_llm_processor import process_receipt_with_llm_from_o
 from ..processors.core.sum_checker import check_receipt_sums, apply_field_conflicts_resolution
 from ..services.llm.llm_client import parse_receipt_with_llm
 from ..prompts.prompt_manager import format_prompt, get_default_prompt
+from ..services.llm.gemini_client import parse_receipt_with_gemini_vision
 from ..config import settings
 from ..services.database.statistics_manager import record_api_call
 from ..services.database.supabase_client import (
@@ -46,6 +47,19 @@ from ..processors.validation.store_config_loader import get_store_config_for_rec
 from ..services.categorization.receipt_categorizer import categorize_receipt
 
 logger = logging.getLogger(__name__)
+
+
+def _initial_parse_summary_for_run(initial_parse_result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Build a small summary of rule-based initial parse for receipt_processing_runs input_payload (avoid storing full result)."""
+    if not initial_parse_result or not isinstance(initial_parse_result, dict):
+        return None
+    return {
+        "success": bool(initial_parse_result.get("success")),
+        "method": initial_parse_result.get("method"),
+        "items_count": len(initial_parse_result.get("items") or []),
+        "chain_id": initial_parse_result.get("chain_id"),
+    }
+
 
 # Output directories (moved to project root)
 # Path(__file__).parent.parent.parent.parent is project root
@@ -533,36 +547,20 @@ async def process_receipt_workflow(
             )
             timeline.end(f"{llm_provider}_llm")
             
-            # Save LLM processing run to database
-            if db_receipt_id and first_llm_result:
-                try:
-                    # Get model name from settings (the actual model used for the call)
-                    if llm_provider.lower() == "gemini":
-                        model_name = settings.gemini_model
+            # Merge store-specific fields from initial_parse (e.g. Trader Joe's transaction_info, merchant_phone, purchase_time) into payload before save
+            if first_llm_result and initial_parse_result and isinstance(initial_parse_result, dict):
+                ti = initial_parse_result.get("transaction_info") or {}
+                if ti and not first_llm_result.get("transaction_info"):
+                    first_llm_result["transaction_info"] = ti
+                rec = first_llm_result.setdefault("receipt", {})
+                if initial_parse_result.get("merchant_phone") and not rec.get("merchant_phone"):
+                    rec["merchant_phone"] = initial_parse_result["merchant_phone"]
+                if ti.get("datetime") and not rec.get("purchase_time"):
+                    dt = ti["datetime"]
+                    if isinstance(dt, str) and " " in dt:
+                        rec["purchase_time"] = dt.split(" ", 1)[1].strip()
                     else:
-                        model_name = settings.openai_model
-                    
-                    # Extract RAG metadata from LLM result
-                    rag_metadata = first_llm_result.get("_metadata", {}).get("rag_metadata", {})
-                    
-                    save_processing_run(
-                        receipt_id=db_receipt_id,
-                        stage="llm",
-                        model_provider=llm_provider,
-                        model_name=model_name,
-                        model_version=None,  # Model version not available from API
-                        input_payload={
-                            "ocr_result": google_ocr_data,
-                            "rag_metadata": rag_metadata  # Add RAG usage statistics
-                        },
-                        output_payload=first_llm_result,
-                        output_schema_version="0.1",  # Current schema version
-                        status="pass",
-                        error_message=None
-                    )
-                    logger.info(f"Saved LLM processing run for receipt {db_receipt_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to save LLM processing run: {e}")
+                        rec["purchase_time"] = dt
             
         except Exception as e:
             timeline.end(f"{llm_provider}_llm")
@@ -577,13 +575,17 @@ async def process_receipt_workflow(
                     else:
                         model_name = settings.openai_model
                     
+                    _input = {"ocr_result": google_ocr_data}
+                    _summary = _initial_parse_summary_for_run(initial_parse_result)
+                    if _summary is not None:
+                        _input["initial_parse_summary"] = _summary
                     save_processing_run(
                         receipt_id=db_receipt_id,
                         stage="llm",
                         model_provider=llm_provider,
                         model_name=model_name,
                         model_version=None,
-                        input_payload={"ocr_result": google_ocr_data},
+                        input_payload=_input,
                         output_payload={},
                         output_schema_version="0.1",
                         status="fail",
@@ -599,6 +601,25 @@ async def process_receipt_workflow(
                             logger.warning(f"Failed to update receipt file URL: {url_err}")
                 except Exception as db_error:
                     logger.warning(f"Failed to save failed LLM run: {db_error}")
+            
+            # When Gemini failed: try once more with image + failure context (vision retry) before AWS OCR + OpenAI
+            if llm_provider.lower() == "gemini" and image_bytes:
+                logger.info("Gemini (text) failed; trying Gemini vision retry with receipt image + failure context")
+                vision_retry_result = await _try_gemini_vision_retry(
+                    image_bytes=image_bytes,
+                    mime_type=mime_type,
+                    error=str(e),
+                    receipt_id=receipt_id,
+                    timeline=timeline,
+                    db_receipt_id=db_receipt_id,
+                    user_id=user_id,
+                    google_ocr_data=google_ocr_data,
+                    filename=filename,
+                    initial_parse_result=initial_parse_result,
+                )
+                if vision_retry_result is not None:
+                    return vision_retry_result
+                logger.info("Gemini vision retry did not succeed, falling back to other LLM (AWS OCR + OpenAI)")
             
             # Fallback to another LLM (pass image_bytes for manual review if fallback also fails)
             return await _fallback_to_other_llm(
@@ -625,6 +646,44 @@ async def process_receipt_workflow(
         timeline.start("address_correction")
         first_llm_result = correct_address(first_llm_result, auto_correct=True)
         timeline.end("address_correction")
+        
+        # Save LLM processing run after address correction so categorize_receipt sees final chain_id/location_id and receipt address
+        if db_receipt_id and first_llm_result:
+            _meta = first_llm_result.get("_metadata", {})
+            _rec = first_llm_result.get("receipt", {})
+            _addr = (_rec.get("merchant_address") or "")
+            _addr_preview = (_addr[:100] + "...") if len(_addr) > 100 else _addr
+            logger.info(
+                "[STORE_DEBUG] workflow before save_processing_run: _metadata.chain_id=%s, _metadata.location_id=%s, receipt.merchant_address=%r",
+                _meta.get("chain_id"),
+                _meta.get("location_id"),
+                _addr_preview,
+            )
+            try:
+                if llm_provider.lower() == "gemini":
+                    model_name = settings.gemini_model
+                else:
+                    model_name = settings.openai_model
+                rag_metadata = first_llm_result.get("_metadata", {}).get("rag_metadata", {})
+                _input = {"ocr_result": google_ocr_data, "rag_metadata": rag_metadata}
+                _summary = _initial_parse_summary_for_run(initial_parse_result)
+                if _summary is not None:
+                    _input["initial_parse_summary"] = _summary
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="llm",
+                    model_provider=llm_provider,
+                    model_name=model_name,
+                    model_version=None,
+                    input_payload=_input,
+                    output_payload=first_llm_result,
+                    output_schema_version="0.1",
+                    status="pass",
+                    error_message=None
+                )
+                logger.info(f"Saved LLM processing run for receipt {db_receipt_id} (after address correction)")
+            except Exception as e:
+                logger.warning(f"Failed to save LLM processing run: {e}")
         
         # Step 5: Sum check
         timeline.start("sum_check")
@@ -1324,6 +1383,146 @@ async def _fallback_to_aws_ocr(
             filename=filename,
             db_receipt_id=db_receipt_id
         )
+
+
+def _build_vision_retry_failure_context(
+    error: str,
+    google_ocr_data: Dict[str, Any],
+    initial_parse_result: Optional[Dict[str, Any]],
+    max_ocr_chars: int = 3500,
+    max_parse_items: int = 50,
+) -> str:
+    """Build failure context for Gemini vision retry: include both OCR and rule-based (initial parse) results."""
+    parts = [f"Previous attempt failed with error: {error}\n"]
+    raw_text = (google_ocr_data or {}).get("raw_text") or ""
+    if raw_text:
+        truncated = raw_text[:max_ocr_chars] + ("..." if len(raw_text) > max_ocr_chars else "")
+        parts.append("--- OCR text (from Google Document AI) ---\n")
+        parts.append(truncated)
+        parts.append("\n")
+    if initial_parse_result and isinstance(initial_parse_result, dict):
+        summary = {
+            "method": initial_parse_result.get("method"),
+            "success": initial_parse_result.get("success"),
+            "store": initial_parse_result.get("store"),
+            "chain_id": initial_parse_result.get("chain_id"),
+            "items_count": len(initial_parse_result.get("items") or []),
+            "items": (initial_parse_result.get("items") or [])[:max_parse_items],
+            "totals": initial_parse_result.get("totals"),
+            "validation": initial_parse_result.get("validation"),
+        }
+        parts.append("--- Rule-based (initial parse) extraction result ---\n")
+        parts.append(json.dumps(summary, indent=2, ensure_ascii=False))
+        parts.append("\n")
+    parts.append(
+        "Please look at the receipt image and extract the data correctly. "
+        "Use the OCR and rule-based results above as reference; correct any errors. "
+        "Pay attention to folded/wrinkled areas and layout issues."
+    )
+    return "".join(parts)
+
+
+async def _try_gemini_vision_retry(
+    image_bytes: bytes,
+    mime_type: str,
+    error: str,
+    receipt_id: str,
+    timeline: TimelineRecorder,
+    db_receipt_id: Optional[str],
+    user_id: Optional[str],
+    google_ocr_data: Dict[str, Any],
+    filename: str,
+    initial_parse_result: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    When Gemini (text) failed, retry once by sending the receipt image + failure context
+    (OCR + rule-based extraction) to Gemini vision and ask it to output the correct structured JSON.
+    Returns the workflow result dict if vision retry succeeded and sum check passed; else None.
+    """
+    timeline.start("gemini_vision_retry")
+    try:
+        prompt_config = get_default_prompt()
+        output_schema = prompt_config.get("output_schema") or {}
+        output_schema_json = json.dumps(output_schema, indent=2, ensure_ascii=False)
+        failure_context = _build_vision_retry_failure_context(
+            error=error,
+            google_ocr_data=google_ocr_data,
+            initial_parse_result=initial_parse_result,
+        )
+        vision_result = await parse_receipt_with_gemini_vision(
+            image_bytes=image_bytes,
+            failure_context=failure_context,
+            output_schema_json=output_schema_json,
+            mime_type=mime_type,
+        )
+        timeline.end("gemini_vision_retry")
+    except Exception as e:
+        timeline.end("gemini_vision_retry")
+        logger.warning(f"Gemini vision retry failed: {e}, falling back to other LLM")
+        return None
+
+    if not vision_result:
+        return None
+
+    # Same post-processing as primary LLM path
+    vision_result = clean_llm_result(vision_result)
+    vision_result = clean_tnt_receipt_items(vision_result)
+    vision_result = correct_address(vision_result, auto_correct=True)
+
+    sum_check_passed, sum_check_details = check_receipt_sums(vision_result)
+    if not sum_check_passed:
+        logger.warning(f"Gemini vision retry sum check failed for {receipt_id}, falling back to other LLM")
+        return None
+
+    # Save LLM run (vision retry)
+    if db_receipt_id:
+        try:
+            save_processing_run(
+                receipt_id=db_receipt_id,
+                stage="llm",
+                model_provider="gemini",
+                model_name=settings.gemini_model,
+                model_version=None,
+                input_payload={
+                    "vision_retry": True,
+                    "image_bytes_length": len(image_bytes),
+                    "mime_type": mime_type,
+                    "previous_error": error[:500],
+                },
+                output_payload=vision_result,
+                output_schema_version="0.1",
+                status="pass",
+                error_message=None,
+            )
+            update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_primary")
+        except Exception as e:
+            logger.warning(f"Failed to save Gemini vision retry run: {e}")
+    await _save_output(receipt_id, vision_result, timeline, google_ocr_data, user_id=user_id or "dummy")
+    if db_receipt_id:
+        try:
+            cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+            if cat_result.get("success"):
+                logger.info(f"✅ Categorization completed for receipt {db_receipt_id} (after Gemini vision retry)")
+        except Exception as cat_err:
+            logger.warning(f"Categorization failed for {db_receipt_id}: {cat_err}")
+        llm_duration = _get_duration_from_timeline(timeline, "gemini_vision_retry")
+        record_api_call(
+            call_type="llm",
+            provider="gemini",
+            receipt_id=db_receipt_id,
+            duration_ms=int(llm_duration) if llm_duration else None,
+            status="success",
+        )
+
+    return {
+        "success": True,
+        "receipt_id": receipt_id,
+        "status": "passed_after_vision_retry",
+        "data": vision_result,
+        "sum_check": sum_check_details,
+        "llm_provider": "gemini",
+        "vision_retry_used": True,
+    }
 
 
 async def _fallback_to_other_llm(

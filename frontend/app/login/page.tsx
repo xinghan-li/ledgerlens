@@ -1,18 +1,17 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { createClient } from '@/lib/supabase'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 
-export default function LoginPage() {
+function LoginForm() {
   const searchParams = useSearchParams()
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // 检查 URL 参数中的错误
   useEffect(() => {
     const urlError = searchParams.get('error')
     if (urlError === 'auth_failed') {
@@ -27,11 +26,16 @@ export default function LoginPage() {
 
     try {
       const supabase = createClient()
-      
+      // 使用 NEXT_PUBLIC_APP_URL 或当前页面 origin，保证手机点邮件链接时跳回正确 host（如 10.0.0.51:3000）
+      const baseUrl =
+        (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_APP_URL) ||
+        (typeof window !== 'undefined' ? window.location.origin : '')
+      const redirectTo = `${baseUrl.replace(/\/$/, '')}/auth/callback`
+
       const { error } = await supabase.auth.signInWithOtp({
         email,
         options: {
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
+          emailRedirectTo: redirectTo,
         },
       })
 
@@ -152,5 +156,29 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+function LoginFallback() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-blue-50 to-white p-4">
+      <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg">
+        <div className="text-center space-y-2">
+          <h2 className="text-4xl font-bold text-gray-900">🔐 登录</h2>
+          <p className="text-gray-600">输入邮箱，我们会发送登录链接</p>
+        </div>
+        <div className="flex justify-center py-8">
+          <span className="animate-spin text-2xl text-gray-400">⏳</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginFallback />}>
+      <LoginForm />
+    </Suspense>
   )
 }

@@ -208,9 +208,17 @@ def extract_unified_info(normalized_result: Dict[str, Any]) -> Dict[str, Any]:
     elif "total" in normalized_result:
         total = _to_float(normalized_result["total"])
     
+    # Merchant address for store matching (OCR stage must get address so we don't match by name only)
+    merchant_address = normalized_result.get("merchant_address")
+    if not (merchant_address or "").strip():
+        addr_entity = entities.get("supplier_address") or entities.get("merchant_address")
+        if isinstance(addr_entity, dict) and addr_entity.get("value"):
+            merchant_address = (addr_entity.get("value") or "").strip() or None
+    
     return {
         "raw_text": normalized_result["raw_text"],
         "merchant_name": normalized_result.get("merchant_name"),
+        "merchant_address": merchant_address,
         "trusted_hints": trusted_hints,
         "total": total,
         "line_items": normalized_result.get("line_items", []),

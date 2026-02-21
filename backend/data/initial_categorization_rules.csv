@@ -44,7 +44,7 @@ sweet potato,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: sweet pot
 mushroom,NULL,Grocery/Produce/Vegetables,fuzzy,200,seed,Universal: mushrooms sold as vegetables
 
 # Dairy (Universal)
-milk,NULL,Grocery/Dairy/Milk,fuzzy,200,seed,Universal: milk is dairy
+milk,NULL,Grocery/Dairy/Milk,contains,200,seed,Universal: milk is dairy
 cheese,NULL,Grocery/Dairy/Cheese,fuzzy,200,seed,Universal: cheese is dairy
 yogurt,NULL,Grocery/Dairy/Yogurt,fuzzy,200,seed,Universal: yogurt is dairy
 butter,NULL,Grocery/Dairy/Butter & Eggs,fuzzy,200,seed,Universal: butter is dairy

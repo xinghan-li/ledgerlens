@@ -402,6 +402,22 @@ def _extract_store_from_header(rows: List[List[Dict]], header_end: int) -> Optio
     return None
 
 
+def _extract_phone_from_header(rows: List[List[Dict]], header_end: int) -> Optional[str]:
+    """Extract store phone from header. Trader Joe's: phone appears after address, often on same line as Store #0129 (e.g. 425-670-0623)."""
+    phone_re = re.compile(r"\d{3}[-.\s]?\d{3}[-.\s]?\d{4}")
+    for ri in range(min(header_end + 2, len(rows))):
+        row = rows[ri]
+        for b in row:
+            text = (b.get("text") or "").strip()
+            m = phone_re.search(text)
+            if m:
+                # Normalize to XXX-XXX-XXXX
+                digits = re.sub(r"\D", "", m.group(0))
+                if len(digits) == 10:
+                    return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+    return None
+
+
 def _extract_address_from_header(rows: List[List[Dict]], header_end: int) -> Optional[str]:
     """Extract address from header (street, city, state zip only - exclude store# and phone)."""
     address_parts = []
@@ -450,39 +466,64 @@ def _extract_address_from_header(rows: List[List[Dict]], header_end: int) -> Opt
 
 
 def _extract_transaction_info(rows: List[List[Dict]], totals_end: int) -> Dict[str, Any]:
-    """Extract transaction details: Store#, Till, Trans#, Date/Time, Cashier."""
+    """Extract transaction details: Store#, Till, Trans#, Date/Time, Cashier.
+    Trader Joe's: cashier is the line directly above the row that contains 'STORE 0129' (one person name, e.g. James C)."""
     info = {}
-    
+    date_candidates_all: List[str] = []
+    time_candidate: Optional[str] = None
+    store_row_index: Optional[int] = None
+
     for ri in range(totals_end, min(len(rows), totals_end + 15)):
         row = rows[ri]
         texts = [b.get("text", "") for b in row]
         row_text = " ".join(texts)
-        
-        # Store number
+        row_text_with_nl = "\n".join(t.get("text", "") for t in row)
+
+        # Store number row: remember index so cashier = row above
         m = re.search(r"STORE\s*(\d+)|#(\d{4})", row_text, re.I)
         if m and "store_number" not in info:
             info["store_number"] = m.group(1) or m.group(2)
-        
+            if store_row_index is None:
+                store_row_index = ri
+
         # Till number
         m = re.search(r"TILL.*?(\d+)", row_text, re.I)
         if m and "till" not in info:
             info["till"] = m.group(1)
-        
+
         # Transaction number
         m = re.search(r"TRANS.*?(\d{4,6})|^\s*(\d{5,6})\s*$", row_text, re.I)
         if m and "transaction_number" not in info:
             info["transaction_number"] = m.group(1) or m.group(2)
-        
+
         # Date/Time
-        m = re.search(r"(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\s+(\d{1,2})[:\s](\d{2})", row_text)
-        if m and "datetime" not in info:
-            info["datetime"] = f"{m.group(1)} {m.group(2)}:{m.group(3)}"
-        
-        # Cashier name
-        if "." in row_text and len(row_text) < 30 and not any(kw in row_text.upper() for kw in ["STORE", "TILL", "TRANS", "DATE"]):
-            if "cashier" not in info:
-                info["cashier"] = row_text.strip()
-    
+        for blob in (row_text, row_text_with_nl):
+            date_candidates_all.extend(re.findall(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", blob))
+        if time_candidate is None:
+            time_m = re.search(r"\b(\d{1,2})[:\s](\d{2})\b", row_text)
+            if time_m:
+                time_candidate = f"{time_m.group(1)}:{time_m.group(2)}"
+
+    # Cashier: line directly above the STORE row (e.g. "James C")
+    if store_row_index is not None and store_row_index > 0 and "cashier" not in info:
+        prev_row = rows[store_row_index - 1]
+        prev_text = " ".join(b.get("text", "") for b in prev_row).strip()
+        if prev_text and len(prev_text) < 35 and re.match(r"^[A-Za-z\s\.\-']+$", prev_text):
+            info["cashier"] = prev_text
+
+    # Section 4 (payment/transaction area): Trader Joe's date is mm-dd-yyyy at bottom.
+    # Prefer 4-digit year to drop OCR half-read "01-25-20" and keep "01-25-2026".
+    mm_dd_yyyy = re.compile(r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}$")
+    chosen_date = None
+    for d in date_candidates_all:
+        if mm_dd_yyyy.match(d.strip()):
+            chosen_date = d.strip()
+            break
+    if chosen_date is None and date_candidates_all:
+        chosen_date = date_candidates_all[0].strip()
+    if chosen_date:
+        info["datetime"] = f"{chosen_date} {time_candidate}" if time_candidate else chosen_date
+
     return info
 
 
@@ -569,6 +610,7 @@ def process_trader_joes(
     
     store_name = _extract_store_from_header(rows, header_end) or merchant_name or "TRADER JOE'S"
     address = _extract_address_from_header(rows, header_end)
+    merchant_phone = _extract_phone_from_header(rows, header_end)
     trans_info = _extract_transaction_info(rows, totals_end)
     
     result = {
@@ -577,6 +619,7 @@ def process_trader_joes(
         "chain_id": "Trader_Joes",
         "store": store_name,
         "address": address,
+        "merchant_phone": merchant_phone,
         "currency": "USD",
         "membership": None,
         "error_log": error_log,
@@ -615,6 +658,7 @@ def _empty_result(store_config: Optional[Dict], merchant_name: Optional[str], bl
         "chain_id": "Trader_Joes",
         "store": merchant_name or "TRADER JOE'S",
         "address": None,
+        "merchant_phone": None,
         "currency": "USD",
         "membership": None,
         "error_log": ["No blocks provided"],

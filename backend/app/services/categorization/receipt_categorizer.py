@@ -6,20 +6,339 @@ Receipt Categorizer
 2. 标准化商品名、品牌、分类
 3. 更新 catalog (products, brands, categories)
 4. 保存到 receipt_items, receipt_summaries
+
+匹配逻辑（全部在后端）：
+1. Exact：查 product_categorization_rules 表，normalized_name 精确匹配（store-specific 优先）
+2. 未命中：用后端维护的 universal 规则表（与 initial_categorization_rules.csv 同源）做 fuzzy match
+3. 仍未命中：LLM 建议（若有）
 """
+import csv
 import json
 import logging
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
+import re
 from ..database.supabase_client import (
     _get_client,
+    get_store_chain,
     save_receipt_summary,
     save_receipt_items,
     enqueue_unmatched_items_to_classification_review,
 )
+from ..standardization.product_normalizer import normalize_name_for_storage
 
 logger = logging.getLogger(__name__)
+
+# UUID v4 pattern (8-4-4-4-12 hex)
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+# Fuzzy match threshold for backend universal rules (0-100 for rapidfuzz)
+_UNIVERSAL_FUZZY_THRESHOLD = 90
+
+
+def _resolve_store_chain_id_uuid(
+    receipt_id: str,
+    metadata_chain_id: Optional[str],
+    merchant_name: Optional[str],
+    merchant_address: Optional[str],
+) -> Optional[str]:
+    """
+    Resolve store_chain_id as UUID for product_categorization_rules lookup.
+    metadata.chain_id may be a string tag (e.g. "Trader_Joes") but rules use store_chains.id (UUID).
+    """
+    supabase = _get_client()
+    # 1) If metadata chain_id is already a UUID, use it
+    if metadata_chain_id and _UUID_RE.match(str(metadata_chain_id).strip()):
+        return str(metadata_chain_id).strip()
+    # 2) Prefer existing record_summaries.store_chain_id for this receipt (so re-categorize uses same chain)
+    try:
+        summary = (
+            supabase.table("record_summaries")
+            .select("store_chain_id")
+            .eq("receipt_id", receipt_id)
+            .limit(1)
+            .execute()
+        )
+        if summary.data and summary.data[0].get("store_chain_id"):
+            return str(summary.data[0]["store_chain_id"])
+    except Exception as e:
+        logger.debug(f"Could not read record_summaries for store_chain_id: {e}")
+    # 3) Resolve by merchant name + address (same logic as save_receipt_summary)
+    if merchant_name:
+        try:
+            match_result = get_store_chain(merchant_name, merchant_address)
+            if match_result.get("matched") and match_result.get("chain_id"):
+                return str(match_result["chain_id"])
+        except Exception as e:
+            logger.debug(f"get_store_chain failed: {e}")
+        try:
+            chain_row = supabase.table("store_chains").select("id").eq("name", merchant_name).limit(1).execute()
+            if chain_row.data and chain_row.data[0].get("id"):
+                return str(chain_row.data[0]["id"])
+            chains = supabase.table("store_chains").select("id, name").execute()
+            if chains.data:
+                merchant_lower = (merchant_name or "").lower()
+                for c in chains.data:
+                    if (c.get("name") or "").lower() == merchant_lower:
+                        return str(c["id"])
+        except Exception as e:
+            logger.debug(f"store_chains lookup failed: {e}")
+    return None
+
+
+# Backend-held universal rules (same effect as initial_categorization_rules.csv), cached
+_UNIVERSAL_RULES_CACHE: Optional[List[Dict[str, Any]]] = None
+
+
+def _get_initial_rules_csv_path() -> Path:
+    """Path to backend/data/initial_categorization_rules.csv."""
+    backend_dir = Path(__file__).resolve().parent.parent.parent.parent
+    return backend_dir / "data" / "initial_categorization_rules.csv"
+
+
+def _load_universal_rules_for_fuzzy() -> List[Dict[str, Any]]:
+    """
+    Load universal rules from initial_categorization_rules.csv (store_chain_name = NULL).
+    Used for fuzzy match layer. Returns list of {normalized_name, category_path, priority}.
+    """
+    global _UNIVERSAL_RULES_CACHE
+    if _UNIVERSAL_RULES_CACHE is not None:
+        return _UNIVERSAL_RULES_CACHE
+    path = _get_initial_rules_csv_path()
+    if not path.exists():
+        logger.warning(f"Initial rules CSV not found: {path}")
+        _UNIVERSAL_RULES_CACHE = []
+        return _UNIVERSAL_RULES_CACHE
+    rules = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(row for row in f if not row.strip().startswith("#"))
+            for row in reader:
+                store_name = (row.get("store_chain_name") or "").strip()
+                if store_name.upper() != "NULL" and store_name:
+                    continue
+                nn = (row.get("normalized_name") or "").strip().lower()
+                if not nn:
+                    continue
+                cat_path = (row.get("category_path") or "").strip()
+                if not cat_path:
+                    continue
+                try:
+                    priority = int(row.get("priority") or 200)
+                except (TypeError, ValueError):
+                    priority = 200
+                rules.append({"normalized_name": nn, "category_path": cat_path, "priority": priority})
+        rules.sort(key=lambda r: (r["priority"], r["normalized_name"]))
+        _UNIVERSAL_RULES_CACHE = rules
+        logger.debug(f"Loaded {len(rules)} universal rules for fuzzy from {path}")
+    except Exception as e:
+        logger.warning(f"Failed to load initial rules CSV {path}: {e}")
+        _UNIVERSAL_RULES_CACHE = []
+    return _UNIVERSAL_RULES_CACHE
+
+
+def _resolve_category_id_by_path(supabase: Any, category_path: str) -> Optional[str]:
+    """Resolve category_path (e.g. Grocery/Dairy/Milk) to category id. DB path is lowercase."""
+    if not category_path or not category_path.strip():
+        return None
+    path_lower = category_path.strip().lower()
+    try:
+        r = supabase.table("categories").select("id").eq("path", path_lower).limit(1).execute()
+        if r.data and r.data[0].get("id"):
+            return str(r.data[0]["id"])
+    except Exception:
+        pass
+    return None
+
+
+def _match_exact_from_db(
+    supabase: Any,
+    normalized_name: str,
+    store_chain_id: Optional[str],
+) -> Optional[str]:
+    """
+    Exact match only: query product_categorization_rules where normalized_name equals
+    the given name. Prefer store-specific (store_chain_id set) over universal. Returns category_id or None.
+    """
+    name_clean = (normalized_name or "").strip().lower()
+    if not name_clean:
+        return None
+    try:
+        # Store-specific first
+        if store_chain_id:
+            r = (
+                supabase.table("product_categorization_rules")
+                .select("category_id")
+                .eq("normalized_name", name_clean)
+                .eq("store_chain_id", store_chain_id)
+                .limit(1)
+                .execute()
+            )
+            if r.data and r.data[0].get("category_id"):
+                return str(r.data[0]["category_id"])
+        # Universal
+        r = (
+            supabase.table("product_categorization_rules")
+            .select("category_id")
+            .eq("normalized_name", name_clean)
+            .is_("store_chain_id", "null")
+            .limit(1)
+            .execute()
+        )
+        if r.data and r.data[0].get("category_id"):
+            return str(r.data[0]["category_id"])
+    except Exception as e:
+        logger.debug(f"Exact rule lookup for '{name_clean}': {e}")
+    return None
+
+
+def _match_universal_fuzzy(
+    normalized_product: str,
+    path_to_id: Dict[str, str],
+    supabase: Any,
+) -> Optional[str]:
+    """
+    Match against backend-held universal rules (CSV): 1) contains (rule name in product), longest wins;
+    2) else best fuzzy score >= threshold. Returns category_id or None.
+    """
+    product_lower = normalized_product.lower()
+    universal = _load_universal_rules_for_fuzzy()
+    if not universal:
+        return None
+    # 1) Contains: rule normalized_name in product name, prefer longest match
+    best_contains: Optional[Tuple[int, str]] = None
+    for r in universal:
+        rn = r["normalized_name"]
+        if len(rn) < 2:
+            continue
+        if rn in product_lower:
+            if best_contains is None or len(rn) > best_contains[0]:
+                best_contains = (len(rn), r["category_path"])
+    if best_contains:
+        path = best_contains[1]
+        cid = path_to_id.get(path)
+        if not cid and supabase:
+            cid = _resolve_category_id_by_path(supabase, path)
+            if cid:
+                path_to_id[path] = cid
+        if cid:
+            return cid
+    # 2) Fuzzy best match
+    try:
+        from rapidfuzz import fuzz, process
+        best = process.extractOne(
+            product_lower,
+            [r["normalized_name"] for r in universal],
+            scorer=fuzz.ratio,
+            score_cutoff=_UNIVERSAL_FUZZY_THRESHOLD,
+        )
+        if best:
+            rule_name, score, _ = best
+            for r in universal:
+                if r["normalized_name"] == rule_name:
+                    path = r["category_path"]
+                    cid = path_to_id.get(path)
+                    if not cid and supabase:
+                        cid = _resolve_category_id_by_path(supabase, path)
+                        if cid:
+                            path_to_id[path] = cid
+                    return cid
+    except ImportError:
+        pass
+    return None
+
+
+def get_category_id_for_product(
+    normalized_name: str, store_chain_id: Optional[str]
+) -> Tuple[Optional[str], bool]:
+    """
+    Backend-only matching: 1) exact from product_categorization_rules (store-specific first),
+    2) universal fuzzy from backend-held rules (CSV). Used by receipt categorizer and product normalizer.
+    Returns (category_id, from_universal_only). from_universal_only is True only when match came from universal (CSV) rules.
+    """
+    supabase = _get_client()
+    normalized_underscore = (normalized_name or "").strip().replace(" ", "_")
+    normalized = (normalized_name or "").strip()
+    if not normalized:
+        return None, False
+    for name_to_try in (normalized_underscore, normalized):
+        cid = _match_exact_from_db(supabase, name_to_try, store_chain_id)
+        if cid:
+            return cid, False
+    path_to_id: Dict[str, str] = {}
+    cid = _match_universal_fuzzy(normalized, path_to_id, supabase)
+    if cid:
+        return cid, True
+    if normalized != normalized_underscore:
+        cid = _match_universal_fuzzy(normalized_underscore, path_to_id, supabase)
+    return (cid, True) if cid else (None, False)
+
+
+def _enrich_items_category_from_rules(
+    items_data: List[Dict[str, Any]],
+    store_chain_id: Optional[str],
+) -> None:
+    """
+    1. Exact: lookup product_categorization_rules (normalized_name exact match), store-specific first.
+    2. Unmatched: fuzzy match against backend universal rules (initial_categorization_rules.csv).
+    3. Still unmatched: left for LLM (called separately). Mutates items_data in place.
+    """
+    if not items_data:
+        return
+    for item in items_data:
+        if item.get("category_id"):
+            continue
+        product_name = item.get("product_name") or item.get("original_product_name")
+        if not product_name or not isinstance(product_name, str):
+            continue
+        normalized = normalize_name_for_storage(product_name.strip())
+        if not normalized:
+            continue
+        try:
+            cid, from_universal = get_category_id_for_product(normalized, store_chain_id)
+            if cid:
+                item["category_id"] = cid
+                if from_universal:
+                    item["_from_universal_only"] = True
+                logger.debug(f"Rule match for '{product_name}' -> {cid} (universal={from_universal})")
+        except Exception as e:
+            logger.debug(f"Rule lookup for '{product_name}': {e}")
+
+
+def _enrich_items_category_from_llm(
+    items_data: List[Dict[str, Any]],
+    store_chain_name: Optional[str],
+) -> None:
+    """
+    For items still without category_id, call LLM to suggest category and set item['category_id']
+    when the suggested path resolves to an existing level-3 category. Mutates items_data in place.
+    """
+    import asyncio
+    still_unmatched = [
+        (i, it) for i, it in enumerate(items_data)
+        if not it.get("category_id") and (it.get("product_name") or it.get("original_product_name"))
+    ]
+    if not still_unmatched:
+        return
+    names = [
+        (it.get("product_name") or it.get("original_product_name") or "").strip()
+        for _, it in still_unmatched
+    ]
+    try:
+        from ..admin.classification_llm import suggest_classifications
+        suggestions = asyncio.run(suggest_classifications(names, store_chain_name))
+    except Exception as e:
+        logger.warning(f"LLM category suggestion failed: {e}")
+        return
+    by_name: Dict[str, Dict[str, Any]] = {s["raw_product_name"].strip(): s for s in suggestions if s.get("raw_product_name")}
+    for idx, item in still_unmatched:
+        name = (item.get("product_name") or item.get("original_product_name") or "").strip()
+        sug = by_name.get(name)
+        if sug and sug.get("category_id"):
+            items_data[idx]["category_id"] = str(sug["category_id"])
+            logger.debug(f"LLM suggested category for '{name}' -> category_id {items_data[idx]['category_id']}")
 
 
 def _ensure_dict(value: Any) -> Dict[str, Any]:
@@ -45,6 +364,152 @@ def _single_row(data: Any) -> Optional[Dict[str, Any]]:
     if isinstance(data, list) and len(data) == 1:
         return data[0] if isinstance(data[0], dict) else None
     return None
+
+
+def _is_likely_cents(val: Any) -> bool:
+    """True if value looks like an amount already in cents (int in plausible range)."""
+    if val is None:
+        return False
+    try:
+        v = int(val)
+        return 1 <= v <= 10_000_000
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_quantity_x100(val: Any) -> bool:
+    """True if value looks like quantity stored as x100 (e.g. 100 = 1.0, 200 = 2.0)."""
+    if val is None:
+        return False
+    try:
+        v = int(val)
+        return 100 <= v <= 10000 and v % 10 == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalize_output_payload_to_dollars(
+    receipt_data: Dict[str, Any],
+    items_data: List[Dict[str, Any]],
+    transaction_info: Optional[Dict[str, Any]] = None,
+    merchant_phone_top: Optional[str] = None,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Normalize amounts to dollars so save_receipt_summary/save_receipt_items don't double-convert.
+    Store processors (e.g. Trader Joe's, pipeline) may output subtotal/line_total in cents and quantity as x100.
+    Also merge transaction_info.cashier and top-level merchant_phone into receipt_data.
+    """
+    receipt = dict(receipt_data)
+    # Merge cashier, purchase_time, (and merchant_phone below) from transaction_info / top-level (e.g. Trader Joe's)
+    if transaction_info:
+        if receipt.get("cashier") is None and transaction_info.get("cashier"):
+            receipt["cashier"] = transaction_info.get("cashier")
+        if receipt.get("purchase_time") is None and transaction_info.get("datetime"):
+            # Extract time part from "YYYY-MM-DD HH:MM" or "01-25-2026 13:00"
+            dt = transaction_info.get("datetime")
+            if isinstance(dt, str) and " " in dt:
+                receipt["purchase_time"] = dt.split(" ", 1)[1].strip()  # e.g. "13:00"
+            elif dt:
+                receipt["purchase_time"] = dt
+    if merchant_phone_top and receipt.get("merchant_phone") is None:
+        receipt["merchant_phone"] = merchant_phone_top
+    for key in ("subtotal", "tax", "fees", "total"):
+        v = receipt.get(key)
+        if _is_likely_cents(v):
+            receipt[key] = round(int(v) / 100.0, 2)
+    items = []
+    for it in items_data or []:
+        item = dict(it)
+        for key in ("line_total", "unit_price", "original_price", "discount_amount"):
+            v = item.get(key)
+            if _is_likely_cents(v):
+                item[key] = round(int(v) / 100.0, 2)
+        q = item.get("quantity")
+        if _is_quantity_x100(q):
+            item["quantity"] = int(q) / 100.0
+        items.append(item)
+    return receipt, items
+
+
+def smart_categorize_receipt_items(receipt_id: str, user_id: str) -> Dict[str, Any]:
+    """
+    For this receipt, only categorize record_items that have no category_id (rules + LLM).
+    Does not touch items that already have a category (user or rule-set). Updates in place.
+    Returns { "success": bool, "updated_count": int, "message": str }.
+    """
+    supabase = _get_client()
+    rec = (
+        supabase.table("receipt_status")
+        .select("id")
+        .eq("id", receipt_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not rec.data:
+        return {"success": False, "updated_count": 0, "message": "Receipt not found or access denied"}
+
+    summary = (
+        supabase.table("record_summaries")
+        .select("store_chain_id, store_name")
+        .eq("receipt_id", receipt_id)
+        .limit(1)
+        .execute()
+    )
+    store_chain_id_uuid = None
+    store_name = None
+    if summary.data:
+        store_chain_id_uuid = summary.data[0].get("store_chain_id")
+        store_name = summary.data[0].get("store_name")
+
+    if store_chain_id_uuid is None and store_name:
+        store_chain_id_uuid = _resolve_store_chain_id_uuid(
+            receipt_id, None, store_name, None
+        )
+
+    items_rows = (
+        supabase.table("record_items")
+        .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount")
+        .eq("receipt_id", receipt_id)
+        .is_("category_id", "null")
+        .order("item_index")
+        .execute()
+    )
+    if not items_rows.data:
+        return {"success": True, "updated_count": 0, "message": "No uncategorized items"}
+
+    items_data = []
+    for row in items_rows.data:
+        items_data.append({
+            "id": row.get("id"),
+            "product_name": row.get("product_name") or "",
+            "original_product_name": row.get("product_name") or "",
+            "quantity": row.get("quantity"),
+            "unit": row.get("unit"),
+            "unit_price": row.get("unit_price"),
+            "line_total": row.get("line_total"),
+            "on_sale": row.get("on_sale"),
+            "original_price": row.get("original_price"),
+            "discount_amount": row.get("discount_amount"),
+            "category_id": None,
+        })
+
+    _enrich_items_category_from_rules(items_data, store_chain_id_uuid)
+    _enrich_items_category_from_llm(items_data, store_name)
+
+    updated = 0
+    for it in items_data:
+        cid = it.get("category_id")
+        if not cid or not it.get("id"):
+            continue
+        try:
+            supabase.table("record_items").update({"category_id": str(cid)}).eq("id", it["id"]).eq("receipt_id", receipt_id).execute()
+            updated += 1
+        except Exception as e:
+            logger.warning(f"Failed to update record_item {it.get('id')}: {e}")
+
+    logger.info(f"Smart categorize receipt {receipt_id}: updated {updated} items")
+    return {"success": True, "updated_count": updated, "message": f"Updated {updated} item(s)"}
 
 
 def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
@@ -180,13 +645,40 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     if not run_row:
         return {"success": False, "receipt_id": receipt_id, "message": "No processing run found"}
     output_payload = _ensure_dict(run_row.get("output_payload"))
-    receipt_data = output_payload.get("receipt", {})
-    items_data = output_payload.get("items", [])
+    transaction_info = output_payload.get("transaction_info") or {}
+    receipt_data, items_data = _normalize_output_payload_to_dollars(
+        output_payload.get("receipt", {}),
+        output_payload.get("items", []),
+        transaction_info=transaction_info,
+        merchant_phone_top=output_payload.get("merchant_phone"),
+    )
     metadata = output_payload.get("_metadata", {})
     chain_id = metadata.get("chain_id")
     location_id = metadata.get("location_id")
+    _rec = output_payload.get("receipt", {})
+    _addr = _rec.get("merchant_address") or ""
+    _addr_preview = (_addr[:100] + "...") if len(_addr) > 100 else _addr
+    logger.info(
+        "[STORE_DEBUG] categorize_receipt from run: chain_id=%s, location_id=%s, receipt.merchant_address=%r",
+        chain_id,
+        location_id,
+        _addr_preview,
+    )
+    store_chain_id_uuid = _resolve_store_chain_id_uuid(
+        receipt_id,
+        chain_id,
+        receipt_data.get("merchant_name"),
+        receipt_data.get("merchant_address"),
+    )
+    if store_chain_id_uuid and store_chain_id_uuid != (chain_id or ""):
+        logger.info(f"Resolved store_chain_id for rules: {chain_id!r} -> {store_chain_id_uuid}")
     
-    logger.info(f"Retrieved output_payload: {len(items_data)} items")
+    logger.info(f"Retrieved output_payload: {len(items_data)} items (normalized to dollars)")
+    
+    # 4a. Enrich items with category_id from product_categorization_rules (use UUID, not string tag)
+    _enrich_items_category_from_rules(items_data, store_chain_id_uuid)
+    # 4b. For items still without category_id, call LLM to suggest category (so record_items get category_id when level-3 exists)
+    _enrich_items_category_from_llm(items_data, receipt_data.get("merchant_name"))
     
     # 4. 如果 force=True，删除旧数据
     if force:
@@ -206,6 +698,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             receipt_data=receipt_data,
             chain_id=chain_id,
             location_id=location_id,
+            items_data=items_data,
         )
         logger.info(f"✅ Saved receipt_summary: {summary_id}")
     except Exception as e:
@@ -238,11 +731,30 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             "message": f"Failed to save items: {str(e)}"
         }
 
-    # 6b. Enqueue unmatched items (no category_id) to classification_review for admin review (with dedupe)
+    # 6b. Enqueue unmatched items (no category_id) and universal-only matched items to classification_review
+    universal_only_ids: List[str] = []
+    if item_ids and items_data:
+        idx = 0
+        for item in items_data:
+            if not item.get("product_name"):
+                continue
+            lt = item.get("line_total")
+            if lt is None:
+                continue
+            try:
+                if int(round(float(lt) * 100)) < 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if idx < len(item_ids) and item.get("_from_universal_only"):
+                universal_only_ids.append(item_ids[idx])
+            idx += 1
     try:
-        enqueued = enqueue_unmatched_items_to_classification_review(receipt_id)
+        enqueued = enqueue_unmatched_items_to_classification_review(
+            receipt_id, universal_only_record_item_ids=universal_only_ids or None
+        )
         if enqueued:
-            logger.info(f"✅ Enqueued {enqueued} unmatched items to classification_review")
+            logger.info(f"✅ Enqueued {enqueued} unmatched/universal-only items to classification_review")
     except Exception as e:
         logger.warning(f"Failed to enqueue unmatched items to classification_review: {e}")
 

@@ -163,38 +163,20 @@ def classify_product_category(
             "category_l3": "Fruit"
         }
     """
-    # Step 1: 尝试从规则表查询
+    # Step 1: 后端匹配（exact 查 product_categorization_rules + universal fuzzy 查 CSV）
     try:
-        supabase = _get_supabase()
-        
-        # 调用数据库函数查找匹配规则（支持 store-specific）
-        rpc_params = {
-            'p_normalized_name': normalized_name,
-            'p_threshold': 0.90
-        }
-        
-        if store_chain_id:
-            rpc_params['p_store_chain_id'] = store_chain_id
-        
-        result = supabase.rpc('find_categorization_rule', rpc_params).execute()
-        
-        if result.data and len(result.data) > 0:
-            rule = result.data[0]
-            category_id = rule['category_id']
-            
-            # 查询 category 层级结构
+        from app.services.categorization.receipt_categorizer import get_category_id_for_product
+        category_id, _ = get_category_id_for_product(normalized_name, store_chain_id)
+        if category_id:
+            supabase = _get_supabase()
             category_data = supabase.table("categories")\
                 .select("id, name, level, parent_id")\
                 .eq("id", category_id)\
                 .single()\
                 .execute()
-            
             if category_data.data:
-                # 构建完整的层级路径
                 cat = category_data.data
                 levels = {cat['level']: cat['name']}
-                
-                # 向上查找 parent
                 current_parent_id = cat['parent_id']
                 while current_parent_id:
                     parent = supabase.table("categories")\
@@ -202,26 +184,16 @@ def classify_product_category(
                         .eq("id", current_parent_id)\
                         .single()\
                         .execute()
-                    
                     if parent.data:
                         levels[parent.data['level']] = parent.data['name']
                         current_parent_id = parent.data['parent_id']
                     else:
                         break
-                
-                # 更新规则匹配统计
-                try:
-                    supabase.rpc('update_rule_match_stats', {'p_rule_id': rule['rule_id']}).execute()
-                except Exception:
-                    pass  # 忽略统计更新失败
-                
-                # 返回层级结构
                 return {
                     "category_l1": levels.get(1),
                     "category_l2": levels.get(2),
                     "category_l3": levels.get(3)
                 }
-    
     except Exception as e:
         logger.warning(f"Failed to query categorization rules: {e}")
         # 失败则 fallback 到关键词匹配

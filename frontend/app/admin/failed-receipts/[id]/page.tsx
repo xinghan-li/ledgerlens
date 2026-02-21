@@ -185,13 +185,15 @@ export default function FailedReceiptEditPage() {
     })
   }
 
-  // 检查是否有行：quantity 和 unit_price 都有值，但 quantity*unit_price !== line_total
+  // 每行容差：至少 0.10 美元，或 line_total 的 1%（按重量/小数数量时 1.27×10.99 的真实值可在一定区间内，固定 2 美分不够）
+  const toleranceForLine = (lineTotal: number) => Math.max(0.10, lineTotal * 0.01)
   const invalidRows = items.filter((it) => {
     const qty = it.quantity.trim() ? parseFloat(it.quantity) : NaN
     const price = it.unit_price.trim() ? parseFloat(it.unit_price) : NaN
     const lt = it.line_total.trim() ? parseFloat(it.line_total) : NaN
     if (isNaN(qty) || isNaN(price) || isNaN(lt)) return false
-    return Math.abs(qty * price - lt) >= 0.01
+    const diff = Math.abs(qty * price - lt)
+    return diff > toleranceForLine(lt)
   })
 
   const handleSubmit = async () => {
@@ -354,7 +356,7 @@ export default function FailedReceiptEditPage() {
                     const lt = row.line_total.trim() ? parseFloat(row.line_total) : NaN
                     const hasQtyAndPrice = !isNaN(qty) && !isNaN(price)
                     const expectedLineTotal = hasQtyAndPrice ? qty * price : NaN
-                    const lineTotalMismatch = hasQtyAndPrice && !isNaN(lt) && Math.abs(expectedLineTotal - lt) >= 0.01
+                    const lineTotalMismatch = hasQtyAndPrice && !isNaN(lt) && Math.abs(expectedLineTotal - lt) > toleranceForLine(lt)
                     return (
                       <tr key={index} className={`border-b border-gray-100 ${lineTotalMismatch ? 'bg-red-100' : ''}`}>
                         <td className="py-1.5 pr-4">
@@ -386,18 +388,18 @@ export default function FailedReceiptEditPage() {
                 </tbody>
                 <tfoot>
                   {(() => {
-                    const itemsSum = Math.round(items.reduce((acc, it) => {
+                    const itemsSum = items.reduce((acc, it) => {
                       const v = it.line_total.trim() ? parseFloat(it.line_total) : NaN
                       return acc + (isNaN(v) ? 0 : v)
-                    }, 0))
+                    }, 0)
                     const capturedSubtotal = subtotal.trim() ? parseFloat(subtotal) : NaN
-                    const sumMatchesSubtotal = !isNaN(capturedSubtotal) && itemsSum === Math.round(capturedSubtotal)
+                    const sumMatchesSubtotal = !isNaN(capturedSubtotal) && !Number.isNaN(itemsSum) && Math.abs(itemsSum - capturedSubtotal) < 0.02
                     return (
                       <tr className="bg-white border-t-2 border-gray-200">
-                        <td colSpan={4} className="py-2 pr-4 text-right font-medium text-gray-600">Total:</td>
+                        <td colSpan={4} className="py-2 pr-4 text-right font-medium text-gray-600">Items total:</td>
                         <td className="py-2 pr-2">
                           <span className={`font-semibold ${sumMatchesSubtotal ? 'text-green-600' : 'text-gray-800'}`}>
-                            {itemsSum} cents
+                            ${itemsSum.toFixed(2)}
                           </span>
                         </td>
                         <td colSpan={2} />
@@ -407,7 +409,7 @@ export default function FailedReceiptEditPage() {
                 </tfoot>
               </table>
             </div>
-            <p className="text-xs text-gray-500 mt-1">Compare above total with captured Subtotal below. Green = match.</p>
+            <p className="text-xs text-gray-500 mt-1">Compare Items total above with Subtotal below. Green = match.</p>
             <button type="button" className="mt-2 px-3 py-1 border rounded text-sm bg-gray-100 hover:bg-gray-200" onClick={addRow}>+ 增加一行</button>
           </div>
 
