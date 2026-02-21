@@ -5,7 +5,7 @@ Used by:
 - Admin API POST /api/admin/classification-review/backfill-record-items
 - CLI script scripts/maintenance/backfill_product_name_clean.py
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..database.supabase_client import (
     _get_client,
@@ -115,12 +115,13 @@ def run_record_items_backfill(
     updated = 0
     for i in range(0, total, batch_size):
         chunk = rows[i : i + batch_size]
+        batch_payloads: List[Dict[str, Any]] = []
         for r in chunk:
             rid = r.get("id")
             pname = (r.get("product_name") or "").strip()
             if not pname:
                 continue
-            payload: Dict[str, Any] = {}
+            payload: Dict[str, Any] = {"id": str(rid)}
 
             if (
                 r.get("product_name_clean") is None
@@ -145,13 +146,33 @@ def run_record_items_backfill(
                     if pid:
                         payload["product_id"] = pid
 
-            if not payload:
+            if len(payload) <= 1:
                 continue
+            batch_payloads.append(payload)
+        if batch_payloads:
             try:
-                supabase.table("record_items").update(payload).eq("id", rid).execute()
-                updated += 1
+                import json
+                res = supabase.rpc("backfill_record_items_batch", {"updates": batch_payloads}).execute()
+                n = 0
+                if res.data is not None:
+                    if isinstance(res.data, int):
+                        n = res.data
+                    elif isinstance(res.data, list) and len(res.data) > 0:
+                        first = res.data[0]
+                        n = first.get("backfill_record_items_batch", first) if isinstance(first, dict) else first
+                        n = int(n) if n is not None else 0
+                updated += n
             except Exception:
-                pass
+                for p in batch_payloads:
+                    rid = p.get("id")
+                    payload_only = {k: v for k, v in p.items() if k != "id"}
+                    if not rid or not payload_only:
+                        continue
+                    try:
+                        supabase.table("record_items").update(payload_only).eq("id", rid).execute()
+                        updated += 1
+                    except Exception:
+                        pass
 
     return {
         "total_processed": total,

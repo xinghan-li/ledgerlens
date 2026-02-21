@@ -133,7 +133,7 @@ def match_store(
             db_addr = _normalize_address_for_compare(loc.get("address_string"))
             if not db_addr:
                 continue
-            score = fuzz.ratio(addr_norm, db_addr) / 100.0
+            score = fuzz.token_sort_ratio(addr_norm, db_addr) / 100.0
             if score > best_score:
                 best_score = score
                 best_location = loc

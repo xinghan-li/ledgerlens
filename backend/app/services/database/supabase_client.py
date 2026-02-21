@@ -46,6 +46,20 @@ def _get_client() -> Client:
     return _supabase
 
 
+def _parse_rpc_count(res: Any, rpc_name: str, default: int = 0) -> int:
+    """Parse integer return value from a Supabase RPC response (e.g. sync_record_items_batch_update)."""
+    if res.data is None:
+        return default
+    if isinstance(res.data, int):
+        return res.data
+    if isinstance(res.data, list) and len(res.data) > 0:
+        first = res.data[0]
+        if isinstance(first, dict):
+            return int(first.get(rpc_name, default) or default)
+        return int(first) if first is not None else default
+    return default
+
+
 def check_duplicate_by_hash(
     file_hash: str,
     user_id: str
@@ -983,6 +997,10 @@ def sync_receipt_items(
         list(to_delete_ids)[:5] if to_delete_ids else [],
     )
 
+    update_payloads: List[Dict[str, Any]] = []
+    updated_ids_with_name: List[tuple] = []  # (item_id, product_name) for classification_review sync
+    insert_rows: List[Dict[str, Any]] = []
+
     for it in valid_items:
         idx = it.pop("_idx")
         item_id = it.get("id") and str(it.get("id")).strip()
@@ -1018,35 +1036,54 @@ def sync_receipt_items(
                 existing_cat = existing_by_id.get(item_id, {}).get("category_id")
                 if existing_cat is not None:
                     payload["category_id"] = existing_cat
-            logger.info(
-                "[SYNC_ITEMS_DEBUG] UPDATE id=%s product_name=%s line_total_cents=%s",
-                item_id,
-                product_name_str[:40],
-                payload.get("line_total"),
-            )
-            supabase.table("record_items").update(payload).eq("id", item_id).eq("receipt_id", receipt_id).execute()
-            n_updated += 1
-            # Propagate product_name correction to classification_review (raw_product_name)
-            sync_classification_review_raw_product_name(item_id, payload["product_name"])
+            payload["id"] = item_id
+            update_payloads.append(payload)
+            updated_ids_with_name.append((item_id, product_name_str))
         else:
-            insert_row = {
+            insert_rows.append({
                 "receipt_id": receipt_id,
                 "user_id": user_id,
                 "category_id": category_id,
                 **payload,
-            }
-            logger.info(
-                "[SYNC_ITEMS_DEBUG] INSERT (id=%s) product_name=%s line_total_cents=%s",
-                item_id or "(new)",
-                product_name_str[:40],
-                payload.get("line_total"),
-            )
-            supabase.table("record_items").insert(insert_row).execute()
-            n_inserted += 1
+            })
 
-    for rid in to_delete_ids:
-        logger.info("[SYNC_ITEMS_DEBUG] DELETE id=%s", rid)
-        supabase.table("record_items").delete().eq("id", rid).eq("receipt_id", receipt_id).execute()
+    # Batch delete
+    if to_delete_ids:
+        for rid in to_delete_ids:
+            logger.info("[SYNC_ITEMS_DEBUG] DELETE id=%s", rid)
+        supabase.table("record_items").delete().in_("id", list(to_delete_ids)).eq("receipt_id", receipt_id).execute()
+
+    # Batch update via RPC
+    if update_payloads:
+        try:
+            res = supabase.rpc("sync_record_items_batch_update", {"updates": update_payloads}).execute()
+            n_updated = _parse_rpc_count(res, "sync_record_items_batch_update", len(update_payloads))
+            for item_id, pname in updated_ids_with_name:
+                sync_classification_review_raw_product_name(item_id, pname)
+        except Exception as e:
+            logger.warning("[SYNC_ITEMS_DEBUG] batch update RPC failed, falling back to per-row update: %s", e)
+            n_updated = 0
+            for it in update_payloads:
+                item_id = it.pop("id", None)
+                if not item_id:
+                    continue
+                try:
+                    supabase.table("record_items").update(it).eq("id", item_id).eq("receipt_id", receipt_id).execute()
+                    n_updated += 1
+                    sync_classification_review_raw_product_name(item_id, it.get("product_name") or "")
+                except Exception:
+                    pass
+
+    # Batch insert
+    if insert_rows:
+        for row in insert_rows:
+            logger.info(
+                "[SYNC_ITEMS_DEBUG] INSERT product_name=%s line_total_cents=%s",
+                (row.get("product_name") or "")[:40],
+                row.get("line_total"),
+            )
+        supabase.table("record_items").insert(insert_rows).execute()
+        n_inserted = len(insert_rows)
 
     n_deleted = len(to_delete_ids)
     logger.info(
