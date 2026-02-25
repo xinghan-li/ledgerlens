@@ -1,8 +1,9 @@
 """
-JWT Authentication for Supabase Auth.
+JWT Authentication: Firebase Auth (primary) and Supabase Auth (fallback).
 
-This module provides JWT token verification for Supabase authentication.
-Supports both RS256 (Supabase Auth tokens) and HS256 (custom tokens).
+When Firebase is configured, Firebase ID tokens are verified first and the user
+is resolved via firebase_uid (find or create in public.users). Otherwise Supabase
+JWT (RS256/HS256) is verified and sub is used as user_id.
 """
 from fastapi import Depends, HTTPException, Header, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -11,6 +12,14 @@ import jwt  # PyJWT library
 from jwt import PyJWKClient
 import logging
 from ...config import settings
+
+try:
+    from .firebase_auth import verify_firebase_token, get_or_create_user_id
+except Exception as _e:
+    import logging
+    logging.getLogger(__name__).warning("Firebase auth not available: %s", _e)
+    verify_firebase_token = None
+    get_or_create_user_id = None
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +155,25 @@ async def get_current_user(
         )
     
     logger.debug(f"[DEBUG] Token received (length: {len(token)})")
-    
+
+    # Try Firebase first if available
+    if verify_firebase_token is not None and get_or_create_user_id is not None:
+        logger.info("[Auth] Trying Firebase verification")
+        fb = verify_firebase_token(token)
+        if fb is not None:
+            firebase_uid, email = fb
+            try:
+                user_id = get_or_create_user_id(firebase_uid, email)
+                if user_id:
+                    logger.info("Authenticated via Firebase: user_id=%s", user_id)
+                    return user_id
+            except Exception as e:
+                logger.warning("Firebase get_or_create_user_id failed: %s", e)
+        else:
+            logger.info("[Auth] Firebase verify returned None, falling back to Supabase JWT")
+    else:
+        logger.debug("[Auth] Firebase auth not loaded, using Supabase JWT only")
+
     # First, decode token header to check algorithm (without verification)
     try:
         header = jwt.get_unverified_header(token)

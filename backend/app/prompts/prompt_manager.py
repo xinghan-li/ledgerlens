@@ -89,7 +89,8 @@ Key requirements:
 5. If information is missing or uncertain, set to null and document in tbd
 6. Do not hallucinate or guess values
 7. **IMPORTANT**: If you see package discount patterns (e.g., "2/$9.00"), follow the tag-based instructions - do NOT validate quantity × unit_price = line_total for those items
-8. **NEW**: If an Initial Parse Result is provided, use it as a reference to reduce hallucination. The initial parse is from a rule-based system that extracts items, totals, and validation from OCR coordinates. Cross-check your extraction with the initial parse result, but correct any OCR errors you find in product names."""
+8. **NEW**: If an Initial Parse Result is provided, use it as a reference to reduce hallucination. The initial parse is from a rule-based system that extracts items, totals, and validation from OCR coordinates. Cross-check your extraction with the initial parse result, but correct any OCR errors you find in product names.
+9. If you cannot be confident or need to escalate, set top-level "reason" to your finding; otherwise omit or null. Still output the best-effort JSON."""
 
 
 def _get_default_prompt_template() -> str:
@@ -166,8 +167,9 @@ Output the JSON now:"""
 
 
 def _get_default_output_schema() -> Dict[str, Any]:
-    """Default output schema."""
+    """Default output schema. Top-level 'reason' used when escalating or not confident."""
     return {
+        "reason": "string or null (if escalating or not confident, explain here; otherwise omit or null)",
         "receipt": {
             "merchant_name": "string or null",
             "merchant_address": "string or null",

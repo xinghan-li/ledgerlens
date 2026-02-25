@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase'
 import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
+import { getAuthToken } from '@/lib/firebase'
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -18,15 +18,14 @@ export default function AdminLayout({
 
   useEffect(() => {
     const check = async () => {
-      const supabase = createClient()
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
+      const token = await getAuthToken()
+      if (!token) {
         router.push('/login')
         return
       }
       try {
         const res = await fetch(`${apiUrl}/api/admin/classification-review?limit=1`, {
-          headers: { Authorization: `Bearer ${session.access_token}` },
+          headers: { Authorization: `Bearer ${token}` },
         })
         if (res.status === 403) {
           setAllowed(false)

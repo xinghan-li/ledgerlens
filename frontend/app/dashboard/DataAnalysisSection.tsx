@@ -104,16 +104,24 @@ function TableWithPct({
   )
 }
 
+type PeriodOption = { value: string; label: string }
+
 export default function DataAnalysisSection({ token }: { token: string | null }) {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [periodType, setPeriodType] = useState<PeriodType>('')
   const [periodValue, setPeriodValue] = useState<string>('')
+  // 仅在客户端挂载后生成，避免服务端/客户端时区不同导致水合不一致
+  const [monthOptions, setMonthOptions] = useState<PeriodOption[]>([])
+  const [quarterOptions, setQuarterOptions] = useState<PeriodOption[]>([])
+  const [yearOptions, setYearOptions] = useState<PeriodOption[]>([])
 
-  const monthOptions = buildMonthOptions()
-  const quarterOptions = buildQuarterOptions()
-  const yearOptions = buildYearOptions()
+  useEffect(() => {
+    setMonthOptions(buildMonthOptions())
+    setQuarterOptions(buildQuarterOptions())
+    setYearOptions(buildYearOptions())
+  }, [])
 
   useEffect(() => {
     if (!token) {

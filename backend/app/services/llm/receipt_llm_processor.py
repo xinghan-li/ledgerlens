@@ -10,6 +10,7 @@ Workflow:
 6. Return final JSON
 """
 from typing import Dict, Any, Optional, List, Tuple
+import json
 import logging
 import re
 from ...services.ocr.documentai_client import parse_receipt_documentai
@@ -51,17 +52,14 @@ async def process_receipt_with_llm_from_ocr(
     ocr_provider: str = "unknown",
     llm_provider: str = "openai",
     receipt_id: Optional[str] = None,
-    initial_parse_result: Optional[Dict[str, Any]] = None
+    initial_parse_result: Optional[Dict[str, Any]] = None,
+    store_in_chain: bool = False,
 ) -> Dict[str, Any]:
     """
     Unified LLM processing function that accepts any normalized OCR result.
     
-    Core advantages:
-    1. Unified extraction based on raw_text (not dependent on OCR-specific format)
-    2. Unified validation logic (regardless of OCR source)
-    3. Merchant-specific rules only need one set (targeting raw_text)
-    4. Support multiple LLM providers (OpenAI, Gemini)
-    5. Can use initial parse result (rule-based extraction) to guide LLM
+    When store_in_chain is True and initial_parse_result is successful (RBSJ),
+    only the rule-based summarized JSON is sent to the LLM (no raw OCR text).
     
     Args:
         ocr_result: OCR result (can be any format, will be automatically normalized)
@@ -69,7 +67,8 @@ async def process_receipt_with_llm_from_ocr(
         ocr_provider: OCR provider (for auto-detection, e.g., "google_documentai", "aws_textract")
         llm_provider: LLM provider ("openai" or "gemini")
         receipt_id: Optional receipt ID for database tracking
-        initial_parse_result: Optional rule-based extraction result to guide LLM
+        initial_parse_result: Optional rule-based extraction result (RBSJ) to guide LLM
+        store_in_chain: When True and RBSJ success, feed only RBSJ to LLM (no raw OCR)
         
     Returns:
         Structured receipt data
@@ -185,17 +184,35 @@ async def process_receipt_with_llm_from_ocr(
         elif any(province in address for province in ca_provinces):
             location_country = "CA"
     
-    system_message, user_message, rag_metadata = format_prompt(
-        raw_text=raw_text,
-        trusted_hints=trusted_hints,
-        prompt_config=prompt_config,
-        merchant_name=merchant_name,
-        store_chain_id=chain_id,
-        location_id=location_id,
-        state=location_state,
-        country_code=location_country,
-        initial_parse_result=initial_parse_result  # Pass initial parse result to prompt
-    )
+    # When store is in chain and we have successful RBSJ, feed only RBSJ to LLM (no raw OCR)
+    if store_in_chain and initial_parse_result and initial_parse_result.get("success"):
+        logger.info("Store in chain + RBSJ success: feeding only RBSJ to LLM (no raw OCR)")
+        schema = prompt_config.get("output_schema") or {}
+        system_message = (
+            "You convert rule-based summarized receipt JSON (RBSJ) into the full receipt schema. "
+            "Output ONLY valid JSON. Do not invent or guess values; use null if not present in RBSJ. "
+            "Preserve receipt-level and item-level fields; ensure sum checks where possible."
+        )
+        user_message = (
+            "Convert the following RBSJ into the full receipt schema. Output only valid JSON.\n\n"
+            "## RBSJ:\n"
+            + json.dumps(initial_parse_result, ensure_ascii=False, indent=2)
+            + "\n\n## Output schema (output only JSON):\n"
+            + json.dumps(schema, ensure_ascii=False, indent=2)
+        )
+        rag_metadata = {"rbsj_only": True}
+    else:
+        system_message, user_message, rag_metadata = format_prompt(
+            raw_text=raw_text,
+            trusted_hints=trusted_hints,
+            prompt_config=prompt_config,
+            merchant_name=merchant_name,
+            store_chain_id=chain_id,
+            location_id=location_id,
+            state=location_state,
+            country_code=location_country,
+            initial_parse_result=initial_parse_result  # Pass initial parse result to prompt
+        )
     
     # Step 5: Call LLM (read corresponding config from environment variables based on llm_provider)
     logger.info(f"Step 4: Calling {llm_provider.upper()} LLM...")
@@ -345,8 +362,13 @@ async def process_receipt_with_llm_from_ocr(
         "rag_metadata": rag_metadata  # Add RAG usage statistics
     }
     
-    # Step 10: Create store candidate ONLY if both OCR and LLM failed to match
-    if final_merchant_name and not final_chain_id and receipt_id:
+    # Step 10: Create store candidate when: (1) no match, or (2) chain matched but location is new
+    need_store_candidate = (
+        final_merchant_name
+        and receipt_id
+        and (not final_chain_id or not final_location_id)
+    )
+    if need_store_candidate:
         from ..database.supabase_client import create_store_candidate
         try:
             create_store_candidate(
@@ -354,14 +376,17 @@ async def process_receipt_with_llm_from_ocr(
                 receipt_id=receipt_id,
                 source="llm",
                 llm_result=llm_result,
-                suggested_chain_id=llm_suggested_chain_id,
+                suggested_chain_id=llm_suggested_chain_id or final_chain_id,
                 suggested_location_id=llm_suggested_location_id,
                 confidence_score=llm_confidence_score
             )
-            logger.info(f"Created store candidate for '{final_merchant_name}' (OCR and LLM both failed to match) with receipt_id={receipt_id}, confidence={llm_confidence_score}")
+            logger.info(
+                "Created store candidate for %r (no match or new location) receipt_id=%s",
+                final_merchant_name, receipt_id,
+            )
         except Exception as e:
             logger.warning(f"Failed to create store candidate: {e}")
-    elif final_chain_id:
+    elif final_chain_id and final_location_id:
         logger.info(f"Store matched successfully (chain_id={final_chain_id}, location_id={final_location_id}), no candidate created")
     
     logger.info(f"Receipt processing completed successfully (OCR: {normalized.get('metadata', {}).get('ocr_provider', 'unknown')}, LLM: {llm_provider})")

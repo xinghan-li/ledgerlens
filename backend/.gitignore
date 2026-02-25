@@ -55,3 +55,6 @@ service_account/
 # Test folder
 input/
 output/
+
+# Keys
+keys/

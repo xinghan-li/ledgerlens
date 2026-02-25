@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase'
+import { getFirebaseAuth } from '@/lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import Link from 'next/link'
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -28,10 +29,11 @@ export default function FailedReceiptsListPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const supabase = createClient()
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setToken(session?.access_token ?? null)
+    const auth = getFirebaseAuth()
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setToken(user ? await user.getIdToken() : null)
     })
+    return () => unsubscribe()
   }, [])
 
   const fetchList = async () => {

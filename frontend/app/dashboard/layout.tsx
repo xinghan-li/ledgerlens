@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase'
 import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
+import { getFirebaseAuth } from '@/lib/firebase'
+import { onAuthStateChanged, signOut } from 'firebase/auth'
 
 const apiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -19,18 +20,25 @@ export default function DashboardLayout({
   const [userInfo, setUserInfo] = useState<UserInfo>(null)
   const [loading, setLoading] = useState(true)
   const [navOpen, setNavOpen] = useState(false)
-  const supabase = createClient()
+  const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
-    const init = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.access_token) {
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    const auth = getFirebaseAuth()
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setUserInfo(null)
+        setLoading(false)
         router.push('/login')
         return
       }
       try {
+        const token = await user.getIdToken()
         const res = await fetch(`${apiUrl()}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${session.access_token}` },
+          headers: { Authorization: `Bearer ${token}` },
         })
         if (res.ok) {
           const data = await res.json()
@@ -43,33 +51,13 @@ export default function DashboardLayout({
       } finally {
         setLoading(false)
       }
-    }
-    init()
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (!session?.access_token) {
-        router.push('/login')
-        return
-      }
-      try {
-        const res = await fetch(`${apiUrl()}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        })
-        if (res.ok) {
-          const data = await res.json()
-          setUserInfo({ user_id: data.user_id, email: data.email, user_class: data.user_class })
-        } else {
-          setUserInfo(null)
-        }
-      } catch {
-        setUserInfo(null)
-      }
     })
-    return () => subscription.unsubscribe()
-  }, [router, supabase.auth])
+    return () => unsubscribe()
+  }, [router])
 
   const handleLogout = async () => {
-    await supabase.auth.signOut()
+    const auth = getFirebaseAuth()
+    await signOut(auth)
     router.push('/')
   }
 
@@ -91,7 +79,7 @@ export default function DashboardLayout({
           href="/dashboard/developer"
           onClick={() => setNavOpen(false)}
           className={`flex items-center px-4 py-3 sm:py-2 text-sm font-medium rounded-lg transition min-h-[44px] sm:min-h-0 ${
-            pathname === '/dashboard/developer'
+            mounted && pathname === '/dashboard/developer'
               ? 'bg-gray-200 text-gray-900'
               : 'text-gray-700 hover:text-gray-900 hover:bg-gray-100'
           }`}

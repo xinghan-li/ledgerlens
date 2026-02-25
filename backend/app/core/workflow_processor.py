@@ -25,7 +25,9 @@ from ..services.llm.receipt_llm_processor import process_receipt_with_llm_from_o
 from ..processors.core.sum_checker import check_receipt_sums, apply_field_conflicts_resolution
 from ..services.llm.llm_client import parse_receipt_with_llm
 from ..prompts.prompt_manager import format_prompt, get_default_prompt
-from ..services.llm.gemini_client import parse_receipt_with_gemini_vision
+from ..prompts.prompt_loader import get_debug_prompt_system
+from ..services.llm.gemini_client import parse_receipt_with_gemini_vision, parse_receipt_with_gemini
+from ..services.llm.llm_client import parse_receipt_with_llm
 from ..config import settings
 from ..services.database.statistics_manager import record_api_call
 from ..services.database.supabase_client import (
@@ -34,8 +36,13 @@ from ..services.database.supabase_client import (
     update_receipt_status,
     get_test_user_id,
     update_receipt_file_url,
-    check_duplicate_by_hash
+    check_duplicate_by_hash,
+    get_user_class,
+    get_store_chain,
+    create_store_candidate,
+    save_non_receipt_reject,
 )
+from ..services.ocr.ocr_normalizer import normalize_ocr_result, extract_unified_info
 import shutil
 from ..exporters.csv_exporter import convert_receipt_to_csv_rows, append_to_daily_csv, get_csv_headers
 from ..processors.stores.tnt_supermarket import clean_tnt_receipt_items
@@ -59,6 +66,11 @@ def _initial_parse_summary_for_run(initial_parse_result: Optional[Dict[str, Any]
         "items_count": len(initial_parse_result.get("items") or []),
         "chain_id": initial_parse_result.get("chain_id"),
     }
+
+
+def _fail_output_payload(error_message: str, reason: Optional[str] = None) -> Dict[str, Any]:
+    """Standard JSON output_payload when a stage fails; only error and reason, no uncertain structural answer."""
+    return {"error": error_message, "reason": reason or error_message}
 
 
 # Output directories (moved to project root)
@@ -263,6 +275,37 @@ def get_output_paths_for_receipt(receipt_id: str, date_folder: str = None) -> Di
     }
 
 
+def _validate_receipt_like(ocr_result: Dict[str, Any]) -> tuple:
+    """
+    Check if OCR result looks like a receipt: (1) has total, (2) top 1/3 has store/address-like text.
+    Returns (True, "") if valid, (False, reason) if not (for logging and non_receipt_rejects.reason).
+    """
+    # 1. Must have a total amount
+    total = ocr_result.get("total")
+    if total is None:
+        return False, "no_total"
+    try:
+        if float(total) <= 0:
+            return False, "total_zero_or_negative"
+    except (TypeError, ValueError):
+        return False, "total_not_numeric"
+    # 2. Top 1/3 of receipt should have store name / address (multiple lines of text)
+    coord = ocr_result.get("coordinate_data") or {}
+    blocks = coord.get("text_blocks") or []
+    top_text_parts = []
+    for b in blocks:
+        bbox = b.get("bounding_box") or {}
+        y = bbox.get("y", 1.0)
+        if bbox.get("is_normalized", True) and y < 0.35:
+            top_text_parts.append((b.get("text") or "").strip())
+        elif not bbox.get("is_normalized") and y < 200:
+            top_text_parts.append((b.get("text") or "").strip())
+    top_text = " ".join(p for p in top_text_parts if p)
+    if len(top_text.strip()) < 10:
+        return False, "no_store_or_address_in_top_third"
+    return True, ""
+
+
 async def process_receipt_workflow(
     image_bytes: bytes,
     filename: str,
@@ -299,36 +342,29 @@ async def process_receipt_workflow(
             logger.warning("get_test_user_id() returned None")
     
     # Check for duplicate before processing (if user_id is available)
+    # Only admin and super_admin may upload duplicates; others get a clear error for frontend.
     if user_id:
         existing_receipt_id = check_duplicate_by_hash(file_hash, user_id)
         if existing_receipt_id:
-            # Log debug mode status for troubleshooting
-            logger.info(f"Duplicate detected. allow_duplicate_for_debug = {settings.allow_duplicate_for_debug}")
-            if settings.allow_duplicate_for_debug:
-                # Debug mode: Allow duplicate by modifying file_hash with timestamp
+            user_class = get_user_class(user_id)
+            allow_duplicate = user_class in ("super_admin", "admin") or settings.allow_duplicate_for_debug
+            if allow_duplicate:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 file_hash = f"{original_file_hash}_debug_{timestamp}"
-                logger.warning(
-                    f"DEBUG MODE: Duplicate receipt detected (original: {existing_receipt_id}), "
-                    f"but allowing reprocess with modified hash: {file_hash[:32]}... "
-                    f"This allows comparison of results between runs."
+                logger.info(
+                    f"Duplicate allowed for {user_class} user {user_id}; reprocessing with modified hash (existing: {existing_receipt_id})."
                 )
             else:
-                # Normal mode: Reject duplicate
                 logger.warning(
-                    f"Duplicate receipt detected: file_hash={file_hash[:16]}..., "
-                    f"existing_receipt_id={existing_receipt_id}. "
-                    "Skipping processing to avoid duplicate work. "
-                    "Set ALLOW_DUPLICATE_FOR_DEBUG=true to allow reprocessing for debugging."
+                    f"Duplicate receipt rejected for user {user_id} (class={user_class}): existing_receipt_id={existing_receipt_id}"
                 )
                 return {
                     "success": False,
                     "receipt_id": receipt_id,
                     "status": "duplicate",
                     "error": "duplicate_receipt",
-                    "message": "This receipt has already been processed",
+                    "message": "This receipt has already been uploaded. If there was an error, please delete the existing receipt and upload a new photo.",
                     "existing_receipt_id": existing_receipt_id,
-                    "file_hash": file_hash[:16] + "..."  # Only return first 16 chars for security
                 }
     
     # Validate user_id before creating receipt
@@ -349,34 +385,30 @@ async def process_receipt_workflow(
             logger.info(f"✓ Created receipt record in database: {db_receipt_id}")
         except Exception as e:
             error_msg = str(e)
-            # Check if it's a duplicate error
+            # Check if it's a duplicate error (unique constraint on file_hash)
             if "duplicate" in error_msg.lower() or "Duplicate receipt" in error_msg:
-                if settings.allow_duplicate_for_debug:
-                    # Debug mode: Try again with modified hash
+                user_class = get_user_class(user_id)
+                allow_duplicate = user_class in ("super_admin", "admin") or settings.allow_duplicate_for_debug
+                if allow_duplicate:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                     file_hash = f"{original_file_hash}_debug_{timestamp}"
-                    logger.warning(
-                        f"DEBUG MODE: Duplicate detected during creation, retrying with modified hash: {file_hash[:32]}..."
-                    )
+                    logger.info(f"Duplicate during create: allowing for {user_class}, retrying with modified hash.")
                     try:
                         db_receipt_id = create_receipt(user_id=user_id, raw_file_url=None, file_hash=file_hash)
-                        logger.info(f"✓ Created receipt record in database (debug mode): {db_receipt_id}")
+                        logger.info(f"✓ Created receipt record in database: {db_receipt_id}")
                     except Exception as retry_error:
                         logger.error(f"Failed to create receipt even with modified hash: {retry_error}")
                         raise
                 else:
-                    # Normal mode: Return duplicate error
-                    logger.warning(f"Duplicate receipt detected during creation: {error_msg}")
-                    # Try to get existing receipt ID
+                    logger.warning(f"Duplicate receipt during creation for user {user_id}: {error_msg}")
                     existing_receipt_id = check_duplicate_by_hash(original_file_hash, user_id)
                     return {
                         "success": False,
                         "receipt_id": receipt_id,
                         "status": "duplicate",
                         "error": "duplicate_receipt",
-                        "message": "This receipt has already been processed",
+                        "message": "This receipt has already been uploaded. If there was an error, please delete the existing receipt and upload a new photo.",
                         "existing_receipt_id": existing_receipt_id,
-                        "file_hash": original_file_hash[:16] + "..."
                     }
             
             logger.error(
@@ -440,6 +472,32 @@ async def process_receipt_workflow(
                 except Exception as e:
                     logger.warning(f"Failed to save OCR processing run: {e}")
             
+            # Receipt-like validation: must have total and store/address-like content in top 1/3
+            valid, reject_reason = _validate_receipt_like(google_ocr_result)
+            if not valid:
+                timeline.end("google_ocr")
+                image_path_reject = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+                save_non_receipt_reject(
+                    user_id=user_id,
+                    file_hash=original_file_hash,
+                    image_path=str(image_path_reject) if image_path_reject else None,
+                    reason=reject_reason,
+                    ocr_text_snippet=(google_ocr_result.get("raw_text") or "")[:5000],
+                )
+                if db_receipt_id:
+                    try:
+                        update_receipt_status(db_receipt_id, current_status="failed", current_stage="rejected_not_receipt")
+                    except Exception as e:
+                        logger.warning(f"Failed to update receipt status after reject: {e}")
+                logger.warning(f"Receipt-like validation failed: {reject_reason}")
+                return {
+                    "success": False,
+                    "receipt_id": receipt_id,
+                    "status": "rejected",
+                    "error": "not_a_receipt",
+                    "message": "Uploaded image does not appear to be a receipt. Please upload a clear photo of a receipt (with total amount and store name visible).",
+                }
+            
         except Exception as e:
             timeline.end("google_ocr")
             logger.error(f"Google OCR failed: {e}")
@@ -454,7 +512,7 @@ async def process_receipt_workflow(
                         model_name=None,  # OCR doesn't have model_name
                         model_version=None,
                         input_payload={"image_bytes_length": len(image_bytes), "mime_type": mime_type},
-                        output_payload={},
+                        output_payload=_fail_output_payload(str(e)),
                         output_schema_version=None,  # OCR doesn't have schema version
                         status="fail",
                         error_message=str(e)
@@ -513,6 +571,47 @@ async def process_receipt_workflow(
         finally:
             timeline.end("initial_parse")
         
+        # Save rule-based cleaning stage (input_payload = OCR as JSON, output_payload = RBSJ)
+        if db_receipt_id:
+            try:
+                raw_text = (google_ocr_result.get("raw_text") or "") if isinstance(google_ocr_result.get("raw_text"), str) else ""
+                coord = google_ocr_result.get("coordinate_data") or {}
+                rule_input: Dict[str, Any] = {
+                    "ocr_provider": "google_documentai",
+                    "raw_text_length": len(raw_text),
+                    "raw_text_preview": raw_text[:2000] if raw_text else "",
+                    "has_coordinate_data": bool(coord),
+                    "merchant_name": google_ocr_result.get("merchant_name"),
+                }
+                rule_output: Dict[str, Any] = initial_parse_result if isinstance(initial_parse_result, dict) else {"success": False, "reason": "no result"}
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="rule_based_cleaning",
+                    model_provider=None,
+                    model_name=None,
+                    model_version=None,
+                    input_payload=rule_input,
+                    output_payload=rule_output,
+                    output_schema_version=None,
+                    status="pass" if (initial_parse_result and initial_parse_result.get("success")) else "fail",
+                    error_message=None if (initial_parse_result and initial_parse_result.get("success")) else "initial_parse failed or no coordinate data",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save rule_based_cleaning run: {e}")
+        
+        # Determine store_in_chain for workflow branch (in-chain: feed RBSJ only; not-in-chain: vision with OCR+RBSJ+image)
+        store_in_chain = False
+        try:
+            normalized_ocr = normalize_ocr_result(google_ocr_data, provider="google_documentai")
+            unified_info = extract_unified_info(normalized_ocr)
+            merchant_name_early = (unified_info.get("merchant_name") or "").strip()
+            store_address_early = (unified_info.get("merchant_address") or "").strip()
+            store_match = get_store_chain(merchant_name_early, store_address_early or None)
+            store_in_chain = bool(store_match.get("matched"))
+            logger.info(f"Store in chain: {store_in_chain} (merchant_name=%r)", merchant_name_early or None)
+        except Exception as e:
+            logger.warning(f"Could not determine store_in_chain: {e}")
+        
         # Step 2: Decide which LLM to use
         gemini_available, gemini_reason = await check_gemini_available()
         
@@ -537,14 +636,36 @@ async def process_receipt_workflow(
         # Step 3: LLM processing (with initial parse result)
         timeline.start(f"{llm_provider}_llm")
         try:
-            first_llm_result = await process_receipt_with_llm_from_ocr(
-                ocr_result=google_ocr_data,
-                merchant_name=None,
-                ocr_provider="google_documentai",
-                llm_provider=llm_provider,
-                receipt_id=db_receipt_id,
-                initial_parse_result=initial_parse_result  # Pass initial parse result to LLM
-            )
+            if store_in_chain:
+                first_llm_result = await process_receipt_with_llm_from_ocr(
+                    ocr_result=google_ocr_data,
+                    merchant_name=None,
+                    ocr_provider="google_documentai",
+                    llm_provider=llm_provider,
+                    receipt_id=db_receipt_id,
+                    initial_parse_result=initial_parse_result,
+                    store_in_chain=True,
+                )
+            else:
+                # Not in chain: single prompt with OCR + RBSJ + image (vision) when Gemini available
+                if llm_provider.lower() == "gemini" and image_bytes:
+                    first_llm_result = await _process_receipt_vision_ocr_rbsj(
+                        image_bytes=image_bytes,
+                        mime_type=mime_type,
+                        google_ocr_data=google_ocr_data,
+                        initial_parse_result=initial_parse_result,
+                        db_receipt_id=db_receipt_id,
+                    )
+                else:
+                    first_llm_result = await process_receipt_with_llm_from_ocr(
+                        ocr_result=google_ocr_data,
+                        merchant_name=None,
+                        ocr_provider="google_documentai",
+                        llm_provider=llm_provider,
+                        receipt_id=db_receipt_id,
+                        initial_parse_result=initial_parse_result,
+                        store_in_chain=False,
+                    )
             timeline.end(f"{llm_provider}_llm")
             
             # Merge store-specific fields from initial_parse (e.g. Trader Joe's transaction_info, merchant_phone, purchase_time) into payload before save
@@ -586,7 +707,7 @@ async def process_receipt_workflow(
                         model_name=model_name,
                         model_version=None,
                         input_payload=_input,
-                        output_payload={},
+                        output_payload=_fail_output_payload(str(e)),
                         output_schema_version="0.1",
                         status="fail",
                         error_message=str(e)
@@ -794,11 +915,18 @@ async def process_receipt_workflow(
                 except Exception as e:
                     logger.warning(f"Failed to update receipt stage to sum_check_failed: {e}")
             
-            return await _backup_check_with_aws_ocr(
-                image_bytes, filename, receipt_id, timeline,
-                google_ocr_data, first_llm_result, sum_check_details, llm_provider,
+            return await _llm_debug_cascade(
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                filename=filename,
+                receipt_id=receipt_id,
+                timeline=timeline,
+                google_ocr_data=google_ocr_data,
+                first_llm_result=first_llm_result,
+                sum_check_details=sum_check_details,
+                first_llm_provider=llm_provider,
+                user_id=user_id,
                 db_receipt_id=db_receipt_id,
-                user_id=user_id
             )
     
     except Exception as e:
@@ -833,6 +961,187 @@ async def process_receipt_workflow(
             "status": "error",
             "error": str(e)
         }
+
+
+async def _llm_debug_cascade(
+    image_bytes: bytes,
+    mime_type: str,
+    filename: str,
+    receipt_id: str,
+    timeline: TimelineRecorder,
+    google_ocr_data: Dict[str, Any],
+    first_llm_result: Dict[str, Any],
+    sum_check_details: Dict[str, Any],
+    first_llm_provider: str,
+    user_id: str,
+    db_receipt_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Sum check failed: try (1) LLM debug with raw OCR, (2) LLM debug with image + reason, (3) Textract + OpenAI.
+    Uses prompt_library receipt_parse_debug_ocr and receipt_parse_debug_vision when available.
+    """
+    prompt_config = get_default_prompt()
+    output_schema = prompt_config.get("output_schema") or {}
+    output_schema_json = json.dumps(output_schema, indent=2, ensure_ascii=False)
+    raw_text = (google_ocr_data or {}).get("raw_text") or ""
+
+    # Step 1: Debug with raw OCR only
+    debug_ocr_system = get_debug_prompt_system("receipt_parse_debug_ocr") or (
+        "The previous answer had sum/total issues. Compare the OCR and summarized JSON below. "
+        "Correct and output full receipt JSON, or set top-level 'reason' and escalate."
+    )
+    debug_ocr_user = (
+        "## Previous LLM output\n" + json.dumps(first_llm_result, indent=2, ensure_ascii=False)[:8000]
+        + "\n\n## Sum check details\n" + json.dumps(sum_check_details, ensure_ascii=False)
+        + "\n\n## OCR raw text\n" + (raw_text[:6000] + "..." if len(raw_text) > 6000 else raw_text)
+    )
+    timeline.start("llm_debug_ocr")
+    debug_ocr_result = None
+    try:
+        if first_llm_provider.lower() == "gemini":
+            debug_ocr_result = await parse_receipt_with_gemini(
+                system_message=debug_ocr_system,
+                user_message=debug_ocr_user,
+                model=settings.gemini_model,
+                temperature=0,
+            )
+        else:
+            debug_ocr_result = parse_receipt_with_llm(
+                system_message=debug_ocr_system,
+                user_message=debug_ocr_user,
+                model=settings.openai_model,
+                temperature=0,
+            )
+    except Exception as e:
+        logger.warning(f"LLM debug (OCR) failed: {e}")
+        if db_receipt_id:
+            try:
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="llm",
+                    model_provider=first_llm_provider,
+                    model_name=settings.gemini_model if first_llm_provider.lower() == "gemini" else settings.openai_model,
+                    model_version=None,
+                    input_payload={"debug_ocr": True, "sum_check_details": sum_check_details},
+                    output_payload=_fail_output_payload(str(e)),
+                    output_schema_version="0.1",
+                    status="fail",
+                    error_message=str(e),
+                )
+            except Exception as se:
+                logger.warning(f"Failed to save debug OCR run: {se}")
+    timeline.end("llm_debug_ocr")
+
+    if debug_ocr_result and isinstance(debug_ocr_result, dict):
+        debug_ocr_result = clean_llm_result(debug_ocr_result)
+        debug_ocr_result = clean_tnt_receipt_items(debug_ocr_result)
+        debug_ocr_result = correct_address(debug_ocr_result, auto_correct=True)
+        sum_check_passed_debug, _ = check_receipt_sums(debug_ocr_result)
+        if sum_check_passed_debug and db_receipt_id:
+            try:
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="llm",
+                    model_provider=first_llm_provider,
+                    model_name=settings.gemini_model if first_llm_provider.lower() == "gemini" else settings.openai_model,
+                    model_version=None,
+                    input_payload={"debug_ocr": True, "sum_check_details": sum_check_details},
+                    output_payload=debug_ocr_result,
+                    output_schema_version="0.1",
+                    status="pass",
+                    error_message=None,
+                )
+                update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_primary")
+            except Exception as e:
+                logger.warning(f"Failed to save debug OCR success run: {e}")
+            await _save_output(receipt_id, debug_ocr_result, timeline, google_ocr_data, user_id=user_id)
+            try:
+                cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+                if cat_result.get("success"):
+                    logger.info(f"✅ Categorization completed after debug OCR for {db_receipt_id}")
+            except Exception as ce:
+                logger.warning(f"Categorization failed after debug OCR: {ce}")
+            return {"success": True, "receipt_id": receipt_id, "status": "passed_after_debug_ocr", "data": debug_ocr_result}
+
+    # Step 2: Debug with image (same conversation), output reason if escalating
+    debug_vision_system = get_debug_prompt_system("receipt_parse_debug_vision") or (
+        "You are now given the receipt image. Use it with the previous OCR and JSON to produce correct receipt JSON. Set top-level 'reason' if not confident."
+    )
+    vision_context = (
+        debug_vision_system
+        + "\n\n## Previous debug (OCR) output\n"
+        + json.dumps(debug_ocr_result or first_llm_result, indent=2, ensure_ascii=False)[:6000]
+        + "\n\n## Sum check details\n"
+        + json.dumps(sum_check_details, ensure_ascii=False)
+        + "\n\nBelow is the receipt image."
+    )
+    timeline.start("llm_debug_vision")
+    debug_vision_result = None
+    try:
+        debug_vision_result = await parse_receipt_with_gemini_vision(
+            image_bytes=image_bytes,
+            failure_context=vision_context,
+            output_schema_json=output_schema_json,
+            mime_type=mime_type,
+        )
+    except Exception as e:
+        logger.warning(f"LLM debug (vision) failed: {e}")
+        if db_receipt_id:
+            try:
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="llm",
+                    model_provider="gemini",
+                    model_name=settings.gemini_model,
+                    model_version=None,
+                    input_payload={"debug_vision": True, "image_bytes_length": len(image_bytes)},
+                    output_payload=_fail_output_payload(str(e)),
+                    output_schema_version="0.1",
+                    status="fail",
+                    error_message=str(e),
+                )
+            except Exception as se:
+                logger.warning(f"Failed to save debug vision run: {se}")
+    timeline.end("llm_debug_vision")
+
+    if debug_vision_result and isinstance(debug_vision_result, dict):
+        debug_vision_result = clean_llm_result(debug_vision_result)
+        debug_vision_result = clean_tnt_receipt_items(debug_vision_result)
+        debug_vision_result = correct_address(debug_vision_result, auto_correct=True)
+        sum_check_passed_v, _ = check_receipt_sums(debug_vision_result)
+        if sum_check_passed_v and db_receipt_id:
+            try:
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="llm",
+                    model_provider="gemini",
+                    model_name=settings.gemini_model,
+                    model_version=None,
+                    input_payload={"debug_vision": True, "image_bytes_length": len(image_bytes)},
+                    output_payload=debug_vision_result,
+                    output_schema_version="0.1",
+                    status="pass",
+                    error_message=None,
+                )
+                update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_primary")
+            except Exception as e:
+                logger.warning(f"Failed to save debug vision success run: {e}")
+            await _save_output(receipt_id, debug_vision_result, timeline, google_ocr_data, user_id=user_id)
+            try:
+                cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+                if cat_result.get("success"):
+                    logger.info(f"✅ Categorization completed after debug vision for {db_receipt_id}")
+            except Exception as ce:
+                logger.warning(f"Categorization failed after debug vision: {ce}")
+            return {"success": True, "receipt_id": receipt_id, "status": "passed_after_vision_retry", "data": debug_vision_result}
+
+    # Step 3: Fallback to Textract + OpenAI
+    return await _backup_check_with_aws_ocr(
+        image_bytes, filename, receipt_id, timeline,
+        google_ocr_data, first_llm_result, sum_check_details, first_llm_provider,
+        user_id=user_id,
+        db_receipt_id=db_receipt_id,
+    )
 
 
 async def _backup_check_with_aws_ocr(
@@ -954,7 +1263,7 @@ async def _backup_check_with_aws_ocr(
                         "first_llm_result": first_llm_result,
                         "sum_check_details": sum_check_details
                     },
-                    output_payload={},
+                    output_payload=_fail_output_payload(str(e)),
                     output_schema_version=None,
                     status="fail",
                     error_message=str(e)
@@ -1336,7 +1645,7 @@ async def _fallback_to_aws_ocr(
                         model_name=model_name,
                         model_version=None,
                         input_payload={"ocr_result": aws_ocr_result},
-                        output_payload={},
+                        output_payload=_fail_output_payload(str(e)),
                         output_schema_version="0.1",
                         status="fail",
                         error_message=str(e)
@@ -1383,6 +1692,80 @@ async def _fallback_to_aws_ocr(
             filename=filename,
             db_receipt_id=db_receipt_id
         )
+
+
+def _build_vision_ocr_rbsj_prompt(
+    google_ocr_data: Dict[str, Any],
+    initial_parse_result: Optional[Dict[str, Any]],
+    max_ocr_chars: int = 6000,
+) -> str:
+    """Build single prompt for not-in-chain vision path: OCR + RBSJ (no previous error)."""
+    parts = [
+        "Store is not in our chain. Use the following OCR text and rule-based summarized JSON (RBSJ) together with the receipt image to extract the full receipt schema. Output only valid JSON."
+    ]
+    raw_text = (google_ocr_data or {}).get("raw_text") or ""
+    if raw_text:
+        truncated = raw_text[:max_ocr_chars] + ("..." if len(raw_text) > max_ocr_chars else "")
+        parts.append("\n\n--- OCR text ---\n")
+        parts.append(truncated)
+    if initial_parse_result and isinstance(initial_parse_result, dict):
+        parts.append("\n\n--- Rule-based summarized JSON (RBSJ) ---\n")
+        parts.append(json.dumps(initial_parse_result, indent=2, ensure_ascii=False))
+    parts.append("\n\nLook at the receipt image and output the full schema (receipt + items + tbd). If not confident, set top-level 'reason'.")
+    return "".join(parts)
+
+
+async def _process_receipt_vision_ocr_rbsj(
+    image_bytes: bytes,
+    mime_type: str,
+    google_ocr_data: Dict[str, Any],
+    initial_parse_result: Optional[Dict[str, Any]],
+    db_receipt_id: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Not-in-chain path: one prompt with OCR + RBSJ + image, via Gemini vision.
+    Returns parsed JSON (receipt + items + tbd); caller adds _metadata and runs clean/address.
+    """
+    prompt_config = get_default_prompt()
+    output_schema = prompt_config.get("output_schema") or {}
+    output_schema_json = json.dumps(output_schema, indent=2, ensure_ascii=False)
+    prompt_text = _build_vision_ocr_rbsj_prompt(google_ocr_data, initial_parse_result)
+    vision_result = await parse_receipt_with_gemini_vision(
+        image_bytes=image_bytes,
+        failure_context=prompt_text,
+        output_schema_json=output_schema_json,
+        mime_type=mime_type,
+    )
+    if not vision_result:
+        raise ValueError("Gemini vision OCR+RBSJ returned empty")
+    rec = vision_result.get("receipt", {})
+    merchant_name_v = (rec.get("merchant_name") or "").strip()
+    address_v = (rec.get("merchant_address") or "").strip()
+    store_match = get_store_chain(merchant_name_v, address_v or None)
+    vision_result["_metadata"] = {
+        "merchant_name": merchant_name_v or None,
+        "chain_id": store_match.get("chain_id"),
+        "location_id": store_match.get("location_id"),
+        "ocr_provider": "google_documentai",
+        "llm_provider": "gemini",
+        "entities": (google_ocr_data or {}).get("entities", {}),
+        "validation_status": vision_result.get("_metadata", {}).get("validation_status", "unknown"),
+        "rag_metadata": {"vision_ocr_rbsj": True},
+    }
+    if merchant_name_v and not store_match.get("matched") and db_receipt_id:
+        try:
+            create_store_candidate(
+                chain_name=merchant_name_v,
+                receipt_id=db_receipt_id,
+                source="llm",
+                llm_result=vision_result,
+                suggested_chain_id=store_match.get("suggested_chain_id"),
+                suggested_location_id=store_match.get("suggested_location_id"),
+                confidence_score=store_match.get("confidence_score"),
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create store candidate after vision OCR+RBSJ: {e}")
+    return vision_result
 
 
 def _build_vision_retry_failure_context(
@@ -1682,7 +2065,7 @@ async def _fallback_to_other_llm(
                     model_name=model_name,
                     model_version=None,
                     input_payload={"ocr_result": google_ocr_data},
-                    output_payload={},
+                    output_payload=_fail_output_payload(str(e)),
                     output_schema_version="0.1",
                     status="fail",
                     error_message=str(e)

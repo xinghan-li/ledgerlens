@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase'
+import { getFirebaseAuth } from '@/lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -167,10 +168,11 @@ export default function ClassificationReviewPage() {
   const [filterPackage, setFilterPackage] = useState<string>('')
 
   useEffect(() => {
-    const supabase = createClient()
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setToken(session?.access_token ?? null)
+    const auth = getFirebaseAuth()
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setToken(user ? await user.getIdToken() : null)
     })
+    return () => unsubscribe()
   }, [])
 
   const fetchList = async () => {

@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
-import type { User } from '@supabase/supabase-js'
+import { getFirebaseAuth } from '@/lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import DataAnalysisSection from '../DataAnalysisSection'
 import { CameraCaptureButton } from '../camera'
 
@@ -20,8 +20,9 @@ type ReceiptListItem = {
 }
 
 export default function DeveloperDashboardPage() {
-  const [user, setUser] = useState<User | null>(null)
   const [token, setToken] = useState<string | null>(null)
+  const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [userUid, setUserUid] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [developerAllowed, setDeveloperAllowed] = useState<boolean | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -168,48 +169,28 @@ export default function DeveloperDashboardPage() {
   }, [token])
 
   useEffect(() => {
-    // 获取当前用户和 session
-    const getSession = async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession()
-        
-        if (session) {
-          setUser(session.user)
-          setToken(session.access_token)
-        } else {
-          // 未登录，重定向到登录页
-          router.push('/login')
-        }
-      } catch (error) {
-        console.error('获取 session 失败:', error)
+    const auth = getFirebaseAuth()
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setToken(null)
+        setUserEmail(null)
+        setUserUid(null)
+        setLoading(false)
         router.push('/login')
+        return
+      }
+      setUserEmail(user.email ?? null)
+      setUserUid(user.uid)
+      try {
+        setToken(await user.getIdToken())
+      } catch (e) {
+        setToken(null)
       } finally {
         setLoading(false)
       }
-    }
-
-    getSession()
-
-    // 监听认证状态变化
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        console.log('Auth state changed:', event)
-        
-        if (session) {
-          setUser(session.user)
-          setToken(session.access_token)
-        } else {
-          setUser(null)
-          setToken(null)
-          router.push('/login')
-        }
-      }
-    )
-
-    return () => {
-      subscription.unsubscribe()
-    }
-  }, [router, supabase])
+    })
+    return () => unsubscribe()
+  }, [router])
 
   useEffect(() => {
     if (token) fetchReceiptList()
@@ -387,7 +368,7 @@ export default function DeveloperDashboardPage() {
     )
   }
 
-  if (!user || !developerAllowed) {
+  if (!token || !developerAllowed) {
     return null
   }
 
@@ -401,11 +382,11 @@ export default function DeveloperDashboardPage() {
             <div className="space-y-2 text-sm">
               <p>
                 <span className="text-gray-600">Email: </span>
-                <span className="font-medium break-all">{user.email}</span>
+                <span className="font-medium break-all">{userEmail}</span>
               </p>
               <p>
                 <span className="text-gray-600">User ID: </span>
-                <span className="font-mono text-xs break-all">{user.id}</span>
+                <span className="font-mono text-xs break-all">{userUid}</span>
               </p>
               <details className="pt-2">
                 <summary className="cursor-pointer text-blue-600 hover:text-blue-700 min-h-[44px] flex items-center sm:min-h-0">View JWT Token (for testing)</summary>
@@ -463,6 +444,17 @@ export default function DeveloperDashboardPage() {
             <button
               onClick={() => { setUploadResult(null); setUploadError(null) }}
               className="text-sm text-green-700 hover:underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+        {uploadResult && uploadResult.success === false && uploadResult.error === 'duplicate_receipt' && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+            <span className="text-red-800 text-sm">这张单子已经上传过。如果有错误，请删掉现有的小票并重新拍摄上传。</span>
+            <button
+              onClick={() => { setUploadResult(null); setUploadError(null) }}
+              className="text-sm text-red-700 hover:underline"
             >
               Dismiss
             </button>

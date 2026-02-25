@@ -5,16 +5,15 @@ All payment types extracted from receipts must be normalized to one of these cat
 """
 from typing import List, Dict, Optional
 
-# Valid payment type categories
+# Valid payment type categories (used for By payment card aggregation; keep consistent)
 VALID_PAYMENT_TYPES = [
     "Visa",
-    "Master",
-    "American Express",
+    "MasterCard",
+    "AmEx",
     "Discover",
-    "Cash",
     "Gift Card",
-    "Others",
-    "Unknown"
+    "Cash",
+    "Other",
 ]
 
 # Payment type mapping: keywords -> normalized type
@@ -24,33 +23,26 @@ PAYMENT_TYPE_MAPPING: Dict[str, str] = {
     "visa card": "Visa",
     "visa debit": "Visa",
     "visa credit": "Visa",
-    
-    # Mastercard
-    "master": "Master",
-    "mastercard": "Master",
-    "master card": "Master",
-    "mc": "Master",
-    
-    # American Express
-    "american express": "American Express",
-    "amex": "American Express",
-    "americanexpress": "American Express",
-    
+    # MasterCard
+    "master": "MasterCard",
+    "mastercard": "MasterCard",
+    "master card": "MasterCard",
+    "mc": "MasterCard",
+    # AmEx
+    "american express": "AmEx",
+    "amex": "AmEx",
+    "americanexpress": "AmEx",
+    "american express credit": "AmEx",
     # Discover
     "discover": "Discover",
     "discover card": "Discover",
-    
     # Cash
     "cash": "Cash",
-    
     # Gift Card
     "gift card": "Gift Card",
     "giftcard": "Gift Card",
     "gift": "Gift Card",
     "store card": "Gift Card",
-    
-    # Others (for other payment methods that don't fit above categories)
-    # Examples: Debit, EBT, PayPal, etc.
 }
 
 
@@ -65,7 +57,7 @@ def normalize_payment_type(payment_method: Optional[str]) -> str:
         Normalized payment type (one of VALID_PAYMENT_TYPES)
     """
     if not payment_method:
-        return "Unknown"
+        return "Other"
     
     # Convert to lowercase for matching
     payment_lower = payment_method.lower().strip()
@@ -80,12 +72,11 @@ def normalize_payment_type(payment_method: Optional[str]) -> str:
             return normalized_type
     
     # If no match found, check if it's a known "other" type
-    other_keywords = ["debit", "ebt", "paypal", "apple pay", "google pay", "venmo", "zelle"]
+    other_keywords = ["debit", "ebt", "paypal", "apple pay", "google pay", "venmo", "zelle", "credit", "card"]
     if any(keyword in payment_lower for keyword in other_keywords):
-        return "Others"
+        return "Other"
     
-    # Default to Unknown if no match
-    return "Unknown"
+    return "Other"
 
 
 def is_valid_payment_type(payment_type: str) -> bool:

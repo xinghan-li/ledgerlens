@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { createClient } from '@/lib/supabase'
+import { getFirebaseAuth } from '@/lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 
@@ -158,10 +159,11 @@ export default function FailedReceiptEditPage() {
   }, [imageObjectUrl])
 
   useEffect(() => {
-    const supabase = createClient()
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setToken(session?.access_token ?? null)
+    const auth = getFirebaseAuth()
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setToken(user ? await user.getIdToken() : null)
     })
+    return () => unsubscribe()
   }, [])
 
   useEffect(() => {

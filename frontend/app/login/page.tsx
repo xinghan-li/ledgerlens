@@ -1,9 +1,10 @@
 'use client'
 
 import { useState, useEffect, Suspense } from 'react'
-import { createClient } from '@/lib/supabase'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
+import { getFirebaseAuth } from '@/lib/firebase'
+import { sendSignInLinkToEmail } from 'firebase/auth'
 
 function LoginForm() {
   const searchParams = useSearchParams()
@@ -11,13 +12,20 @@ function LoginForm() {
   const [loading, setLoading] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (!mounted) return
     const urlError = searchParams.get('error')
-    if (urlError === 'auth_failed') {
-      setError('登录失败：Magic Link 可能已过期或已使用。请重新请求登录链接。')
+    const errorCode = searchParams.get('error_code')
+    if (urlError === 'auth_failed' || errorCode === 'otp_expired' || urlError === 'access_denied') {
+      setError('登录链接已过期或已使用（每个链接仅能使用一次）。请在下方重新输入邮箱获取新链接。')
     }
-  }, [searchParams])
+  }, [mounted, searchParams])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -25,28 +33,19 @@ function LoginForm() {
     setError(null)
 
     try {
-      const supabase = createClient()
-      // 使用 NEXT_PUBLIC_APP_URL 或当前页面 origin，保证手机点邮件链接时跳回正确 host（如 10.0.0.51:3000）
-      const baseUrl =
-        (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_APP_URL) ||
-        (typeof window !== 'undefined' ? window.location.origin : '')
-      const redirectTo = `${baseUrl.replace(/\/$/, '')}/auth/callback`
-
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          emailRedirectTo: redirectTo,
-        },
-      })
-
-      if (error) {
-        setError(error.message)
-        console.error('登录错误:', error)
-      } else {
-        setSent(true)
+      const origin = window.location.origin
+      const actionCodeSettings = {
+        url: `${origin.replace(/\/$/, '')}/auth/callback`,
+        handleCodeInApp: true,
       }
-    } catch (err) {
-      setError('发生未知错误，请重试')
+
+      const auth = getFirebaseAuth()
+      await sendSignInLinkToEmail(auth, email, actionCodeSettings)
+      window.localStorage.setItem('emailForSignIn', email)
+      setSent(true)
+    } catch (err: unknown) {
+      const msg = err && typeof err === 'object' && 'message' in err ? String((err as { message: string }).message) : '发生未知错误，请重试'
+      setError(msg)
       console.error('登录异常:', err)
     } finally {
       setLoading(false)

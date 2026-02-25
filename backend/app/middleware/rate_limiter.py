@@ -3,7 +3,7 @@ Rate Limiter Middleware
 
 限流规则：
 - super_admin 和 admin: 无限制
-- 其他所有 user_class (premium, free, 未来的新等级): 每分钟 10 次
+- 其他所有 user_class (premium, free 等): 每分钟 5 次，且每小时不超过 20 次
 
 使用内存存储（适合单实例部署）。多实例部署时应改用 Redis。
 """
@@ -162,8 +162,10 @@ class RateLimiter:
             }
 
 
-# 全局 rate limiter 实例
-_rate_limiter = RateLimiter(max_requests=10, window_seconds=60)
+# 全局 rate limiter 实例：每分钟 5 次
+_rate_limiter_per_min = RateLimiter(max_requests=5, window_seconds=60)
+# 每小时 20 次
+_rate_limiter_per_hour = RateLimiter(max_requests=20, window_seconds=3600)
 
 # 用户等级缓存（避免频繁查询数据库）
 # 格式: {user_id: (user_class, expire_time)}
@@ -172,9 +174,25 @@ _user_class_cache_lock = Lock()
 _USER_CLASS_CACHE_TTL = 300  # 5 分钟 TTL
 
 
+def get_rate_limiter_per_min() -> RateLimiter:
+    """获取每分钟限流器"""
+    return _rate_limiter_per_min
+
+
+def get_rate_limiter_per_hour() -> RateLimiter:
+    """获取每小时限流器"""
+    return _rate_limiter_per_hour
+
+
 def get_rate_limiter() -> RateLimiter:
-    """获取全局 rate limiter 实例"""
-    return _rate_limiter
+    """兼容旧用法：返回每分钟限流器"""
+    return _rate_limiter_per_min
+
+
+def reset_workflow_rate_limit(user_id: str):
+    """重置某用户的 workflow 限流记录（分钟+小时）"""
+    _rate_limiter_per_min.reset_user(user_id)
+    _rate_limiter_per_hour.reset_user(user_id)
 
 
 def _get_user_class_cached(user_id: str) -> str:
@@ -266,43 +284,68 @@ async def check_workflow_rate_limit(user_id: str = Depends(get_current_user)) ->
             logger.debug(f"Rate limit bypassed for {user_class} user {user_id}")
             return user_id
         
-        # 3. 其他所有等级应用限流
-        rate_limiter = get_rate_limiter()
-        is_allowed, current_count, remaining = rate_limiter.check_rate_limit(user_id)
+        # 3. 其他所有等级应用限流：每分钟 5 次 + 每小时 20 次
+        lim_min = get_rate_limiter_per_min()
+        lim_hour = get_rate_limiter_per_hour()
+        ok_min, cur_min, rem_min = lim_min.check_rate_limit(user_id)
+        ok_hour, cur_hour, rem_hour = lim_hour.check_rate_limit(user_id)
         
-        if not is_allowed:
-            # 获取重置时间
-            stats = rate_limiter.get_stats(user_id)
+        if not ok_min:
+            stats = lim_min.get_stats(user_id)
             reset_at = stats.get("reset_at")
             reset_in = int(reset_at - time.time()) if reset_at else 60
-            
             logger.warning(
-                f"Rate limit exceeded for user {user_id} ({user_class}): "
-                f"{current_count}/{rate_limiter.max_requests} requests in {rate_limiter.window_seconds}s"
+                f"Rate limit (per minute) exceeded for user {user_id} ({user_class}): "
+                f"{cur_min}/{lim_min.max_requests}"
             )
-            
             raise HTTPException(
                 status_code=429,
                 detail={
                     "error": "Rate limit exceeded",
-                    "message": f"Too many requests. Limit: {rate_limiter.max_requests} per minute",
-                    "current_count": current_count,
-                    "max_requests": rate_limiter.max_requests,
+                    "message": f"Too many uploads. Limit: {lim_min.max_requests} per minute, {lim_hour.max_requests} per hour.",
+                    "current_count_min": cur_min,
+                    "max_per_minute": lim_min.max_requests,
+                    "max_per_hour": lim_hour.max_requests,
                     "reset_in_seconds": reset_in,
                     "user_class": user_class
                 },
                 headers={
-                    "X-RateLimit-Limit": str(rate_limiter.max_requests),
+                    "X-RateLimit-Limit": str(lim_min.max_requests),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(int(reset_at)) if reset_at else "",
+                    "Retry-After": str(reset_in)
+                }
+            )
+        if not ok_hour:
+            stats = lim_hour.get_stats(user_id)
+            reset_at = stats.get("reset_at")
+            reset_in = int(reset_at - time.time()) if reset_at else 3600
+            logger.warning(
+                f"Rate limit (per hour) exceeded for user {user_id} ({user_class}): "
+                f"{cur_hour}/{lim_hour.max_requests}"
+            )
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "Rate limit exceeded",
+                    "message": f"Hourly limit reached. You can upload up to {lim_hour.max_requests} receipts per hour.",
+                    "current_count_hour": cur_hour,
+                    "max_per_minute": lim_min.max_requests,
+                    "max_per_hour": lim_hour.max_requests,
+                    "reset_in_seconds": reset_in,
+                    "user_class": user_class
+                },
+                headers={
+                    "X-RateLimit-Limit": str(lim_hour.max_requests),
                     "X-RateLimit-Remaining": "0",
                     "X-RateLimit-Reset": str(int(reset_at)) if reset_at else "",
                     "Retry-After": str(reset_in)
                 }
             )
         
-        # 4. 添加 rate limit 信息到响应头（通过 logger 记录，实际响应头需要在 endpoint 中设置）
         logger.info(
             f"Rate limit check passed for user {user_id} ({user_class}): "
-            f"{current_count}/{rate_limiter.max_requests}, remaining: {remaining}"
+            f"min {cur_min}/{lim_min.max_requests}, hour {cur_hour}/{lim_hour.max_requests}"
         )
         
         return user_id
@@ -342,32 +385,18 @@ def clear_user_class_cache(user_id: Optional[str] = None):
 
 def add_rate_limit_headers(user_id: str) -> Dict[str, str]:
     """
-    生成 rate limit 响应头（可选）
-    
-    返回格式符合 RFC 6585 和 GitHub API 标准：
-    - X-RateLimit-Limit: 最大请求数
-    - X-RateLimit-Remaining: 剩余请求数
-    - X-RateLimit-Reset: 重置时间（Unix timestamp）
-    
-    Args:
-        user_id: 用户 ID
-        
-    Returns:
-        响应头字典
-        
-    Usage:
-        headers = add_rate_limit_headers(user_id)
-        return JSONResponse(content=data, headers=headers)
+    生成 rate limit 响应头（可选）；取分钟与小时中更紧的 remaining。
     """
-    rate_limiter = get_rate_limiter()
-    stats = rate_limiter.get_stats(user_id)
-    
+    lim_min = get_rate_limiter_per_min()
+    lim_hour = get_rate_limiter_per_hour()
+    stats_min = lim_min.get_stats(user_id)
+    stats_hour = lim_hour.get_stats(user_id)
+    remaining = min(stats_min["remaining"], stats_hour["remaining"])
     headers = {
-        "X-RateLimit-Limit": str(stats["max_requests"]),
-        "X-RateLimit-Remaining": str(stats["remaining"]),
+        "X-RateLimit-Limit": str(lim_min.max_requests),
+        "X-RateLimit-Limit-Hour": str(lim_hour.max_requests),
+        "X-RateLimit-Remaining": str(remaining),
     }
-    
-    if stats.get("reset_at"):
-        headers["X-RateLimit-Reset"] = str(int(stats["reset_at"]))
-    
+    if stats_min.get("reset_at"):
+        headers["X-RateLimit-Reset"] = str(int(stats_min["reset_at"]))
     return headers

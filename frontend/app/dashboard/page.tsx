@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
-import type { User } from '@supabase/supabase-js'
+import { getFirebaseAuth, getAuthToken } from '@/lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import DataAnalysisSection from './DataAnalysisSection'
 import { CameraCaptureButton } from './camera'
 
@@ -20,8 +20,8 @@ type ReceiptListItem = {
 }
 
 export default function DashboardPage() {
-  const [user, setUser] = useState<User | null>(null)
   const [token, setToken] = useState<string | null>(null)
+  const [userEmail, setUserEmail] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [uploadWorkingHard, setUploadWorkingHard] = useState(false)
@@ -60,7 +60,6 @@ export default function DashboardPage() {
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
   const router = useRouter()
-  const supabase = createClient()
 
   function formatAddressMultiLine(addr: string): string {
     if (!addr || addr.includes('\n')) return addr || ''
@@ -168,43 +167,28 @@ export default function DashboardPage() {
   }, [token])
 
   useEffect(() => {
-    // 获取当前用户和 session
-    const getSession = async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession()
-        if (session) {
-          setUser(session.user)
-          setToken(session.access_token)
-        } else {
-          router.push('/login')
-        }
-      } catch (error) {
-        console.error('获取 session 失败:', error)
+    const auth = getFirebaseAuth()
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setToken(null)
+        setUserEmail(null)
+        setLoading(false)
         router.push('/login')
+        return
+      }
+      setUserEmail(user.email ?? null)
+      try {
+        const t = await user.getIdToken()
+        setToken(t)
+      } catch (e) {
+        console.error('getIdToken failed:', e)
+        setToken(null)
       } finally {
         setLoading(false)
       }
-    }
-
-    getSession()
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        if (session) {
-          setUser(session.user)
-          setToken(session.access_token)
-        } else {
-          setUser(null)
-          setToken(null)
-          router.push('/login')
-        }
-      }
-    )
-
-    return () => {
-      subscription.unsubscribe()
-    }
-  }, [router, supabase])
+    })
+    return () => unsubscribe()
+  }, [router])
 
   useEffect(() => {
     if (token) fetchReceiptList()
@@ -338,8 +322,9 @@ export default function DashboardPage() {
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
           setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
-        } else if (error.message.includes('Failed to fetch')) {
-          setUploadError('Cannot connect to backend. Check:\n1. Backend is running at ' + (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000') + '\n2. Firewall\n3. CORS')
+        } else if (error.message.includes('Failed to fetch') || error.message === 'Load failed' || error.message === 'Load failed.') {
+          const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+          setUploadError('无法连接后端。若用手机通过 ngrok 访问：请把后端也用 ngrok 暴露，并在前端 .env.local 中设置 NEXT_PUBLIC_API_URL 为后端的 ngrok 地址。当前 API 地址：' + base)
         } else {
           setUploadError(error.message)
         }
@@ -370,7 +355,7 @@ export default function DashboardPage() {
     )
   }
 
-  if (!user) {
+  if (!token) {
     return null
   }
 
@@ -380,7 +365,7 @@ export default function DashboardPage() {
         {/* Customer welcome: email only + upload & camera */}
         <div className="bg-white rounded-xl shadow p-4 sm:p-6 mb-6 sm:mb-8 flex flex-col sm:flex-row sm:flex-wrap sm:items-start sm:justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <h2 className="text-lg sm:text-xl font-semibold mb-1 sm:mb-2">Welcome back, {user.email}</h2>
+            <h2 className="text-lg sm:text-xl font-semibold mb-1 sm:mb-2">Welcome back, {userEmail}</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <input
@@ -457,8 +442,22 @@ export default function DashboardPage() {
             </button>
           </div>
         )}
+        {/* 重复上传：明确提示 */}
+        {uploadResult && uploadResult.success === false && uploadResult.error === 'duplicate_receipt' && (
+          <div className="mb-4 p-3 sm:p-4 bg-red-50 border border-red-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <span className="text-red-800 text-sm sm:text-base min-w-0">
+              这张单子已经上传过。如果有错误，请删掉现有的小票并重新拍摄上传。
+            </span>
+            <button
+              onClick={() => { setUploadResult(null); setUploadError(null) }}
+              className="text-sm text-red-700 hover:underline self-start sm:self-center min-h-[44px] sm:min-h-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {/* 失败/需人工：bookkeeper 升级提示 */}
-        {(uploadError || (uploadResult && uploadResult.success === false)) && (
+        {(uploadError || (uploadResult && uploadResult.success === false && uploadResult.error !== 'duplicate_receipt')) && (
           <div className="mb-4 p-3 sm:p-4 bg-amber-50 border border-amber-200 rounded-lg">
             <p className="text-amber-900 font-medium text-sm sm:text-base mb-1">The bookkeeper had questions and escalated.</p>
             <p className="text-amber-800 text-sm">You can close this page and come back later — we’ll have it ready when they’re done.</p>
