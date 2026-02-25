@@ -49,19 +49,22 @@
 
 说明首次 Firebase 登录时邮箱匹配失败（例如大小写不一致），后端新建了一个用户，旧小票还在「旧 user_id」下。一次性修复：
 
-1. 在 Supabase **SQL Editor** 里查两个用户（替换成你的邮箱）：
+1. 在 Supabase **SQL Editor** 里查两个用户（将 `your_email@example.com` 替换成你的邮箱）：
    ```sql
    SELECT id, email, firebase_uid,
           (SELECT COUNT(*) FROM record_summaries r WHERE r.user_id = u.id) AS receipt_count
    FROM users u
-   WHERE LOWER(TRIM(email)) = LOWER('xinghan.sde@gmail.com');
+   WHERE LOWER(TRIM(email)) = LOWER('your_email@example.com');
    ```
 2. 记下：**有 receipt_count 的那个**是旧用户（`old_id`），**有 firebase_uid 且 receipt_count=0** 的是这次新建的（`new_id`），以及旧用户对应的 `firebase_uid` 若为空，需要把当前 Firebase UID 绑到旧用户上。
 3. 当前 Firebase UID：在第一步的查询结果里，**新用户**那一行的 `firebase_uid` 就是（或从 Firebase Console → Authentication → Users 里该邮箱用户的 **User UID** 复制）。
-4. 把 Firebase 绑到旧用户、解绑新用户（替换下面的 UUID 和 Firebase UID）：
+4. 把 Firebase 绑到旧用户、解绑新用户（将下面三处占位符替换为你在步骤 1–3 记下的实际值）：
    ```sql
-   UPDATE users SET firebase_uid = NULL WHERE id = '新用户UUID';
-   UPDATE users SET firebase_uid = '当前Firebase的UID' WHERE id = '旧用户UUID';
+   -- 将 <NEW_USER_UUID> 换为步骤 1 查询结果里 receipt_count=0 的那行的 id
+   -- 将 <OLD_USER_UUID> 换为有 receipt_count 的那行的 id
+   -- 将 <FIREBASE_UID> 换为步骤 3 的 Firebase User UID
+   UPDATE users SET firebase_uid = NULL WHERE id = '<NEW_USER_UUID>';
+   UPDATE users SET firebase_uid = '<FIREBASE_UID>' WHERE id = '<OLD_USER_UUID>';
    ```
 5. 执行完后**退出登录再重新用邮件链接登录**，应会命中旧用户，小票和 Data Analysis 恢复正常。
 
