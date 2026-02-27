@@ -73,7 +73,13 @@ class Settings(BaseSettings):
         )
     )
 
-    
+    # Firebase (optional; when set, backend accepts Firebase ID tokens and find-or-creates users by firebase_uid)
+    firebase_service_account_path: Optional[str] = Field(
+        default=None,
+        alias="FIREBASE_SERVICE_ACCOUNT_PATH",
+        description="Path to Firebase service account JSON (or set GOOGLE_APPLICATION_CREDENTIALS to same file)"
+    )
+
     # Application settings
     env: str = Field(
         default="local",

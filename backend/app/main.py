@@ -769,7 +769,7 @@ async def process_receipt_workflow_endpoint(
     
     Rate Limit:
     - super_admin and admin: No limit
-    - Other user classes: 10 requests per minute
+    - Other user classes: 5 per minute, 20 per hour
     
     Workflow:
     1. Google Document AI OCR
@@ -817,6 +817,12 @@ async def process_receipt_workflow_endpoint(
             mime_type=mime_type,
             user_id=user_id  # Pass authenticated user_id
         )
+        
+        if result.get("error") == "not_a_receipt":
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("message", "Uploaded image does not appear to be a receipt.")
+            )
         
         logger.info(f"Workflow completed for {file.filename}: status={result.get('status')}")
         

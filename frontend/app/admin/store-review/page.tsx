@@ -1,7 +1,8 @@
 'use client'
 
 import { Fragment, useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase'
+import { getFirebaseAuth } from '@/lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -56,10 +57,11 @@ export default function StoreReviewPage() {
   const [cardPhone, setCardPhone] = useState<Record<string, string>>({})
 
   useEffect(() => {
-    const supabase = createClient()
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setToken(session?.access_token ?? null)
+    const auth = getFirebaseAuth()
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setToken(user ? await user.getIdToken() : null)
     })
+    return () => unsubscribe()
   }, [])
 
   const fetchList = async () => {
@@ -72,12 +74,12 @@ export default function StoreReviewPage() {
       const res = await fetch(`${apiUrl}/api/admin/store-review?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (!res.ok) throw new Error(res.status === 403 ? '无权限' : await res.text())
+      if (!res.ok) throw new Error(res.status === 403 ? 'Forbidden' : await res.text())
       const data = await res.json()
       setRows(data.data || [])
       setTotal(data.total ?? 0)
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载失败')
+      setError(e instanceof Error ? e.message : 'Failed to load')
     } finally {
       setLoading(false)
     }
@@ -114,7 +116,7 @@ export default function StoreReviewPage() {
       if (!res.ok) throw new Error(await res.text())
       fetchList()
     } catch (e) {
-      setError(e instanceof Error ? e.message : '更新失败')
+      setError(e instanceof Error ? e.message : 'Update failed')
     }
   }
 
@@ -145,9 +147,9 @@ export default function StoreReviewPage() {
       const asNewChain = approveAsNewChain[id] !== false
       const addAsLocationOfChainId = asNewChain ? undefined : (selectedChainId[id] || row.suggested_chain_id || undefined)
       if (!asNewChain && !addAsLocationOfChainId) {
-        throw new Error('请选择“新建 chain”或“归入已有 chain”')
+        throw new Error('Please choose "Create new chain" or "Assign to existing chain"')
       }
-      if (asNewChain && !chainName) throw new Error('新建 chain 时请填写 chain 名称')
+      if (asNewChain && !chainName) throw new Error('Please enter a chain name when creating a new chain')
       const patchPayload: Record<string, unknown> = {}
       if (chainName !== (row.raw_name ?? '')) patchPayload.raw_name = chainName
       if (Object.keys(patchPayload).length > 0) {
@@ -177,7 +179,7 @@ export default function StoreReviewPage() {
         body: JSON.stringify(body),
       })
       const data = res.ok ? await res.json().catch(() => ({})) : await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Approve 失败')
+      if (!res.ok) throw new Error(data.detail || 'Approve failed')
       setEditedRawName((p) => { const n = { ...p }; delete n[id]; return n })
       setEditedNormalizedName((p) => { const n = { ...p }; delete n[id]; return n })
       setApproveAsNewChain((p) => { const n = { ...p }; delete n[id]; return n })
@@ -193,7 +195,7 @@ export default function StoreReviewPage() {
       setExpandedId(null)
       fetchList()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Approve 失败')
+      setError(e instanceof Error ? e.message : 'Approve failed')
     } finally {
       setApprovingId(null)
     }
@@ -214,7 +216,7 @@ export default function StoreReviewPage() {
       setRejectingId(null)
       fetchList()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Reject 失败')
+      setError(e instanceof Error ? e.message : 'Reject failed')
     } finally {
       setRejectingId(null)
     }
@@ -226,31 +228,31 @@ export default function StoreReviewPage() {
   }
 
   if (!token) {
-    return <div className="text-center py-8 text-gray-500">请先登录</div>
+    return <div className="text-center py-8 text-gray-500">Please sign in first.</div>
   }
 
   return (
     <div>
-      <h2 className="text-lg font-semibold mb-4">门店审核 (Store Review)</h2>
+      <h2 className="text-lg font-semibold mb-4">Store Review</h2>
       <div className="mb-4 flex gap-4 items-center flex-wrap">
         <label className="flex items-center gap-2">
-          状态：
+          Status:
           <select
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value); setOffset(0) }}
             className="border rounded px-2 py-1"
           >
-            <option value="">全部</option>
+            <option value="">All</option>
             <option value="pending">pending</option>
             <option value="approved">approved</option>
             <option value="rejected">rejected</option>
           </select>
         </label>
-        <span className="text-sm text-gray-500">共 {total} 条</span>
+        <span className="text-sm text-gray-500">{total} total</span>
       </div>
       {error && <div className="mb-4 p-2 bg-red-100 text-red-700 rounded text-sm">{error}</div>}
       {loading ? (
-        <p className="text-gray-500">加载中...</p>
+        <p className="text-gray-500">Loading…</p>
       ) : (
         <div className="overflow-x-auto bg-white rounded-lg shadow">
           <table className="min-w-full divide-y divide-gray-200 text-sm">
@@ -262,7 +264,7 @@ export default function StoreReviewPage() {
                 <th className="px-3 py-2 text-left">address</th>
                 <th className="px-3 py-2 text-left">source</th>
                 <th className="px-3 py-2 text-left">status</th>
-                <th className="px-3 py-2 text-left">操作</th>
+                <th className="px-3 py-2 text-left">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
@@ -320,7 +322,7 @@ export default function StoreReviewPage() {
                         <button
                           type="button"
                           className="p-1 rounded hover:bg-gray-200"
-                          aria-label={expandedId === r.id ? '收起' : '展开'}
+                          aria-label={expandedId === r.id ? 'Collapse' : 'Expand'}
                           onClick={() => {
                             const next = expandedId === r.id ? null : r.id
                             setExpandedId(next)
@@ -338,7 +340,7 @@ export default function StoreReviewPage() {
                           className="px-2 py-1 border rounded text-gray-600"
                           onClick={() => handlePatch(r.id, { status: 'pending' })}
                         >
-                          重开
+                          Reopen
                         </button>
                       )}
                     </td>
@@ -347,12 +349,12 @@ export default function StoreReviewPage() {
                     <tr>
                       <td colSpan={7} className="px-0 py-0 bg-gray-50">
                         <div className="p-4 border-t border-b border-gray-200">
-                          <p className="text-sm font-medium text-gray-700 mb-3">插入 store_chains / store_locations 的预填信息，确认后 Approve</p>
+                          <p className="text-sm font-medium text-gray-700 mb-3">Pre-filled store_chains / store_locations — confirm then Approve.</p>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                             <div className="space-y-2">
-                              <p className="text-xs font-medium text-gray-500">store_chains（新建 chain 时）</p>
+                              <p className="text-xs font-medium text-gray-500">store_chains (when creating new chain)</p>
                               <div className="p-3 bg-white rounded border space-y-2 mb-2">
-                                <span className="text-xs font-medium text-gray-500">操作</span>
+                                <span className="text-xs font-medium text-gray-500">Action</span>
                                 <div className="flex flex-col gap-2">
                                   <label className="flex items-center gap-1">
                                     <input
@@ -360,7 +362,7 @@ export default function StoreReviewPage() {
                                       checked={approveAsNewChain[r.id] !== false}
                                       onChange={() => setApproveAsNewChain((p) => ({ ...p, [r.id]: true }))}
                                     />
-                                    新建 chain
+                                    Create new chain
                                   </label>
                                   <label className="flex items-center gap-1">
                                     <input
@@ -368,7 +370,7 @@ export default function StoreReviewPage() {
                                       checked={approveAsNewChain[r.id] === false}
                                       onChange={() => setApproveAsNewChain((p) => ({ ...p, [r.id]: false }))}
                                     />
-                                    归入已有 chain
+                                    Assign to existing chain
                                   </label>
                                   {approveAsNewChain[r.id] === false && (
                                     <select
@@ -376,7 +378,7 @@ export default function StoreReviewPage() {
                                       value={selectedChainId[r.id] ?? r.suggested_chain_id ?? ''}
                                       onChange={(e) => setSelectedChainId((p) => ({ ...p, [r.id]: e.target.value }))}
                                     >
-                                      <option value="">选择 chain</option>
+                                      <option value="">Select chain</option>
                                       {chains.map((c) => (
                                         <option key={c.id} value={c.id}>{c.name}</option>
                                       ))}
@@ -384,7 +386,7 @@ export default function StoreReviewPage() {
                                   )}
                                   {r.suggested_chain_id != null && (
                                     <span className="text-xs text-gray-500">
-                                      AI 建议: {r.suggested_chain_name ?? r.suggested_chain_id}
+                                      AI suggestion: {r.suggested_chain_name ?? r.suggested_chain_id}
                                       {r.confidence_score != null && ` (${(r.confidence_score * 100).toFixed(0)}%)`}
                                     </span>
                                   )}
@@ -414,10 +416,10 @@ export default function StoreReviewPage() {
                             <div className="space-y-2">
                               <p className="text-xs font-medium text-gray-500">store_locations</p>
                               <div>
-                                <label className="block text-xs text-gray-500">门店名称 (name)</label>
+                                <label className="block text-xs text-gray-500">Store name (name)</label>
                                 <input
                                   className="border rounded px-2 py-1 w-full"
-                                  placeholder="门店名称"
+                                  placeholder="Store name"
                                   value={editedLocationName[r.id] ?? r.raw_name ?? ''}
                                   onChange={(e) => setEditedLocationName((p) => ({ ...p, [r.id]: e.target.value }))}
                                 />
@@ -477,7 +479,7 @@ export default function StoreReviewPage() {
                                 </div>
                               </div>
                               <div>
-                                <label className="block text-xs text-gray-500">电话 (phone)</label>
+                                <label className="block text-xs text-gray-500">Phone</label>
                                 <input
                                   className="border rounded px-2 py-1 w-full"
                                   placeholder="xxx-xxx-xxxx"
@@ -515,10 +517,10 @@ export default function StoreReviewPage() {
       {total > limit && (
         <div className="mt-4 flex gap-2">
           <button className="px-3 py-1 border rounded disabled:opacity-50" disabled={offset === 0} onClick={() => setOffset((o) => Math.max(0, o - limit))}>
-            上一页
+            Previous
           </button>
           <button className="px-3 py-1 border rounded disabled:opacity-50" disabled={offset + limit >= total} onClick={() => setOffset((o) => o + limit)}>
-            下一页
+            Next
           </button>
         </div>
       )}
@@ -526,7 +528,7 @@ export default function StoreReviewPage() {
       {rejectingId && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-10">
           <div className="bg-white rounded-lg p-4 shadow max-w-md w-full mx-4">
-            <p className="font-medium mb-2">拒绝原因（可选）</p>
+            <p className="font-medium mb-2">Reject reason (optional)</p>
             <input
               className="border rounded px-2 py-1 w-full mb-4"
               value={rejectReason}
@@ -535,10 +537,10 @@ export default function StoreReviewPage() {
             />
             <div className="flex gap-2">
               <button className="px-3 py-1 bg-red-100 rounded text-red-800" onClick={() => handleReject(rejectingId)}>
-                确认拒绝
+                Confirm reject
               </button>
               <button className="px-3 py-1 border rounded" onClick={() => setRejectingId(null)}>
-                取消
+                Cancel
               </button>
             </div>
           </div>

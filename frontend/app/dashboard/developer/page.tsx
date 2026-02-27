@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
-import type { User } from '@supabase/supabase-js'
+import { getFirebaseAuth } from '@/lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import DataAnalysisSection from '../DataAnalysisSection'
 import { CameraCaptureButton } from '../camera'
 
@@ -20,8 +20,9 @@ type ReceiptListItem = {
 }
 
 export default function DeveloperDashboardPage() {
-  const [user, setUser] = useState<User | null>(null)
   const [token, setToken] = useState<string | null>(null)
+  const [userEmail, setUserEmail] = useState<string | null>(null)
+  const [userUid, setUserUid] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [developerAllowed, setDeveloperAllowed] = useState<boolean | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -168,48 +169,28 @@ export default function DeveloperDashboardPage() {
   }, [token])
 
   useEffect(() => {
-    // 获取当前用户和 session
-    const getSession = async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession()
-        
-        if (session) {
-          setUser(session.user)
-          setToken(session.access_token)
-        } else {
-          // 未登录，重定向到登录页
-          router.push('/login')
-        }
-      } catch (error) {
-        console.error('获取 session 失败:', error)
+    const auth = getFirebaseAuth()
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setToken(null)
+        setUserEmail(null)
+        setUserUid(null)
+        setLoading(false)
         router.push('/login')
+        return
+      }
+      setUserEmail(user.email ?? null)
+      setUserUid(user.uid)
+      try {
+        setToken(await user.getIdToken())
+      } catch (e) {
+        setToken(null)
       } finally {
         setLoading(false)
       }
-    }
-
-    getSession()
-
-    // 监听认证状态变化
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        console.log('Auth state changed:', event)
-        
-        if (session) {
-          setUser(session.user)
-          setToken(session.access_token)
-        } else {
-          setUser(null)
-          setToken(null)
-          router.push('/login')
-        }
-      }
-    )
-
-    return () => {
-      subscription.unsubscribe()
-    }
-  }, [router, supabase])
+    })
+    return () => unsubscribe()
+  }, [router])
 
   useEffect(() => {
     if (token) fetchReceiptList()
@@ -387,7 +368,7 @@ export default function DeveloperDashboardPage() {
     )
   }
 
-  if (!user || !developerAllowed) {
+  if (!token || !developerAllowed) {
     return null
   }
 
@@ -401,11 +382,11 @@ export default function DeveloperDashboardPage() {
             <div className="space-y-2 text-sm">
               <p>
                 <span className="text-gray-600">Email: </span>
-                <span className="font-medium break-all">{user.email}</span>
+                <span className="font-medium break-all">{userEmail}</span>
               </p>
               <p>
                 <span className="text-gray-600">User ID: </span>
-                <span className="font-mono text-xs break-all">{user.id}</span>
+                <span className="font-mono text-xs break-all">{userUid}</span>
               </p>
               <details className="pt-2">
                 <summary className="cursor-pointer text-blue-600 hover:text-blue-700 min-h-[44px] flex items-center sm:min-h-0">View JWT Token (for testing)</summary>
@@ -468,6 +449,17 @@ export default function DeveloperDashboardPage() {
             </button>
           </div>
         )}
+        {uploadResult && uploadResult.success === false && uploadResult.error === 'duplicate_receipt' && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+            <span className="text-red-800 text-sm">This receipt was already uploaded. If something is wrong, delete the existing receipt and upload a new photo.</span>
+            <button
+              onClick={() => { setUploadResult(null); setUploadError(null) }}
+              className="text-sm text-red-700 hover:underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {uploadError && (
           <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
             <span className="text-red-800 text-sm whitespace-pre-wrap">{uploadError}</span>
@@ -503,14 +495,14 @@ export default function DeveloperDashboardPage() {
                 if (!d) return r.id.slice(0, 8)
                 const date = new Date(d)
                 if (isNaN(date.getTime())) return r.id.slice(0, 8)
-                return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+                return date.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })
               }
               const monthLabels: Record<string, string> = {}
               const byMonth = receiptList.reduce<Record<string, ReceiptListItem[]>>((acc, r) => {
                 const key = getDateKey(r)
                 if (!monthLabels[key] && key !== 'Unknown') {
                   const date = new Date(r.receipt_date || r.uploaded_at || '')
-                  monthLabels[key] = date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' })
+                  monthLabels[key] = date.toLocaleDateString('en-US', { year: 'numeric', month: 'long' })
                 } else if (key === 'Unknown') monthLabels[key] = 'Unknown'
                 if (!acc[key]) acc[key] = []
                 acc[key].push(r)
@@ -786,15 +778,15 @@ export default function DeveloperDashboardPage() {
                                                   }
                                                 )
                                                 if (res.ok) {
-                                                  setCategoryUpdateMessage('已保存')
+                                                  setCategoryUpdateMessage('Saved')
                                                   await refetchReceiptDetail()
                                                   setEditingItemId(null)
                                                 } else {
                                                   const err = await res.json().catch(() => ({}))
-                                                  setCategoryUpdateMessage(err?.detail ?? '保存失败')
+                                                  setCategoryUpdateMessage(err?.detail ?? 'Save failed')
                                                 }
                                               } catch (e) {
-                                                setCategoryUpdateMessage('网络错误')
+                                                setCategoryUpdateMessage('Network error')
                                               }
                                             }
                                             return (
@@ -839,8 +831,8 @@ export default function DeveloperDashboardPage() {
                                                       ))}
                                                     </select>
                                                     <div className="flex items-center gap-0.5 w-14">
-                                                      <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200" onClick={confirmEdit} title="确认">✓</button>
-                                                      <button type="button" className="p-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300" onClick={cancelEdit} title="取消">✕</button>
+                                                      <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200" onClick={confirmEdit} title="Confirm">✓</button>
+                                                      <button type="button" className="p-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300" onClick={cancelEdit} title="Cancel">✕</button>
                                                     </div>
                                                   </>
                                                 ) : (
@@ -848,14 +840,14 @@ export default function DeveloperDashboardPage() {
                                                     <div className="truncate text-gray-800" title={c1}>{c1}</div>
                                                     <div className="truncate text-gray-800" title={c2}>{c2}</div>
                                                     <div className="truncate text-gray-800" title={c3}>{c3}</div>
-                                                    <button type="button" className="p-1 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded" onClick={startEdit} title="修改">✏️</button>
+                                                    <button type="button" className="p-1 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded" onClick={startEdit} title="Edit">✏️</button>
                                                   </>
                                                 )}
                                               </div>
                                             )
                                           })}
                                           {(categoryUpdateMessage || smartCategorizeMessage) && (
-                                            <div className={`mt-1 text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === '已保存' || (smartCategorizeMessage && smartCategorizeMessage.startsWith('Updated')) ? 'text-green-600' : 'text-red-600'}`}>
+                                            <div className={`mt-1 text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage && smartCategorizeMessage.startsWith('Updated')) ? 'text-green-600' : 'text-red-600'}`}>
                                               {categoryUpdateMessage || smartCategorizeMessage}
                                             </div>
                                           )}
@@ -912,7 +904,7 @@ export default function DeveloperDashboardPage() {
                                             <input type="date" className="border rounded px-2 py-1 text-sm" value={editReceiptDate} onChange={(e) => setEditReceiptDate(e.target.value)} />
                                           </label>
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">Purchase time (optional, 时:分)</span>
+                                            <span className="text-xs text-gray-500">Purchase time (optional, HH:MM)</span>
                                             <input type="time" className="border rounded px-2 py-1 text-sm" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} />
                                           </label>
                                           <div className="grid grid-cols-3 gap-2">
@@ -1050,7 +1042,7 @@ export default function DeveloperDashboardPage() {
                                     onClick={async (e) => {
                                       e.stopPropagation()
                                       if (!token || !r.id) return
-                                      const msg = '删除后无法恢复，确定要删除这张小票吗？\n\nThis will permanently remove this receipt. This cannot be undone.'
+                                      const msg = 'This will permanently remove this receipt. This cannot be undone. Delete anyway?'
                                       if (!confirm(msg)) return
                                       try {
                                         const res = await fetch(`${apiUrl()}/api/receipt/${r.id}`, {

@@ -135,6 +135,22 @@ def load_prompts_for_receipt_parse(
     return result
 
 
+def get_debug_prompt_system(prompt_key: str) -> Optional[str]:
+    """
+    Load the system prompt for a debug cascade step (e.g. receipt_parse_debug_ocr, receipt_parse_debug_vision).
+    Returns the combined system content or None if not found.
+    """
+    _populate_binding_cache()
+    bindings = _binding_cache.get(prompt_key, [])
+    if not bindings:
+        return None
+    parts: List[str] = []
+    for _pri, entry in bindings:
+        if entry.get("content_role") == "system" and entry.get("content"):
+            parts.append(entry["content"])
+    return "\n\n".join(parts) if parts else None
+
+
 def load_classification_prompt() -> Optional[str]:
     """
     Load the system prompt for classification (product category + size/unit inference).

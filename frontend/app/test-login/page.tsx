@@ -41,10 +41,10 @@ export default function TestLoginPage() {
       <div className="text-center space-y-4">
         <div className="text-6xl animate-spin">⏳</div>
         <h2 className="text-2xl font-bold text-gray-900">
-          正在设置测试登录...
+          Setting up test login…
         </h2>
         <p className="text-gray-600">
-          即将跳转到 Dashboard
+          Redirecting to Dashboard
         </p>
       </div>
     </div>

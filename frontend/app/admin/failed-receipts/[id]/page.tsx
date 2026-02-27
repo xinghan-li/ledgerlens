@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { createClient } from '@/lib/supabase'
+import { getFirebaseAuth } from '@/lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 
@@ -103,7 +104,7 @@ export default function FailedReceiptEditPage() {
       const res = await fetch(`${apiUrl}/api/admin/failed-receipts/${id}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (!res.ok) throw new Error(res.status === 404 ? '小票不存在' : await res.text())
+      if (!res.ok) throw new Error(res.status === 404 ? 'Receipt not found' : await res.text())
       const data: ReceiptDetail = await res.json()
       setDetail(data)
       const p = data.prefill || {}
@@ -145,7 +146,7 @@ export default function FailedReceiptEditPage() {
         }
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载失败')
+      setError(e instanceof Error ? e.message : 'Failed to load')
     } finally {
       setLoading(false)
     }
@@ -158,10 +159,11 @@ export default function FailedReceiptEditPage() {
   }, [imageObjectUrl])
 
   useEffect(() => {
-    const supabase = createClient()
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setToken(session?.access_token ?? null)
+    const auth = getFirebaseAuth()
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setToken(user ? await user.getIdToken() : null)
     })
+    return () => unsubscribe()
   }, [])
 
   useEffect(() => {
@@ -240,11 +242,11 @@ export default function FailedReceiptEditPage() {
         body: JSON.stringify({ summary, items: itemsPayload }),
       })
       const data = res.ok ? await res.json().catch(() => ({})) : await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || '提交失败')
-      setSuccessMessage('已保存，小票状态已更新为 success')
+      if (!res.ok) throw new Error(data.detail || 'Submit failed')
+      setSuccessMessage('Saved. Receipt status updated to success.')
       setTimeout(() => router.push('/admin/failed-receipts'), 1500)
     } catch (e) {
-      setError(e instanceof Error ? e.message : '提交失败')
+      setError(e instanceof Error ? e.message : 'Submit failed')
     } finally {
       setSubmitting(false)
     }
@@ -255,18 +257,18 @@ export default function FailedReceiptEditPage() {
   }
 
   if (!token) {
-    return <div className="text-center py-8 text-gray-500">请先登录</div>
+    return <div className="text-center py-8 text-gray-500">Please sign in first.</div>
   }
 
   if (loading) {
-    return <p className="text-gray-500">加载中...</p>
+    return <p className="text-gray-500">Loading…</p>
   }
 
   if (error && !detail) {
     return (
       <div>
         <p className="text-red-600">{error}</p>
-        <Link href="/admin/failed-receipts" className="mt-4 inline-block text-blue-600 hover:underline">返回列表</Link>
+        <Link href="/admin/failed-receipts" className="mt-4 inline-block text-blue-600 hover:underline">Back to list</Link>
       </div>
     )
   }
@@ -274,24 +276,24 @@ export default function FailedReceiptEditPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">手动修正小票</h2>
-        <Link href="/admin/failed-receipts" className="text-sm text-blue-600 hover:underline">← 返回列表</Link>
+        <h2 className="text-lg font-semibold">Manual receipt correction</h2>
+        <Link href="/admin/failed-receipts" className="text-sm text-blue-600 hover:underline">← Back to list</Link>
       </div>
       {detail?.failure_reason && (
         <div className="p-2 bg-amber-50 text-amber-800 rounded text-sm">
-          失败原因：{detail.failure_reason}
+          Failure reason: {detail.failure_reason}
         </div>
       )}
       {error && (
         <div className="p-2 bg-red-100 text-red-700 rounded text-sm flex items-center justify-between gap-2">
           <span>{error}</span>
-          <button type="button" className="shrink-0 text-red-700 hover:text-red-900" onClick={() => setError(null)} aria-label="关闭">×</button>
+          <button type="button" className="shrink-0 text-red-700 hover:text-red-900" onClick={() => setError(null)} aria-label="Close">×</button>
         </div>
       )}
       {successMessage && (
         <div className="p-2 bg-green-100 text-green-800 rounded text-sm flex items-center justify-between gap-2">
           <span>{successMessage}</span>
-          <button type="button" className="shrink-0 text-green-800 hover:text-green-900" onClick={() => setSuccessMessage(null)} aria-label="关闭">×</button>
+          <button type="button" className="shrink-0 text-green-800 hover:text-green-900" onClick={() => setSuccessMessage(null)} aria-label="Close">×</button>
         </div>
       )}
 
@@ -299,16 +301,16 @@ export default function FailedReceiptEditPage() {
         {/* Left: receipt image */}
         <div className="lg:col-span-1">
           <div className="bg-white rounded-lg shadow p-4 sticky top-4">
-            <p className="text-sm font-medium text-gray-700 mb-2">小票图片</p>
+            <p className="text-sm font-medium text-gray-700 mb-2">Receipt image</p>
             {(detail?.raw_file_url && imageObjectUrl) ? (
               <img src={imageObjectUrl} alt="Receipt" className="w-full border rounded object-contain max-h-[70vh]" />
             ) : detail?.raw_file_url ? (
               <div className="w-full aspect-[3/4] border rounded bg-gray-100 flex items-center justify-center text-gray-500 text-sm">
-                加载中...
+                Loading…
               </div>
             ) : (
               <div className="w-full aspect-[3/4] border rounded bg-gray-100 flex items-center justify-center text-gray-500 text-sm">
-                暂无图片
+                No image
               </div>
             )}
           </div>
@@ -317,25 +319,25 @@ export default function FailedReceiptEditPage() {
         {/* Right: form */}
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm font-medium text-gray-700 mb-3">店名 / 地址 / 收银员</p>
+            <p className="text-sm font-medium text-gray-700 mb-3">Store / Address / Cashier</p>
             <div className="grid grid-cols-1 gap-2">
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">店名</span>
+                <span className="text-xs text-gray-500">Store name</span>
                 <input className="border rounded px-2 py-1" value={storeName} onChange={(e) => setStoreName(e.target.value)} placeholder="Store name" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">地址</span>
+                <span className="text-xs text-gray-500">Address</span>
                 <input className="border rounded px-2 py-1" value={storeAddress} onChange={(e) => setStoreAddress(e.target.value)} placeholder="Address" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">收银员</span>
+                <span className="text-xs text-gray-500">Cashier</span>
                 <input className="border rounded px-2 py-1" value={cashier} onChange={(e) => setCashier(e.target.value)} placeholder="Cashier (optional)" />
               </label>
             </div>
           </div>
 
           <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm font-medium text-gray-700 mb-3">商品行（可增删）</p>
+            <p className="text-sm font-medium text-gray-700 mb-3">Item lines (add/remove)</p>
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm border-collapse">
                 <thead>
@@ -410,14 +412,14 @@ export default function FailedReceiptEditPage() {
               </table>
             </div>
             <p className="text-xs text-gray-500 mt-1">Compare Items total above with Subtotal below. Green = match.</p>
-            <button type="button" className="mt-2 px-3 py-1 border rounded text-sm bg-gray-100 hover:bg-gray-200" onClick={addRow}>+ 增加一行</button>
+            <button type="button" className="mt-2 px-3 py-1 border rounded text-sm bg-gray-100 hover:bg-gray-200" onClick={addRow}>+ Add row</button>
           </div>
 
           <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm font-medium text-gray-700 mb-3">总价与支付</p>
+            <p className="text-sm font-medium text-gray-700 mb-3">Total & payment</p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">日期</span>
+                <span className="text-xs text-gray-500">Date</span>
                 <input type="date" className="border rounded px-2 py-1" value={receiptDate} onChange={(e) => setReceiptDate(e.target.value)} />
               </label>
               <label className="flex flex-col gap-1">
@@ -437,11 +439,11 @@ export default function FailedReceiptEditPage() {
                 <input className="border rounded px-2 py-1" value={currency} onChange={(e) => setCurrency(e.target.value)} placeholder="USD" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">支付方式</span>
+                <span className="text-xs text-gray-500">Payment method</span>
                 <input className="border rounded px-2 py-1" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} placeholder="credit_card / cash" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">卡号后四位</span>
+                <span className="text-xs text-gray-500">Card last 4</span>
                 <input className="border rounded px-2 py-1" value={paymentLast4} onChange={(e) => setPaymentLast4(e.target.value)} placeholder="1234" maxLength={4} />
               </label>
             </div>

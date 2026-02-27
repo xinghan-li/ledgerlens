@@ -19,7 +19,7 @@ export default function TestUploadPage() {
 
   const handleUpload = async () => {
     if (!file) {
-      alert('请先选择文件')
+      alert('Please select a file first')
       return
     }
 
@@ -31,7 +31,7 @@ export default function TestUploadPage() {
       const { data: { session } } = await supabase.auth.getSession()
       
       if (!session) {
-        setResult('❌ 未登录')
+        setResult('❌ Not signed in')
         return
       }
 
@@ -74,14 +74,14 @@ export default function TestUploadPage() {
       }
 
       if (response.ok) {
-        setResult(`✅ 成功!\n\n${JSON.stringify(resultData, null, 2)}`)
+        setResult(`✅ Success!\n\n${JSON.stringify(resultData, null, 2)}`)
       } else {
-        setResult(`❌ 失败 (${response.status})\n\n${JSON.stringify(resultData, null, 2)}`)
+        setResult(`❌ Failed (${response.status})\n\n${JSON.stringify(resultData, null, 2)}`)
       }
 
     } catch (error) {
       console.error('错误:', error)
-      setResult(`❌ 错误: ${error instanceof Error ? error.message : String(error)}`)
+      setResult(`❌ Error: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setLoading(false)
     }
@@ -90,12 +90,12 @@ export default function TestUploadPage() {
   return (
     <div className="min-h-screen bg-gray-50 p-8">
       <div className="max-w-4xl mx-auto">
-        <h1 className="text-3xl font-bold mb-8">上传测试</h1>
+        <h1 className="text-3xl font-bold mb-8">Upload test</h1>
 
         <div className="bg-white rounded-xl shadow p-6 space-y-6">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              选择小票文件
+              Select receipt file
             </label>
             <input
               type="file"
@@ -113,13 +113,13 @@ export default function TestUploadPage() {
           {file && (
             <div className="p-4 bg-gray-50 rounded-lg">
               <p className="text-sm">
-                <strong>文件名:</strong> {file.name}
+                <strong>File name:</strong> {file.name}
               </p>
               <p className="text-sm">
-                <strong>类型:</strong> {file.type}
+                <strong>Type:</strong> {file.type}
               </p>
               <p className="text-sm">
-                <strong>大小:</strong> {(file.size / 1024).toFixed(2)} KB
+                <strong>Size:</strong> {(file.size / 1024).toFixed(2)} KB
               </p>
             </div>
           )}
@@ -129,7 +129,7 @@ export default function TestUploadPage() {
             disabled={!file || loading}
             className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-semibold"
           >
-            {loading ? '上传中...' : '上传'}
+            {loading ? 'Uploading…' : 'Upload'}
           </button>
 
           {result && (
@@ -143,7 +143,7 @@ export default function TestUploadPage() {
 
         <div className="mt-8 p-4 bg-blue-50 rounded-lg">
           <p className="text-sm text-blue-800">
-            💡 <strong>提示:</strong> 打开浏览器控制台 (F12) 查看详细日志
+            💡 <strong>Tip:</strong> Open browser console (F12) for detailed logs
           </p>
         </div>
       </div>

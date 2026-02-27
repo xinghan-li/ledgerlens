@@ -15,8 +15,17 @@ import re
 from rapidfuzz import fuzz
 
 from ..standardization.product_normalizer import normalize_name_for_storage
+from ...processors.enrichment.payment_types import normalize_payment_type
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_card_last4(raw: Optional[str]) -> Optional[str]:
+    """Extract up to 4 digits from card_last4 (e.g. '****9463' or '9463' -> '9463'). Returns None if < 4 digits."""
+    if not raw:
+        return None
+    digits = "".join(c for c in str(raw).strip() if c.isdigit())
+    return digits[-4:] if len(digits) >= 4 else None
 
 
 def _normalize_address_for_backfill(s: Optional[str]) -> str:
@@ -58,6 +67,23 @@ def _parse_rpc_count(res: Any, rpc_name: str, default: int = 0) -> int:
             return int(first.get(rpc_name, default) or default)
         return int(first) if first is not None else default
     return default
+
+
+def get_user_class(user_id: str) -> str:
+    """
+    Get user_class for a user (super_admin, admin, premium, free).
+    Used for rate limit bypass and duplicate-upload allowance.
+    """
+    if not user_id:
+        return "free"
+    supabase = _get_client()
+    try:
+        res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
+        if res.data and len(res.data) > 0:
+            return (res.data[0].get("user_class") or "free").strip()
+    except Exception as e:
+        logger.warning(f"Failed to get user_class for {user_id}: {e}")
+    return "free"
 
 
 def check_duplicate_by_hash(
@@ -194,7 +220,7 @@ def save_processing_run(
     Returns:
         run_id (UUID string)
     """
-    if stage not in ('ocr', 'llm', 'manual'):
+    if stage not in ('ocr', 'llm', 'manual', 'rule_based_cleaning'):
         raise ValueError(f"Invalid stage: {stage}")
     if status not in ('pass', 'fail'):
         raise ValueError(f"Invalid status: {status}")
@@ -289,6 +315,31 @@ def update_receipt_file_url(
     except Exception as e:
         logger.error(f"Failed to update receipt file URL: {e}")
         raise
+
+
+def save_non_receipt_reject(
+    user_id: Optional[str],
+    file_hash: Optional[str],
+    image_path: Optional[str],
+    reason: str,
+    ocr_text_snippet: Optional[str] = None,
+) -> None:
+    """
+    Save a rejected upload (failed receipt-like validation) for debug and filter tuning.
+    Table: non_receipt_rejects (see 043_non_receipt_rejects.sql).
+    """
+    supabase = _get_client()
+    try:
+        supabase.table("non_receipt_rejects").insert({
+            "user_id": user_id,
+            "file_hash": file_hash,
+            "image_path": image_path,
+            "reason": reason,
+            "ocr_text_snippet": (ocr_text_snippet[:5000] if ocr_text_snippet else None),
+        }).execute()
+        logger.info(f"Saved non_receipt_reject: user_id={user_id}, reason={reason[:80]}...")
+    except Exception as e:
+        logger.warning(f"Failed to save non_receipt_reject: {e}")
 
 
 # DEPRECATED: save_parsed_receipt is no longer used
@@ -522,8 +573,9 @@ def save_receipt_summary(
     total = receipt_data.get("total")
     fees = receipt_data.get("fees")
     currency = receipt_data.get("currency", "USD")
-    payment_method = receipt_data.get("payment_method")
-    card_last4 = receipt_data.get("card_last4")
+    # Standardize payment for consistent "By payment card" aggregation (Visa/MasterCard/AmEx/Discover/Gift Card/Cash/Other)
+    payment_method = normalize_payment_type(receipt_data.get("payment_method") or "")
+    card_last4 = _normalize_card_last4(receipt_data.get("card_last4"))
     
     if not total:
         raise ValueError("total is required in receipt_data")
@@ -705,9 +757,9 @@ def update_receipt_summary(
     if receipt_data.get("currency") is not None:
         update_payload["currency"] = receipt_data.get("currency")
     if receipt_data.get("payment_method") is not None:
-        update_payload["payment_method"] = receipt_data.get("payment_method")
+        update_payload["payment_method"] = normalize_payment_type(receipt_data.get("payment_method") or "")
     if receipt_data.get("card_last4") is not None:
-        update_payload["payment_last4"] = receipt_data.get("card_last4")
+        update_payload["payment_last4"] = _normalize_card_last4(receipt_data.get("card_last4"))
     if store_chain_id is not None:
         update_payload["store_chain_id"] = store_chain_id
     if store_location_id is not None:
@@ -1852,10 +1904,10 @@ def get_user_analytics_summary(
         store_totals[store_key]["amount_cents"] += int(s.get("total") or 0)
         store_totals[store_key]["count"] += 1
 
-        pay_method = (s.get("payment_method") or "").strip()
+        pay_method = normalize_payment_type(s.get("payment_method") or "")
         raw_last4 = (s.get("payment_last4") or "").strip()
         last4 = "".join(c for c in raw_last4 if c.isdigit())[-4:] if raw_last4 else ""
-        pay_key = f"{pay_method} ****{last4}" if (pay_method or last4) else "Unknown"
+        pay_key = f"{pay_method} ****{last4}" if (pay_method or last4) else "Other"
         if pay_key not in payment_totals:
             payment_totals[pay_key] = {"amount_cents": 0, "count": 0}
         payment_totals[pay_key]["amount_cents"] += int(s.get("total") or 0)

@@ -79,7 +79,7 @@ def extract_payment_type(payment_method: Optional[str]) -> str:
         payment_method: Raw payment method string from receipt
     
     Returns:
-        Normalized payment type (one of: Visa, Master, American Express, Discover, Cash, Gift Card, Others, Unknown)
+        Normalized payment type (one of: Visa, MasterCard, AmEx, Discover, Gift Card, Cash, Other)
     """
     return normalize_payment_type(payment_method)
 

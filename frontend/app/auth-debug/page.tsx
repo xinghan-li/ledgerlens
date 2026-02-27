@@ -53,7 +53,7 @@ export default function AuthDebugPage() {
     document.cookie.split(";").forEach((c) => {
       document.cookie = c.replace(/^ +/, "").replace(/=.*/, `=;expires=${new Date().toUTCString()};path=/`)
     })
-    alert('✅ 已清除所有 localStorage 和 Cookies')
+    alert('✅ Cleared all localStorage and cookies')
     window.location.reload()
   }
 
@@ -62,16 +62,16 @@ export default function AuthDebugPage() {
       <div className="max-w-4xl mx-auto space-y-6">
         {/* Header */}
         <div className="bg-white rounded-lg shadow p-6">
-          <h1 className="text-3xl font-bold mb-2">🔍 Auth 调试工具</h1>
-          <p className="text-gray-600">检查 Supabase 认证配置和状态</p>
+          <h1 className="text-3xl font-bold mb-2">🔍 Auth debug</h1>
+          <p className="text-gray-600">Check Supabase auth config and session</p>
           <Link href="/login" className="text-blue-600 hover:underline text-sm mt-2 inline-block">
-            ← 返回登录
+            ← Back to sign-in
           </Link>
         </div>
 
         {/* Configuration */}
         <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-bold mb-4">📋 配置信息</h2>
+          <h2 className="text-xl font-bold mb-4">📋 Configuration</h2>
           {config && (
             <div className="space-y-2 font-mono text-sm">
               <div className="flex">
@@ -106,10 +106,10 @@ export default function AuthDebugPage() {
 
         {/* Session Status */}
         <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-bold mb-4">👤 Session 状态</h2>
+          <h2 className="text-xl font-bold mb-4">👤 Session</h2>
           {session ? (
             <div className="space-y-2">
-              <div className="text-green-600 font-semibold">✅ 已登录</div>
+              <div className="text-green-600 font-semibold">✅ Signed in</div>
               <div className="bg-gray-50 p-4 rounded font-mono text-sm">
                 <div><strong>User ID:</strong> {session.user.id}</div>
                 <div><strong>Email:</strong> {session.user.email}</div>
@@ -117,7 +117,7 @@ export default function AuthDebugPage() {
               </div>
             </div>
           ) : (
-            <div className="text-gray-600">❌ 未登录</div>
+            <div className="text-gray-600">❌ Not signed in</div>
           )}
         </div>
 
@@ -131,56 +131,56 @@ export default function AuthDebugPage() {
 
         {/* Actions */}
         <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-bold mb-4">🔧 操作</h2>
+          <h2 className="text-xl font-bold mb-4">🔧 Actions</h2>
           <div className="space-x-4">
             <button
               onClick={testSupabaseConnection}
               className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
             >
-              测试 Supabase 连接
+              Test Supabase connection
             </button>
             <button
               onClick={clearAll}
               className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
             >
-              清除所有数据
+              Clear all data
             </button>
           </div>
         </div>
 
         {/* Checklist */}
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
-          <h2 className="text-xl font-bold mb-4">✅ Supabase 配置检查清单</h2>
+          <h2 className="text-xl font-bold mb-4">✅ Supabase config checklist</h2>
           <ol className="space-y-2 list-decimal list-inside">
             <li>
               Supabase Dashboard → Authentication → URL Configuration
             </li>
             <li>
-              确认 <strong>Redirect URLs</strong> 包含:
+              Ensure <strong>Redirect URLs</strong> includes:
               <div className="mt-1 ml-6 bg-white p-2 rounded font-mono text-sm">
                 {config?.redirectUrl}
               </div>
             </li>
             <li>
-              确认 <strong>Site URL</strong> 设置为:
+              Ensure <strong>Site URL</strong> is set to:
               <div className="mt-1 ml-6 bg-white p-2 rounded font-mono text-sm">
                 {config && `${window.location.origin}`}
               </div>
             </li>
             <li>
-              确认邮件模板中的 <code>{'{{ .ConfirmationURL }}'}</code> 正确
+              Ensure email template uses <code>{'{{ .ConfirmationURL }}'}</code> correctly
             </li>
             <li>
-              保存配置后等待 1-2 分钟生效
+              Wait 1–2 minutes after saving config for changes to apply
             </li>
           </ol>
         </div>
 
         {/* Documentation Link */}
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-          <h2 className="text-lg font-bold mb-2">📚 完整调试指南</h2>
+          <h2 className="text-lg font-bold mb-2">📚 Debug guide</h2>
           <p className="text-gray-700 mb-2">
-            请查看详细的故障排查文档:
+            See the troubleshooting doc:
           </p>
           <code className="bg-white px-2 py-1 rounded">
             frontend/MAGIC_LINK_DEBUG.md
