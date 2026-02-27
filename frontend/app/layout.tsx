@@ -5,8 +5,8 @@ import './globals.css'
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'LedgerLens - 智能小票识别',
-  description: '使用 AI 技术自动识别和管理您的收据',
+  title: 'LedgerLens - Smart receipt recognition',
+  description: 'Use AI to scan and manage your receipts',
 }
 
 export default function RootLayout({
@@ -15,7 +15,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="zh-CN">
+    <html lang="en">
       <body className={inter.className}>{children}</body>
     </html>
   )

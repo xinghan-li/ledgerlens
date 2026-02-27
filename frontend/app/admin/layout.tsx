@@ -48,7 +48,7 @@ export default function AdminLayout({
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="animate-spin text-6xl">⏳</div>
-          <p className="mt-4 text-gray-600">检查权限...</p>
+          <p className="mt-4 text-gray-600">Checking permissions…</p>
         </div>
       </div>
     )
@@ -58,8 +58,8 @@ export default function AdminLayout({
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
-          <p className="text-red-600 font-medium">需要 Admin 或 Super Admin 权限</p>
-          <Link href="/dashboard" className="mt-4 inline-block text-blue-600 hover:underline">返回 Dashboard</Link>
+          <p className="text-red-600 font-medium">Admin or Super Admin role required.</p>
+          <Link href="/dashboard" className="mt-4 inline-block text-blue-600 hover:underline">Back to Dashboard</Link>
         </div>
       </div>
     )
@@ -75,25 +75,25 @@ export default function AdminLayout({
               href="/admin/classification-review"
               className={`px-3 py-1 rounded ${pathname?.includes('classification-review') ? 'bg-gray-200' : 'hover:bg-gray-100'}`}
             >
-              分类审核
+              Classification Review
             </Link>
             <Link
               href="/admin/categories"
               className={`px-3 py-1 rounded ${pathname?.includes('categories') ? 'bg-gray-200' : 'hover:bg-gray-100'}`}
             >
-              分类管理
+              Categories
             </Link>
             <Link
               href="/admin/store-review"
               className={`px-3 py-1 rounded ${pathname?.includes('store-review') ? 'bg-gray-200' : 'hover:bg-gray-100'}`}
             >
-              门店审核
+              Store Review
             </Link>
             <Link
               href="/admin/failed-receipts"
               className={`px-3 py-1 rounded ${pathname?.includes('failed-receipts') ? 'bg-gray-200' : 'hover:bg-gray-100'}`}
             >
-              失败小票
+              Failed Receipts
             </Link>
             <Link href="/dashboard" className="px-3 py-1 rounded hover:bg-gray-100">Dashboard</Link>
           </nav>

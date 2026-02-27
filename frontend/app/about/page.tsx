@@ -7,10 +7,10 @@ export default function AboutPage() {
         {/* Header */}
         <div className="text-center mb-12">
           <h1 className="text-5xl font-bold mb-4 bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-cyan-600">
-            关于 LedgerLens
+            About LedgerLens
           </h1>
           <p className="text-xl text-gray-600">
-            让收据管理变得简单智能
+            Simple, smart receipt management
           </p>
         </div>
 
@@ -18,32 +18,32 @@ export default function AboutPage() {
         <div className="grid md:grid-cols-3 gap-8 mb-12">
           <div className="bg-white p-6 rounded-xl shadow-lg">
             <div className="text-4xl mb-4">🤖</div>
-            <h3 className="text-xl font-semibold mb-2">AI 识别</h3>
+            <h3 className="text-xl font-semibold mb-2">AI recognition</h3>
             <p className="text-gray-600">
-              使用最先进的 OCR 和 LLM 技术，自动识别小票上的所有信息
+              State-of-the-art OCR and LLM to extract everything from your receipts
             </p>
           </div>
 
           <div className="bg-white p-6 rounded-xl shadow-lg">
             <div className="text-4xl mb-4">⚡</div>
-            <h3 className="text-xl font-semibold mb-2">快速准确</h3>
+            <h3 className="text-xl font-semibold mb-2">Fast & accurate</h3>
             <p className="text-gray-600">
-              10 秒内完成识别，准确率超过 95%，支持多家连锁店
+              Results in seconds, high accuracy, supports many major chains
             </p>
           </div>
 
           <div className="bg-white p-6 rounded-xl shadow-lg">
             <div className="text-4xl mb-4">🔒</div>
-            <h3 className="text-xl font-semibold mb-2">安全可靠</h3>
+            <h3 className="text-xl font-semibold mb-2">Secure</h3>
             <p className="text-gray-600">
-              采用 Magic Link 登录，数据加密存储，保护您的隐私
+              Magic link sign-in, encrypted data, your privacy protected
             </p>
           </div>
         </div>
 
         {/* Supported Stores */}
         <div className="bg-white p-8 rounded-xl shadow-lg mb-12">
-          <h2 className="text-2xl font-bold mb-6 text-center">支持的商店</h2>
+          <h2 className="text-2xl font-bold mb-6 text-center">Supported stores</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-center">
             <div className="p-4 bg-gray-50 rounded-lg">
               <div className="text-2xl mb-2">🛒</div>
@@ -68,8 +68,8 @@ export default function AboutPage() {
             </div>
             <div className="p-4 bg-gray-50 rounded-lg">
               <div className="text-2xl mb-2">✨</div>
-              <p className="font-medium">更多商店</p>
-              <p className="text-xs text-gray-500">持续添加中</p>
+              <p className="font-medium">More stores</p>
+              <p className="text-xs text-gray-500">Coming soon</p>
             </div>
           </div>
         </div>
@@ -80,7 +80,7 @@ export default function AboutPage() {
             href="/login"
             className="inline-block px-8 py-4 bg-blue-600 text-white text-lg font-semibold rounded-lg hover:bg-blue-700 transition shadow-lg hover:shadow-xl"
           >
-            立即开始使用
+            Get started
           </Link>
         </div>
       </div>

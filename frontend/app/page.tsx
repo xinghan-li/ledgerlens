@@ -22,11 +22,11 @@ export default async function Home({
         </h1>
         
         <p className="text-2xl text-gray-600">
-          智能小票识别系统
+          Smart receipt recognition
         </p>
         
         <p className="text-lg text-gray-500">
-          使用 AI 技术自动识别和管理您的收据
+          Use AI to scan and manage your receipts
         </p>
         
         <div className="flex gap-4 justify-center pt-8">
@@ -34,14 +34,14 @@ export default async function Home({
             href="/login"
             className="px-8 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold"
           >
-            登录
+            Sign in
           </Link>
           
           <Link
             href="/about"
             className="px-8 py-3 border-2 border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 transition font-semibold"
           >
-            了解更多
+            Learn more
           </Link>
         </div>
       </div>

@@ -8,7 +8,7 @@ const apiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 function normalizeNetworkError(msg: string): string {
   if (msg === 'Load failed' || msg === 'Load failed.' || msg.includes('Failed to fetch')) {
     const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-    return '无法连接后端。若用手机通过 ngrok 访问：请把后端也用 ngrok 暴露，并在前端 .env.local 中设置 NEXT_PUBLIC_API_URL 为后端的 ngrok 地址。当前：' + base
+    return 'Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current: ' + base
   }
   return msg
 }
@@ -143,7 +143,7 @@ export default function CameraCaptureButton({ token, disabled, onSuccess, onErro
       if (res.ok) {
         const data = await res.json()
         if (data.success === false && data.error === 'duplicate_receipt') {
-          onError?.('这张单子已经上传过。如果有错误，请删掉现有的小票并重新拍摄上传。')
+          onError?.('This receipt was already uploaded. If something is wrong, delete the existing receipt and upload a new photo.')
           return
         }
         onSuccess?.()

@@ -54,7 +54,7 @@ export default function AdminCategoriesPage() {
       const data = await res.json()
       setList(data.data || [])
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载失败')
+      setError(e instanceof Error ? e.message : 'Failed to load')
     } finally {
       setLoading(false)
     }
@@ -75,14 +75,14 @@ export default function AdminCategoriesPage() {
       })
       const data = await res.json().catch(() => ({}))
       if (res.status === 409) {
-        setError('同名一级分类已存在')
+        setError('A category with this name already exists at this level')
         return
       }
-      if (!res.ok) throw new Error(data.detail || '创建失败')
+      if (!res.ok) throw new Error(data.detail || 'Create failed')
       setNewL1Name('')
       fetchCategories()
     } catch (e) {
-      setError(e instanceof Error ? e.message : '创建失败')
+      setError(e instanceof Error ? e.message : 'Create failed')
     }
   }
 
@@ -97,15 +97,15 @@ export default function AdminCategoriesPage() {
       })
       const data = await res.json().catch(() => ({}))
       if (res.status === 409) {
-        setError('同名二级分类已存在')
+        setError('A category with this name already exists at this level')
         return
       }
-      if (!res.ok) throw new Error(data.detail || '创建失败')
+      if (!res.ok) throw new Error(data.detail || 'Create failed')
       setNewL2Name('')
       setNewL2ParentId('')
       fetchCategories()
     } catch (e) {
-      setError(e instanceof Error ? e.message : '创建失败')
+      setError(e instanceof Error ? e.message : 'Create failed')
     }
   }
 
@@ -120,15 +120,15 @@ export default function AdminCategoriesPage() {
       })
       const data = await res.json().catch(() => ({}))
       if (res.status === 409) {
-        setError('同名三级分类已存在')
+        setError('A category with this name already exists at this level')
         return
       }
-      if (!res.ok) throw new Error(data.detail || '创建失败')
+      if (!res.ok) throw new Error(data.detail || 'Create failed')
       setNewL3Name('')
       setNewL3ParentId('')
       fetchCategories()
     } catch (e) {
-      setError(e instanceof Error ? e.message : '创建失败')
+      setError(e instanceof Error ? e.message : 'Create failed')
     }
   }
 
@@ -146,12 +146,12 @@ export default function AdminCategoriesPage() {
       setEditName('')
       fetchCategories()
     } catch (e) {
-      setError(e instanceof Error ? e.message : '更新失败')
+      setError(e instanceof Error ? e.message : 'Update failed')
     }
   }
 
   const handleDelete = async (id: string) => {
-    if (!token || !confirm('确定软删除该分类？')) return
+    if (!token || !confirm('Soft-delete this category?')) return
     setError(null)
     try {
       const res = await fetch(`${apiUrl}/api/admin/categories/${id}`, {
@@ -161,7 +161,7 @@ export default function AdminCategoriesPage() {
       if (!res.ok) throw new Error(await res.text())
       fetchCategories()
     } catch (e) {
-      setError(e instanceof Error ? e.message : '删除失败')
+      setError(e instanceof Error ? e.message : 'Delete failed')
     }
   }
 
@@ -169,29 +169,29 @@ export default function AdminCategoriesPage() {
   const l2 = list.filter((c) => c.level === 2)
   const l3 = list.filter((c) => c.level === 3)
 
-  if (!token) return <div className="text-center py-8 text-gray-500">请先登录</div>
+  if (!token) return <div className="text-center py-8 text-gray-500">Please sign in first.</div>
 
   return (
     <div>
-      <h2 className="text-lg font-semibold mb-4">Category Management（分类管理）</h2>
+      <h2 className="text-lg font-semibold mb-4">Category Management</h2>
       {error && <div className="mb-4 p-2 bg-red-100 text-red-700 rounded text-sm">{error}</div>}
       {loading ? (
-        <p className="text-gray-500">加载中...</p>
+        <p className="text-gray-500">Loading…</p>
       ) : (
         <div className="grid grid-cols-3 gap-6">
           {/* Category I (L1) */}
           <div className="bg-white rounded-lg shadow p-4">
-            <h3 className="font-medium mb-3">Category I（一级）</h3>
+            <h3 className="font-medium mb-3">Category I</h3>
             <div className="mb-3 flex gap-2 items-center">
               <input
                 className="border rounded px-2 py-1 flex-1 text-sm"
-                placeholder="输入新一级分类名称"
+                placeholder="New L1 category name"
                 value={newL1Name}
                 onChange={(e) => setNewL1Name(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleCreateL1()}
               />
               <button className="px-2 py-1 bg-green-100 text-green-800 rounded text-sm whitespace-nowrap" onClick={handleCreateL1} disabled={!newL1Name.trim()}>
-                新建
+                Add
               </button>
             </div>
             <ul className="space-y-1 text-sm max-h-80 overflow-y-auto">
@@ -200,15 +200,15 @@ export default function AdminCategoriesPage() {
                   {editingId === c.id ? (
                     <>
                       <input className="border rounded px-1 flex-1" value={editName} onChange={(e) => setEditName(e.target.value)} />
-                      <button className="px-1 text-blue-600" onClick={handleUpdate}>保存</button>
-                      <button className="px-1 text-gray-500" onClick={() => { setEditingId(null); setEditName(''); }}>取消</button>
+                      <button className="px-1 text-blue-600" onClick={handleUpdate}>Save</button>
+                      <button className="px-1 text-gray-500" onClick={() => { setEditingId(null); setEditName(''); }}>Cancel</button>
                     </>
                   ) : (
                     <>
                       <span className={!c.is_active ? 'text-gray-400' : ''}>{c.name}</span>
-                      {!c.is_active && <span className="text-xs text-gray-400">(已禁用)</span>}
-                      <button className="opacity-0 group-hover:opacity-100 px-1 text-gray-500" onClick={() => { setEditingId(c.id); setEditName(c.name); }}>编辑</button>
-                      {c.is_active && <button className="opacity-0 group-hover:opacity-100 px-1 text-red-600" onClick={() => handleDelete(c.id)}>删除</button>}
+                      {!c.is_active && <span className="text-xs text-gray-400">(disabled)</span>}
+                      <button className="opacity-0 group-hover:opacity-100 px-1 text-gray-500" onClick={() => { setEditingId(c.id); setEditName(c.name); }}>Edit</button>
+                      {c.is_active && <button className="opacity-0 group-hover:opacity-100 px-1 text-red-600" onClick={() => handleDelete(c.id)}>Delete</button>}
                     </>
                   )}
                 </li>
@@ -218,14 +218,14 @@ export default function AdminCategoriesPage() {
 
           {/* Category II (L2) */}
           <div className="bg-white rounded-lg shadow p-4">
-            <h3 className="font-medium mb-3">Category II（二级）</h3>
+            <h3 className="font-medium mb-3">Category II</h3>
             <div className="mb-3 space-y-2">
               <select
                 className="border rounded px-2 py-1 w-full text-sm"
                 value={newL2ParentId}
                 onChange={(e) => setNewL2ParentId(e.target.value)}
               >
-                <option value="">选择父级 (L1)</option>
+                <option value="">Select parent (L1)</option>
                 {l1.filter((c) => c.is_active).map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
@@ -233,13 +233,13 @@ export default function AdminCategoriesPage() {
               <div className="flex gap-2 items-center">
                 <input
                   className="border rounded px-2 py-1 flex-1 text-sm"
-                  placeholder="输入新二级分类名称"
+                  placeholder="New L2 category name"
                   value={newL2Name}
                   onChange={(e) => setNewL2Name(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleCreateL2()}
                 />
                 <button className="px-2 py-1 bg-green-100 text-green-800 rounded text-sm whitespace-nowrap" onClick={handleCreateL2} disabled={!newL2Name.trim() || !newL2ParentId}>
-                  新建
+                  Add
                 </button>
               </div>
             </div>
@@ -249,15 +249,15 @@ export default function AdminCategoriesPage() {
                   {editingId === c.id ? (
                     <>
                       <input className="border rounded px-1 flex-1" value={editName} onChange={(e) => setEditName(e.target.value)} />
-                      <button className="px-1 text-blue-600" onClick={handleUpdate}>保存</button>
-                      <button className="px-1 text-gray-500" onClick={() => { setEditingId(null); setEditName(''); }}>取消</button>
+                      <button className="px-1 text-blue-600" onClick={handleUpdate}>Save</button>
+                      <button className="px-1 text-gray-500" onClick={() => { setEditingId(null); setEditName(''); }}>Cancel</button>
                     </>
                   ) : (
                     <>
                       <span className={!c.is_active ? 'text-gray-400' : ''}>{c.path || c.name}</span>
-                      {!c.is_active && <span className="text-xs text-gray-400">(已禁用)</span>}
-                      <button className="opacity-0 group-hover:opacity-100 px-1 text-gray-500" onClick={() => { setEditingId(c.id); setEditName(c.name); }}>编辑</button>
-                      {c.is_active && <button className="opacity-0 group-hover:opacity-100 px-1 text-red-600" onClick={() => handleDelete(c.id)}>删除</button>}
+                      {!c.is_active && <span className="text-xs text-gray-400">(disabled)</span>}
+                      <button className="opacity-0 group-hover:opacity-100 px-1 text-gray-500" onClick={() => { setEditingId(c.id); setEditName(c.name); }}>Edit</button>
+                      {c.is_active && <button className="opacity-0 group-hover:opacity-100 px-1 text-red-600" onClick={() => handleDelete(c.id)}>Delete</button>}
                     </>
                   )}
                 </li>
@@ -267,14 +267,14 @@ export default function AdminCategoriesPage() {
 
           {/* Category III (L3) */}
           <div className="bg-white rounded-lg shadow p-4">
-            <h3 className="font-medium mb-3">Category III（三级）</h3>
+            <h3 className="font-medium mb-3">Category III</h3>
             <div className="mb-3 space-y-2">
               <select
                 className="border rounded px-2 py-1 w-full text-sm"
                 value={newL3ParentId}
                 onChange={(e) => setNewL3ParentId(e.target.value)}
               >
-                <option value="">选择父级 (L2)</option>
+                <option value="">Select parent (L2)</option>
                 {l2.filter((c) => c.is_active).map((c) => (
                   <option key={c.id} value={c.id}>{c.path || c.name}</option>
                 ))}
@@ -282,13 +282,13 @@ export default function AdminCategoriesPage() {
               <div className="flex gap-2 items-center">
                 <input
                   className="border rounded px-2 py-1 flex-1 text-sm"
-                  placeholder="输入新三级分类名称"
+                  placeholder="New L3 category name"
                   value={newL3Name}
                   onChange={(e) => setNewL3Name(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleCreateL3()}
                 />
                 <button className="px-2 py-1 bg-green-100 text-green-800 rounded text-sm whitespace-nowrap" onClick={handleCreateL3} disabled={!newL3Name.trim() || !newL3ParentId}>
-                  新建
+                  Add
                 </button>
               </div>
             </div>
@@ -298,15 +298,15 @@ export default function AdminCategoriesPage() {
                   {editingId === c.id ? (
                     <>
                       <input className="border rounded px-1 flex-1" value={editName} onChange={(e) => setEditName(e.target.value)} />
-                      <button className="px-1 text-blue-600" onClick={handleUpdate}>保存</button>
-                      <button className="px-1 text-gray-500" onClick={() => { setEditingId(null); setEditName(''); }}>取消</button>
+                      <button className="px-1 text-blue-600" onClick={handleUpdate}>Save</button>
+                      <button className="px-1 text-gray-500" onClick={() => { setEditingId(null); setEditName(''); }}>Cancel</button>
                     </>
                   ) : (
                     <>
                       <span className={!c.is_active ? 'text-gray-400' : ''}>{c.path || c.name}</span>
-                      {!c.is_active && <span className="text-xs text-gray-400">(已禁用)</span>}
-                      <button className="opacity-0 group-hover:opacity-100 px-1 text-gray-500" onClick={() => { setEditingId(c.id); setEditName(c.name); }}>编辑</button>
-                      {c.is_active && <button className="opacity-0 group-hover:opacity-100 px-1 text-red-600" onClick={() => handleDelete(c.id)}>删除</button>}
+                      {!c.is_active && <span className="text-xs text-gray-400">(disabled)</span>}
+                      <button className="opacity-0 group-hover:opacity-100 px-1 text-gray-500" onClick={() => { setEditingId(c.id); setEditName(c.name); }}>Edit</button>
+                      {c.is_active && <button className="opacity-0 group-hover:opacity-100 px-1 text-red-600" onClick={() => handleDelete(c.id)}>Delete</button>}
                     </>
                   )}
                 </li>

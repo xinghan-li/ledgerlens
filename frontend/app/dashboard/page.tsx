@@ -324,7 +324,7 @@ export default function DashboardPage() {
           setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
         } else if (error.message.includes('Failed to fetch') || error.message === 'Load failed' || error.message === 'Load failed.') {
           const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-          setUploadError('无法连接后端。若用手机通过 ngrok 访问：请把后端也用 ngrok 暴露，并在前端 .env.local 中设置 NEXT_PUBLIC_API_URL 为后端的 ngrok 地址。当前 API 地址：' + base)
+          setUploadError('Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current API: ' + base)
         } else {
           setUploadError(error.message)
         }
@@ -446,7 +446,7 @@ export default function DashboardPage() {
         {uploadResult && uploadResult.success === false && uploadResult.error === 'duplicate_receipt' && (
           <div className="mb-4 p-3 sm:p-4 bg-red-50 border border-red-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <span className="text-red-800 text-sm sm:text-base min-w-0">
-              这张单子已经上传过。如果有错误，请删掉现有的小票并重新拍摄上传。
+              This receipt was already uploaded. If something is wrong, delete the existing receipt and upload a new photo.
             </span>
             <button
               onClick={() => { setUploadResult(null); setUploadError(null) }}
@@ -498,14 +498,14 @@ export default function DashboardPage() {
                 if (!d) return r.id.slice(0, 8)
                 const date = new Date(d)
                 if (isNaN(date.getTime())) return r.id.slice(0, 8)
-                return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+                return date.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })
               }
               const monthLabels: Record<string, string> = {}
               const byMonth = receiptList.reduce<Record<string, ReceiptListItem[]>>((acc, r) => {
                 const key = getDateKey(r)
                 if (!monthLabels[key] && key !== 'Unknown') {
                   const date = new Date(r.receipt_date || r.uploaded_at || '')
-                  monthLabels[key] = date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' })
+                  monthLabels[key] = date.toLocaleDateString('en-US', { year: 'numeric', month: 'long' })
                 } else if (key === 'Unknown') monthLabels[key] = 'Unknown'
                 if (!acc[key]) acc[key] = []
                 acc[key].push(r)
@@ -786,15 +786,15 @@ export default function DashboardPage() {
                                                   }
                                                 )
                                                 if (res.ok) {
-                                                  setCategoryUpdateMessage('已保存')
+                                                  setCategoryUpdateMessage('Saved')
                                                   await refetchReceiptDetail()
                                                   setEditingItemId(null)
                                                 } else {
                                                   const err = await res.json().catch(() => ({}))
-                                                  setCategoryUpdateMessage(err?.detail ?? '保存失败')
+                                                  setCategoryUpdateMessage(err?.detail ?? 'Save failed')
                                                 }
                                               } catch (e) {
-                                                setCategoryUpdateMessage('网络错误')
+                                                setCategoryUpdateMessage('Network error')
                                               }
                                             }
                                             return (
@@ -839,8 +839,8 @@ export default function DashboardPage() {
                                                       ))}
                                                     </select>
                                                     <div className="flex items-center gap-0.5 w-14">
-                                                      <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200" onClick={confirmEdit} title="确认">✓</button>
-                                                      <button type="button" className="p-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300" onClick={cancelEdit} title="取消">✕</button>
+                                                      <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200" onClick={confirmEdit} title="Confirm">✓</button>
+                                                      <button type="button" className="p-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300" onClick={cancelEdit} title="Cancel">✕</button>
                                                     </div>
                                                   </>
                                                 ) : (
@@ -848,14 +848,14 @@ export default function DashboardPage() {
                                                     <div className="truncate text-gray-800" title={c1}>{c1}</div>
                                                     <div className="truncate text-gray-800" title={c2}>{c2}</div>
                                                     <div className="truncate text-gray-800" title={c3}>{c3}</div>
-                                                    <button type="button" className="p-1 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded" onClick={startEdit} title="修改">✏️</button>
+                                                    <button type="button" className="p-1 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded" onClick={startEdit} title="Edit">✏️</button>
                                                   </>
                                                 )}
                                               </div>
                                             )
                                           })}
                                           {(categoryUpdateMessage || smartCategorizeMessage) && (
-                                            <div className={`mt-1 text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === '已保存' || (smartCategorizeMessage && smartCategorizeMessage.startsWith('Updated')) ? 'text-green-600' : 'text-red-600'}`}>
+                                            <div className={`mt-1 text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage && smartCategorizeMessage.startsWith('Updated')) ? 'text-green-600' : 'text-red-600'}`}>
                                               {categoryUpdateMessage || smartCategorizeMessage}
                                             </div>
                                           )}
@@ -912,7 +912,7 @@ export default function DashboardPage() {
                                             <input type="date" className="border rounded px-2 py-1 text-sm" value={editReceiptDate} onChange={(e) => setEditReceiptDate(e.target.value)} />
                                           </label>
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">Purchase time (optional, 时:分)</span>
+                                            <span className="text-xs text-gray-500">Purchase time (optional, HH:MM)</span>
                                             <input type="time" className="border rounded px-2 py-1 text-sm" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} />
                                           </label>
                                           <div className="grid grid-cols-3 gap-2">
@@ -1050,7 +1050,7 @@ export default function DashboardPage() {
                                     onClick={async (e) => {
                                       e.stopPropagation()
                                       if (!token || !r.id) return
-                                      const msg = '删除后无法恢复，确定要删除这张小票吗？\n\nThis will permanently remove this receipt. This cannot be undone.'
+                                      const msg = 'This will permanently remove this receipt. This cannot be undone. Delete anyway?'
                                       if (!confirm(msg)) return
                                       try {
                                         const res = await fetch(`${apiUrl()}/api/receipt/${r.id}`, {

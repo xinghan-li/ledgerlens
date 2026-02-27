@@ -185,12 +185,12 @@ export default function ClassificationReviewPage() {
       const res = await fetch(`${apiUrl}/api/admin/classification-review?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
-      if (!res.ok) throw new Error(res.status === 403 ? '无权限' : await res.text())
+      if (!res.ok) throw new Error(res.status === 403 ? 'Forbidden' : await res.text())
       const data = await res.json()
       setRows(data.data || [])
       setTotal(data.total ?? 0)
     } catch (e) {
-      setError(e instanceof Error ? e.message : '加载失败')
+      setError(e instanceof Error ? e.message : 'Failed to load')
     } finally {
       setLoading(false)
     }
@@ -227,7 +227,7 @@ export default function ClassificationReviewPage() {
       if (!res.ok) throw new Error(await res.text())
       fetchList()
     } catch (e) {
-      setError(e instanceof Error ? e.message : '更新失败')
+      setError(e instanceof Error ? e.message : 'Update failed')
     }
   }
 
@@ -235,7 +235,7 @@ export default function ClassificationReviewPage() {
     editedNormalizedName[row.id] ?? row.normalized_name ?? prefillNormalizedName(row.raw_product_name)
 
   const handleDelete = async (id: string) => {
-    if (!confirm('确定要永久删除这一条吗？删除后无法恢复，且不会影响已录入的 product / 规则。')) return
+    if (!confirm('Permanently delete this row? This cannot be undone. Existing products/rules are not affected.')) return
     if (!token) return
     setDeletingId(id)
     try {
@@ -249,7 +249,7 @@ export default function ClassificationReviewPage() {
       }
       await fetchList()
     } catch (e) {
-      setError(e instanceof Error ? e.message : '删除失败')
+      setError(e instanceof Error ? e.message : 'Delete failed')
     } finally {
       setDeletingId(null)
     }
@@ -263,9 +263,9 @@ export default function ClassificationReviewPage() {
     setSimilarTo(null)
     try {
       const currentName = getCurrentNormalizedName(row).trim()
-      if (!currentName) throw new Error('normalized_name 不能为空')
+      if (!currentName) throw new Error('normalized_name is required')
       const currentCategoryId = (editedCategoryId[id] ?? row.category_id ?? '').trim() || null
-      if (!currentCategoryId) throw new Error('请选择 Category III')
+      if (!currentCategoryId) throw new Error('Please select Category III')
       const sq = (editedSizeQuantity[id] ?? (row.size_quantity != null ? String(row.size_quantity) : '')).trim()
       const num = sq ? parseFloat(sq) : NaN
       const currentQty = !isNaN(num) ? num : null
@@ -295,7 +295,7 @@ export default function ClassificationReviewPage() {
         setSimilarTo(data.detail.similar_to)
         return
       }
-      if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Confirm 失败')
+      if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Confirm failed')
       setEditedNormalizedName((prev) => { const n = { ...prev }; delete n[id]; return n })
       setEditedCategoryL1((prev) => { const n = { ...prev }; delete n[id]; return n })
       setEditedCategoryL2((prev) => { const n = { ...prev }; delete n[id]; return n })
@@ -303,11 +303,11 @@ export default function ClassificationReviewPage() {
       setEditedSizeQuantity((prev) => { const n = { ...prev }; delete n[id]; return n })
       setEditedSizeUnit((prev) => { const n = { ...prev }; delete n[id]; return n })
       setEditedPackageType((prev) => { const n = { ...prev }; delete n[id]; return n })
-      setSuccessMessage('已确认')
+      setSuccessMessage('Confirmed')
       setError(null)
       fetchList()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Confirm 失败')
+      setError(e instanceof Error ? e.message : 'Confirm failed')
       setSuccessMessage(null)
     } finally {
       setConfirmingId(null)
@@ -413,22 +413,22 @@ export default function ClassificationReviewPage() {
 
   if (!token) {
     return (
-      <div className="text-center py-8 text-gray-500">请先登录</div>
+      <div className="text-center py-8 text-gray-500">Please sign in first.</div>
     )
   }
 
   return (
     <div>
-      <h2 className="text-lg font-semibold mb-4">分类审核 (Classification Review)</h2>
+      <h2 className="text-lg font-semibold mb-4">Classification Review</h2>
       <div className="mb-4 flex gap-4 items-center flex-wrap">
         <label className="flex items-center gap-2">
-          状态：
+          Status:
           <select
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value); setOffset(0); }}
             className="border rounded px-2 py-1"
           >
-            <option value="">全部</option>
+            <option value="">All</option>
             <option value="pending">pending</option>
             <option value="confirmed">confirmed</option>
             <option value="unable_to_decide">unable_to_decide</option>
@@ -436,19 +436,19 @@ export default function ClassificationReviewPage() {
             <option value="cancelled">cancelled</option>
           </select>
         </label>
-        <span className="text-sm text-gray-500">共 {total} 条</span>
+        <span className="text-sm text-gray-500">{total} total</span>
       </div>
       {/* Record items 回填：方案 A 手动触发，后续可改为定时任务 */}
       <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded">
         <p className="text-sm text-gray-700 mb-2">
-          <strong>Record items 回填 (Backfill)</strong>：对全表 <code className="bg-gray-200 px-1 rounded">record_items</code> 做一次性补齐，不定时自动跑，需要时点击下方按钮执行。
+          <strong>Record items backfill</strong>: One-time sync for <code className="bg-gray-200 px-1 rounded">record_items</code>. Run manually when needed.
         </p>
         <ul className="text-sm text-gray-600 list-disc list-inside mb-2">
-          <li><code>product_name_clean</code>：为空时用商品名规范化后写入</li>
-          <li><code>on_sale</code>：将「数量×单价」且无明确促销文案的项纠正为 false</li>
-          <li><code>product_id</code>：按 normalized_name + 小票门店链 匹配 <code>products</code> 表并回填</li>
+          <li><code>product_name_clean</code>: filled from normalized product name when empty</li>
+          <li><code>on_sale</code>: correct qty×price items without promo text to false</li>
+          <li><code>product_id</code>: match by normalized_name + store chain and backfill</li>
         </ul>
-        <p className="text-sm text-gray-500 mb-2">确认一批 Classification Review 后，可执行一次回填，使新产生的 product 关联到历史 record_items。</p>
+        <p className="text-sm text-gray-500 mb-2">After confirming a batch of Classification Review, run backfill once to link new products to history record_items.</p>
         <button
           type="button"
           disabled={backfillLoading}
@@ -462,54 +462,54 @@ export default function ClassificationReviewPage() {
                 headers: { Authorization: `Bearer ${token}` },
               })
               const data = await res.json().catch(() => ({}))
-              if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Backfill 失败')
+              if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Backfill failed')
               setBackfillResult(data)
-              setSuccessMessage(data.message || `已回填 ${data.updated ?? 0} 条`)
+              setSuccessMessage(data.message || `Backfilled ${data.updated ?? 0} rows`)
             } catch (e) {
-              setError(e instanceof Error ? e.message : 'Backfill 失败')
+              setError(e instanceof Error ? e.message : 'Backfill failed')
             } finally {
               setBackfillLoading(false)
             }
           }}
           className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
         >
-          {backfillLoading ? '执行中…' : '立即回填 (Backfill now)'}
+          {backfillLoading ? 'Running…' : 'Backfill now'}
         </button>
         {backfillResult && (
           <p className="mt-2 text-sm text-gray-600">
-            本次：处理 {backfillResult.total_processed} 条，更新 {backfillResult.updated} 条（需补 clean: {backfillResult.need_clean}，需改 on_sale: {backfillResult.need_onsale}，需补 product_id: {backfillResult.need_product_id}）。
+            This run: processed {backfillResult.total_processed}, updated {backfillResult.updated} (need_clean: {backfillResult.need_clean}, need_onsale: {backfillResult.need_onsale}, need_product_id: {backfillResult.need_product_id}).
           </p>
         )}
       </div>
       {error && (
         <div className="mb-4 p-2 bg-red-100 text-red-700 rounded text-sm flex items-center justify-between gap-2">
           <span>{error}</span>
-          <button type="button" className="shrink-0 text-red-700 hover:text-red-900" onClick={() => setError(null)} aria-label="关闭">×</button>
+          <button type="button" className="shrink-0 text-red-700 hover:text-red-900" onClick={() => setError(null)} aria-label="Close">×</button>
         </div>
       )}
       {successMessage && (
         <div className="mb-4 p-2 bg-green-100 text-green-800 rounded text-sm flex items-center justify-between gap-2">
           <span>{successMessage}</span>
-          <button type="button" className="shrink-0 text-green-800 hover:text-green-900" onClick={() => setSuccessMessage(null)} aria-label="关闭">×</button>
+          <button type="button" className="shrink-0 text-green-800 hover:text-green-900" onClick={() => setSuccessMessage(null)} aria-label="Close">×</button>
         </div>
       )}
       {similarTo && (
         <div className="mb-4 p-2 bg-amber-100 text-amber-800 rounded text-sm">
-          与已有名称 &quot;{similarTo}&quot; 相似。是否仍要使用当前名称？
-          <button className="ml-2 px-2 py-0.5 bg-amber-200 rounded" onClick={() => { handleConfirm(confirmingId!, true); setSimilarTo(null); }}>坚持使用</button>
-          <button className="ml-2 px-2 py-0.5 rounded border" onClick={() => setSimilarTo(null)}>取消</button>
+          Similar to existing name &quot;{similarTo}&quot;. Use current name anyway?
+          <button className="ml-2 px-2 py-0.5 bg-amber-200 rounded" onClick={() => { handleConfirm(confirmingId!, true); setSimilarTo(null); }}>Use anyway</button>
+          <button className="ml-2 px-2 py-0.5 rounded border" onClick={() => setSimilarTo(null)}>Cancel</button>
         </div>
       )}
       {/* 筛选：Category I/II/III, unit, package */}
       {!loading && rows.length > 0 && (
         <div className="mb-4 flex flex-wrap gap-3 items-center">
-          <span className="text-gray-600 text-sm">筛选：</span>
+          <span className="text-gray-600 text-sm">Filter:</span>
           <select
             value={filterCat1}
             onChange={(e) => { setFilterCat1(e.target.value); setFilterCat2(''); setFilterCat3(''); }}
             className="border border-gray-200 rounded px-2 py-1 text-sm"
           >
-            <option value="">Category I: 全部</option>
+            <option value="">Category I: All</option>
             {level1Categories.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
@@ -519,7 +519,7 @@ export default function ClassificationReviewPage() {
             onChange={(e) => { setFilterCat2(e.target.value); setFilterCat3(''); }}
             className="border border-gray-200 rounded px-2 py-1 text-sm"
           >
-            <option value="">Category II: 全部</option>
+            <option value="">Category II: All</option>
             {l2FilterOptions.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
@@ -529,7 +529,7 @@ export default function ClassificationReviewPage() {
             onChange={(e) => setFilterCat3(e.target.value)}
             className="border border-gray-200 rounded px-2 py-1 text-sm"
           >
-            <option value="">Category III: 全部</option>
+            <option value="">Category III: All</option>
             {l3FilterOptions.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
@@ -539,7 +539,7 @@ export default function ClassificationReviewPage() {
             onChange={(e) => setFilterUnit(e.target.value)}
             className="border border-gray-200 rounded px-2 py-1 text-sm"
           >
-            <option value="">unit: 全部</option>
+            <option value="">unit: All</option>
             {uniqueUnits.map((u) => (
               <option key={u} value={u}>{u}</option>
             ))}
@@ -549,7 +549,7 @@ export default function ClassificationReviewPage() {
             onChange={(e) => setFilterPackage(e.target.value)}
             className="border border-gray-200 rounded px-2 py-1 text-sm"
           >
-            <option value="">package: 全部</option>
+            <option value="">package: All</option>
             {uniquePackages.map((p) => (
               <option key={p} value={p}>{p}</option>
             ))}
@@ -560,14 +560,14 @@ export default function ClassificationReviewPage() {
               className="text-sm text-gray-600 hover:text-gray-800 underline"
               onClick={() => { setFilterCat1(''); setFilterCat2(''); setFilterCat3(''); setFilterUnit(''); setFilterPackage(''); }}
             >
-              清除筛选
+              Clear filters
             </button>
           )}
-          <span className="text-sm text-gray-500">显示 {displayedRows.length} / {rows.length} 条</span>
+          <span className="text-sm text-gray-500">Showing {displayedRows.length} / {rows.length}</span>
         </div>
       )}
       {loading ? (
-        <p className="text-gray-500">加载中...</p>
+        <p className="text-gray-500">Loading…</p>
       ) : (
         <div className="overflow-x-auto bg-white rounded-lg shadow">
           <table className="min-w-full divide-y divide-gray-200 text-sm">
@@ -612,7 +612,7 @@ export default function ClassificationReviewPage() {
                   package {sortColumn === 'package_type' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th className="px-3 py-2 text-left">status</th>
-                <th className="px-3 py-2 text-left">操作</th>
+                <th className="px-3 py-2 text-left">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
@@ -718,7 +718,7 @@ export default function ClassificationReviewPage() {
                         className="px-2 py-1 border rounded text-gray-600"
                         onClick={() => handlePatch(r.id, { status: 'pending' })}
                       >
-                        重开
+                        Reopen
                       </button>
                     )}
                     <button
@@ -727,7 +727,7 @@ export default function ClassificationReviewPage() {
                       disabled={deletingId === r.id}
                       className="px-2 py-1 text-red-600 hover:underline disabled:opacity-50"
                     >
-                      {deletingId === r.id ? '删除中…' : '删除'}
+                      {deletingId === r.id ? 'Deleting…' : 'Delete'}
                     </button>
                   </td>
                 </tr>
@@ -738,8 +738,8 @@ export default function ClassificationReviewPage() {
       )}
       {total > limit && (
         <div className="mt-4 flex gap-2">
-          <button className="px-3 py-1 border rounded disabled:opacity-50" disabled={offset === 0} onClick={() => setOffset((o) => Math.max(0, o - limit))}>上一页</button>
-          <button className="px-3 py-1 border rounded disabled:opacity-50" disabled={offset + limit >= total} onClick={() => setOffset((o) => o + limit)}>下一页</button>
+          <button className="px-3 py-1 border rounded disabled:opacity-50" disabled={offset === 0} onClick={() => setOffset((o) => Math.max(0, o - limit))}>Previous</button>
+          <button className="px-3 py-1 border rounded disabled:opacity-50" disabled={offset + limit >= total} onClick={() => setOffset((o) => o + limit)}>Next</button>
         </div>
       )}
 

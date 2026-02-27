@@ -18,14 +18,14 @@ export default function AuthCallbackPage() {
 
     if (!isSignInWithEmailLink(auth, href)) {
       setStatus('error')
-      setMessage('此链接不是有效的登录链接，或已使用过。请从登录页重新请求链接。')
+      setMessage('This link is not a valid sign-in link or has already been used. Request a new link from the sign-in page.')
       return
     }
 
     let email = typeof window !== 'undefined' ? window.localStorage.getItem(EMAIL_FOR_SIGNIN_KEY) : null
     if (!email) {
       setStatus('error')
-      setMessage('请在同一台设备上打开此链接，或重新在登录页输入邮箱获取新链接。')
+      setMessage('Open this link on the same device where you requested it, or enter your email on the sign-in page to get a new link.')
       return
     }
 
@@ -38,8 +38,8 @@ export default function AuthCallbackPage() {
       .catch((err: { code?: string; message?: string }) => {
         setStatus('error')
         const msg = err.code === 'auth/invalid-action-code'
-          ? '链接已过期或已使用，请重新请求登录链接。'
-          : (err.message || '登录失败')
+          ? 'Link expired or already used. Request a new sign-in link.'
+          : (err.message || 'Sign-in failed')
         setMessage(msg)
       })
   }, [router])
@@ -49,7 +49,7 @@ export default function AuthCallbackPage() {
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="animate-spin text-6xl">⏳</div>
-          <p className="mt-4 text-gray-600">正在完成登录…</p>
+          <p className="mt-4 text-gray-600">Completing sign-in…</p>
         </div>
       </div>
     )
@@ -59,7 +59,7 @@ export default function AuthCallbackPage() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
-          <p className="text-gray-600">登录成功，正在跳转…</p>
+          <p className="text-gray-600">Sign-in successful. Redirecting…</p>
         </div>
       </div>
     )
@@ -69,7 +69,7 @@ export default function AuthCallbackPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center">
         <p className="text-red-600 mb-4">{message}</p>
-        <a href="/login" className="text-blue-600 hover:underline">返回登录页</a>
+        <a href="/login" className="text-blue-600 hover:underline">Back to sign-in</a>
       </div>
     </div>
   )

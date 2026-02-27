@@ -20,7 +20,7 @@ export default function DevLoginPage() {
 
     if (!accessToken) {
       setStatus('error')
-      setError('缺少 access_token，请使用 node login.mjs <user_id> 生成正确链接')
+      setError('Missing access_token. Use node login.mjs <user_id> to generate the correct URL')
       return
     }
 
@@ -43,7 +43,7 @@ export default function DevLoginPage() {
         router.replace('/dashboard')
       } catch (e) {
         setStatus('error')
-        setError(e instanceof Error ? e.message : '未知错误')
+        setError(e instanceof Error ? e.message : 'Unknown error')
       }
     }
 
@@ -55,7 +55,7 @@ export default function DevLoginPage() {
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
           <div className="animate-spin text-4xl mb-4">⏳</div>
-          <p className="text-gray-600">正在登录...</p>
+          <p className="text-gray-600">Signing in…</p>
         </div>
       </div>
     )
@@ -65,13 +65,13 @@ export default function DevLoginPage() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
         <div className="max-w-md w-full p-6 bg-white rounded-xl shadow">
-          <h2 className="text-xl font-semibold text-red-600 mb-2">登录失败</h2>
+          <h2 className="text-xl font-semibold text-red-600 mb-2">Sign-in failed</h2>
           <p className="text-gray-700 mb-4">{error}</p>
           <a
             href="/login"
             className="text-blue-600 hover:underline"
           >
-            ← 返回登录页
+            ← Back to sign-in
           </a>
         </div>
       </div>
@@ -80,7 +80,7 @@ export default function DevLoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <p className="text-gray-600">正在跳转到仪表盘...</p>
+      <p className="text-gray-600">Redirecting to dashboard…</p>
     </div>
   )
 }
