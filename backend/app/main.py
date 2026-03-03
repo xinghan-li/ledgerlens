@@ -958,9 +958,10 @@ async def confirm_receipt_after_reject(
         raise HTTPException(status_code=400, detail="No image stored for this receipt")
     image_bytes: bytes
     if "://" not in raw_url or raw_url.startswith("/") or raw_url.startswith("output"):
+        from .core.workflow_processor import PROJECT_ROOT
         path = Path(raw_url)
         if not path.is_absolute():
-            path = Path(__file__).resolve().parents[2] / raw_url
+            path = PROJECT_ROOT / raw_url
         if not path.exists():
             raise HTTPException(status_code=404, detail="Receipt image file not found")
         image_bytes = path.read_bytes()
@@ -1649,8 +1650,8 @@ async def admin_get_receipt_image(
     if raw_url.lower().startswith(("http://", "https://")):
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=raw_url)
-    # Local path: resolve relative to project root; guard against path traversal
-    project_root = Path(__file__).resolve().parents[2]
+    # Local path: resolve relative to project root (same as workflow_processor); guard against path traversal
+    from .core.workflow_processor import PROJECT_ROOT as project_root
     file_path = (project_root / raw_url).resolve()
     try:
         file_path.relative_to(project_root)
