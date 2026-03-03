@@ -46,7 +46,7 @@ from .models import ReceiptOCRResponse
 from .services.ocr.documentai_client import parse_receipt_documentai
 from .services.ocr.textract_client import parse_receipt_textract
 from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_docai, process_receipt_with_llm_from_ocr
-from .core.workflow_processor import process_receipt_workflow
+from .core.workflow_processor import process_receipt_workflow, process_receipt_workflow_after_confirm
 from .core.bulk_processor import process_bulk_receipts
 from .models import DocumentAIResultRequest
 from .processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
@@ -408,15 +408,45 @@ async def get_current_user_info(user_id: str = Depends(get_current_user)):
     """Return current user id, email, and user_class. Used by frontend to show/hide Developer and role-specific UI."""
     from .services.database.supabase_client import _get_client
     supabase = _get_client()
-    res = supabase.table("users").select("id, email, user_class").eq("id", user_id).limit(1).execute()
+    res = supabase.table("users").select("id, email, user_class, registration_no, user_name").eq("id", user_id).limit(1).execute()
     if not res.data:
         raise HTTPException(status_code=404, detail="User not found")
     row = res.data[0]
+    reg_no = row.get("registration_no")
     return {
         "user_id": row.get("id"),
         "email": row.get("email") or "",
         "user_class": row.get("user_class") or "free",
+        "registration_no": reg_no,
+        "registration_no_display": f"{int(reg_no):09d}" if reg_no is not None else None,
+        "username": row.get("user_name"),
     }
+
+
+@app.patch("/api/auth/me", tags=["Authentication"])
+async def update_current_user_profile(
+    body: dict = Body(...),
+    user_id: str = Depends(get_current_user),
+):
+    """Update current user profile. Supported: username (unique, for greeting/feedback)."""
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    username = body.get("username")
+    if username is None:
+        raise HTTPException(status_code=400, detail="Missing field: username")
+    username = (username or "").strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username cannot be empty")
+    if len(username) > 64:
+        raise HTTPException(status_code=400, detail="Username too long (max 64)")
+    if not all(c.isalnum() or c in "._-" for c in username):
+        raise HTTPException(status_code=400, detail="Username may only contain letters, numbers, . _ -")
+    existing = supabase.table("users").select("id").eq("user_name", username).execute()
+    if existing.data and len(existing.data) > 0 and str(existing.data[0]["id"]) != str(user_id):
+        raise HTTPException(status_code=409, detail="Username already taken")
+    from datetime import datetime, timezone
+    supabase.table("users").update({"user_name": username, "updated_at": datetime.now(timezone.utc).isoformat()}).eq("id", user_id).execute()
+    return {"username": username}
 
 
 # 暂时：手机测相机时用固定用户拿 token，测完可删
@@ -818,6 +848,8 @@ async def process_receipt_workflow_endpoint(
             user_id=user_id  # Pass authenticated user_id
         )
         
+        if result.get("needs_user_confirm"):
+            return result
         if result.get("error") == "not_a_receipt":
             raise HTTPException(
                 status_code=400,
@@ -857,6 +889,98 @@ async def get_my_receipt(
     if detail is None:
         raise HTTPException(status_code=404, detail="Receipt not found or access denied")
     return detail
+
+
+@app.get("/api/receipt/{receipt_id}/processing-runs", tags=["Receipts - Other"])
+async def get_receipt_processing_runs(
+    receipt_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Get processing runs (workflow log) for a receipt. Admin/super_admin only; receipt must belong to current user."""
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    # Require admin or super_admin
+    user_res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
+    if not user_res.data or user_res.data[0].get("user_class") not in ("admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="Admin or super_admin required")
+    rec = supabase.table("receipt_status").select("id, user_id").eq("id", receipt_id).limit(1).execute()
+    if not rec.data or rec.data[0]["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
+    from .services.database.supabase_client import get_receipt_workflow_steps
+    runs_res = supabase.table("receipt_processing_runs").select(
+        "id, stage, model_provider, model_name, model_version, status, error_message, validation_status, created_at, input_payload, output_payload"
+    ).eq("receipt_id", receipt_id).order("created_at", desc=False).execute()
+    runs = runs_res.data or []
+    steps = get_receipt_workflow_steps(receipt_id)
+    track = "unknown"
+    track_method = None
+    for r in runs:
+        if r.get("stage") == "rule_based_cleaning":
+            out = r.get("output_payload") or {}
+            if isinstance(out, dict) and out.get("success"):
+                method = out.get("method")
+                if method and str(method).strip():
+                    track = "specific_rule"
+                    track_method = str(method).strip()
+                else:
+                    track = "general"
+            else:
+                track = "general"
+            break
+    return {
+        "track": track,
+        "track_method": track_method,
+        "runs": runs,
+        "workflow_steps": steps,
+    }
+
+
+@app.post("/api/receipt/{receipt_id}/confirm-receipt", tags=["Receipts - Other"])
+async def confirm_receipt_after_reject(
+    receipt_id: str,
+    body: dict = Body(...),
+    user_id: str = Depends(get_current_user),
+):
+    """User confirmed 'this is a clear receipt' after Valid fail or OCR fail. Runs Gemini Vision then Textract+OpenAI. Requires receipt in pending_receipt_confirm."""
+    from pathlib import Path
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    rec = supabase.table("receipt_status").select("id, user_id, current_stage, raw_file_url").eq("id", receipt_id).limit(1).execute()
+    if not rec.data or rec.data[0]["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
+    row = rec.data[0]
+    if row.get("current_stage") != "pending_receipt_confirm":
+        raise HTTPException(status_code=400, detail="Receipt is not awaiting user confirmation")
+    if not body.get("confirmed"):
+        return {"success": False, "message": "User did not confirm"}
+    raw_url = (row.get("raw_file_url") or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="No image stored for this receipt")
+    image_bytes: bytes
+    if "://" not in raw_url or raw_url.startswith("/") or raw_url.startswith("output"):
+        path = Path(raw_url)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[2] / raw_url
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Receipt image file not found")
+        image_bytes = path.read_bytes()
+    else:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            r = await client.get(raw_url)
+            r.raise_for_status()
+            image_bytes = r.content
+    mime_type = "image/jpeg"
+    if raw_url.lower().endswith(".png"):
+        mime_type = "image/png"
+    result = await process_receipt_workflow_after_confirm(
+        receipt_id=receipt_id,
+        image_bytes=image_bytes,
+        filename=Path(raw_url).name or "receipt.jpg",
+        mime_type=mime_type,
+        user_id=user_id,
+    )
+    return result
 
 
 @app.post("/api/receipt/{receipt_id}/correct", tags=["Receipts - Other"])
@@ -1328,6 +1452,17 @@ async def admin_backfill_record_items(
     """
     from .services.admin.record_items_backfill_service import run_record_items_backfill
     result = run_record_items_backfill(limit=limit or 0, batch_size=batch, dry_run=False)
+    return {"success": True, **result}
+
+
+@app.post("/api/admin/classification-review/dedupe", tags=["Admin - Classification Review"])
+async def admin_dedupe_classification_review(user_id: str = Depends(require_admin)):
+    """
+    Remove duplicate classification_review rows: same store_chain + same normalized product.
+    Keeps the latest (by created_at); deletes older duplicates. Admin only.
+    """
+    from .services.admin.classification_review_service import dedupe_classification_review
+    result = dedupe_classification_review()
     return {"success": True, **result}
 
 
@@ -1853,9 +1988,13 @@ async def categorize_batch_receipts(
 async def smart_categorize_my_receipt(
     receipt_id: str,
     user_id: str = Depends(get_current_user),
+    body: Optional[dict] = Body(None),
 ):
-    """Categorize only items on this receipt that have no category_id (rules + LLM). Does not overwrite user-set categories."""
-    result = smart_categorize_receipt_items(receipt_id=receipt_id, user_id=user_id)
+    """Run rules + LLM on items. If body.item_ids is provided, run only on those record_item ids (re-run selected); else only uncategorized."""
+    item_ids = None
+    if body and isinstance(body.get("item_ids"), list) and len(body["item_ids"]) > 0:
+        item_ids = [str(x) for x in body["item_ids"]]
+    result = await smart_categorize_receipt_items(receipt_id=receipt_id, user_id=user_id, item_ids=item_ids)
     if not result.get("success"):
         raise HTTPException(status_code=404 if "not found" in (result.get("message") or "").lower() else 400, detail=result.get("message"))
     return result

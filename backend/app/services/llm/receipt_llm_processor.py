@@ -252,7 +252,8 @@ async def process_receipt_with_llm_from_ocr(
     # Step 7: Backend mathematical validation (unified validation logic, not dependent on OCR)
     logger.info("Step 6: Performing backend mathematical validation...")
     llm_result = _validate_llm_result(llm_result, extracted_line_totals=extracted_line_totals)
-    
+    _detect_cc_rewards_and_fix_totals(llm_result)
+
     # Step 8: Try to match store again using LLM-extracted data (second attempt)
     # LLM may extract more accurate merchant_name and address
     llm_chain_id = chain_id  # Start with OCR match result
@@ -425,31 +426,92 @@ def _extract_trusted_hints(docai_result: Dict[str, Any], confidence_threshold: f
     return trusted_hints
 
 
+def _is_costco_usa_receipt(llm_result: Dict[str, Any]) -> bool:
+    """True if this receipt is for Costco USA (so we apply first-subtotal and CC Rewards logic only there)."""
+    if not llm_result:
+        return False
+    receipt = llm_result.get("receipt", {})
+    name = (receipt.get("merchant_name") or receipt.get("store") or "").lower()
+    if "costco" not in name or "canada" in name:
+        return False
+    country = (receipt.get("country") or "").upper()
+    if country in ("CA", "CANADA"):
+        return False
+    return True
+
+
+def _detect_cc_rewards_and_fix_totals(llm_result: Dict[str, Any]) -> None:
+    """
+    Costco USA only:
+    1. If receipt has a CC Rewards (or similar) line, set payment_method to 'Card / CC Rewards'.
+    2. Use the first (pre-reward) subtotal/total: set receipt.subtotal and receipt.total to the
+       sum of positive line items, so we show 198.59 not 114.07 (rewards are payment, not discount).
+    """
+    if not llm_result or not _is_costco_usa_receipt(llm_result):
+        return
+    receipt = llm_result.get("receipt", {})
+    items = llm_result.get("items", []) or []
+    has_reward = False
+    sum_positive_cents = 0  # Sum of product line items only (exclude CC Rewards line)
+    for it in items:
+        name = (it.get("product_name") or it.get("raw_text") or "").lower()
+        lt = it.get("line_total")
+        try:
+            lt_val = int(lt) if lt is not None else 0
+        except (TypeError, ValueError):
+            lt_val = 0
+        is_reward_line = (
+            "cc reward" in name
+            or "credit card reward" in name
+            or (name.strip().startswith("reward") and "reward" in name)
+            or (lt_val < 0 and ("reward" in name or "credit" in name or "card" in name))
+        )
+        if is_reward_line:
+            has_reward = True
+        elif lt_val > 0:
+            sum_positive_cents += lt_val
+    # Heuristic: total much smaller than sum of items => likely second total after rewards
+    total_cents = receipt.get("total")
+    try:
+        total_val = int(total_cents) if total_cents is not None else 0
+    except (TypeError, ValueError):
+        total_val = 0
+    if sum_positive_cents > 0 and total_val > 0 and sum_positive_cents > total_val + 50:
+        has_reward = True
+    if not has_reward:
+        return
+    pm = (receipt.get("payment_method") or "").strip()
+    if not pm:
+        receipt["payment_method"] = "CC Rewards"
+    elif " / CC Rewards" not in pm and pm.lower() != "cc rewards":
+        receipt["payment_method"] = f"{pm} / CC Rewards"
+    # Use first (pre-reward) totals: subtotal and total = sum of positive line items (cents)
+    if sum_positive_cents > 0:
+        receipt["subtotal"] = sum_positive_cents
+        receipt["total"] = sum_positive_cents
+        logger.info(
+            "Costco USA CC Rewards: set subtotal/total to first total (pre-reward) %s cents",
+            sum_positive_cents,
+        )
+
+
 def _validate_llm_result(
     llm_result: Dict[str, Any],
-    tolerance: float = 0.01,
+    tolerance: float = 3.0,
     extracted_line_totals: Optional[List[float]] = None
 ) -> Dict[str, Any]:
     """
     Validate mathematical correctness of LLM returned result.
-    
+    All amounts (line_total, total, etc.) are in CENTS.
+
     Validation items:
     1. Each item: If quantity and unit_price both exist, validate quantity × unit_price ≈ line_total
     2. Sum validation: Sum of all items' line_total ≈ receipt.total
-    
-    TODO: These validation data will be used for:
-    - Training data quality assessment
-    - Model performance monitoring
-    - Auto-correction and completion (use extracted_line_totals to complete missing items)
-    - Generate validation reports and statistics
-    
+
     Args:
         llm_result: Complete result returned by LLM
-        tolerance: Allowed error range (default 0.01)
-        extracted_line_totals: List of prices extracted from raw_text (for comparison validation)
-        
-    Returns:
-        Updated llm_result with validation results
+        tolerance: Allowed error in cents (default 3)
+        extracted_line_totals: List of amounts in cents from raw_text (for comparison)
     """
     receipt = llm_result.get("receipt", {})
     items = llm_result.get("items", [])
@@ -476,10 +538,11 @@ def _validate_llm_result(
         
         # If quantity and unit_price both exist, validate calculation
         if quantity is not None and unit_price is not None and line_total is not None:
+            # All in cents: quantity may be decimal (e.g. 1.5), unit_price and line_total in cents
             expected_total = float(quantity) * float(unit_price)
             actual_total = float(line_total)
             difference = abs(expected_total - actual_total)
-            
+
             if difference > tolerance:
                 error_info = {
                     "raw_text": item.get("raw_text", ""),
@@ -515,19 +578,20 @@ def _validate_llm_result(
         
         # If prices extracted from raw_text are provided, also compare
         if extracted_line_totals:
-            extracted_total = sum(extracted_line_totals)
-            extracted_diff = abs(extracted_total - documented_total)
-            
+            # extracted_line_totals from raw text are in dollars; documented_total is in cents
+            extracted_total_dollars = sum(extracted_line_totals)
+            extracted_total_cents = round(extracted_total_dollars * 100)
+            extracted_diff = abs(extracted_total_cents - documented_total)
+
             logger.info(
-                f"Price comparison: LLM calculated={calculated_total:.2f}, "
-                f"raw_text extracted={extracted_total:.2f}, documented={documented_total:.2f}"
+                f"Price comparison: LLM calculated={calculated_total} cents, "
+                f"raw_text extracted={extracted_total_cents} cents, documented={documented_total} cents"
             )
-            
-            # If raw_text extracted sum is closer to documented_total, LLM may have missed items
-            if extracted_diff < difference and abs(extracted_total - documented_total) < tolerance:
+
+            if extracted_diff < difference and extracted_diff < tolerance:
                 logger.warning(
-                    f"Raw text extraction ({extracted_total:.2f}) matches total better than "
-                    f"LLM result ({calculated_total:.2f}). Possible missing items in LLM output."
+                    f"Raw text extraction (${extracted_total_dollars:.2f}) matches total better than "
+                    f"LLM result ({calculated_total} cents). Possible missing items in LLM output."
                 )
         
         if difference > tolerance:

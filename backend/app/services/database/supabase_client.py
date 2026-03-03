@@ -278,7 +278,7 @@ def update_receipt_status(
     """
     if current_status not in ('success', 'failed', 'needs_review'):
         raise ValueError(f"Invalid status: {current_status}")
-    if current_stage not in ('ocr', 'llm_primary', 'llm_fallback', 'manual'):
+    if current_stage not in ('ocr', 'llm_primary', 'llm_fallback', 'manual', 'rejected_not_receipt', 'pending_receipt_confirm'):
         raise ValueError(f"Invalid stage: {current_stage}")
     
     supabase = _get_client()
@@ -340,6 +340,108 @@ def save_non_receipt_reject(
         logger.info(f"Saved non_receipt_reject: user_id={user_id}, reason={reason[:80]}...")
     except Exception as e:
         logger.warning(f"Failed to save non_receipt_reject: {e}")
+
+
+def append_workflow_step(
+    receipt_id: str,
+    step_name: str,
+    result: str,
+    run_id: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Append one workflow step for a receipt (for View workflow debug). Uses next sequence.
+    Table: receipt_workflow_steps (see 045_receipt_workflow_steps.sql).
+    """
+    supabase = _get_client()
+    try:
+        r = supabase.table("receipt_workflow_steps").select("sequence").eq("receipt_id", receipt_id).order("sequence", desc=True).limit(1).execute()
+        next_seq = (r.data[0]["sequence"] + 1) if r.data else 0
+        supabase.table("receipt_workflow_steps").insert({
+            "receipt_id": receipt_id,
+            "sequence": next_seq,
+            "step_name": step_name,
+            "result": result,
+            "run_id": run_id,
+            "details": details,
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Failed to append workflow step: {e}")
+
+
+def get_receipt_workflow_steps(receipt_id: str) -> List[Dict[str, Any]]:
+    """Get ordered workflow steps for a receipt (for View workflow API)."""
+    supabase = _get_client()
+    try:
+        r = supabase.table("receipt_workflow_steps").select("*").eq("receipt_id", receipt_id).order("sequence", desc=False).execute()
+        return list(r.data or [])
+    except Exception as e:
+        logger.warning(f"Failed to get workflow steps: {e}")
+        return []
+
+
+def check_user_locked(user_id: str) -> tuple:
+    """
+    Check if user is locked (3 strikes in 1h -> 12h lock).
+    Returns (is_locked: bool, locked_until: Optional[datetime]).
+    """
+    supabase = _get_client()
+    try:
+        r = supabase.table("user_lock").select("locked_until").eq("user_id", user_id).limit(1).execute()
+        if not r.data:
+            return False, None
+        locked_until = r.data[0].get("locked_until")
+        if locked_until:
+            from datetime import datetime, timezone
+            until = locked_until if hasattr(locked_until, "replace") else datetime.fromisoformat(str(locked_until).replace("Z", "+00:00"))
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) < until:
+                return True, until
+        return False, None
+    except Exception as e:
+        logger.warning(f"Failed to check user lock: {e}")
+        return False, None
+
+
+def record_strike(user_id: str, receipt_id: Optional[str] = None) -> None:
+    """Record one strike for user (e.g. user confirmed receipt but Vision+TxtOpenAI said not receipt)."""
+    supabase = _get_client()
+    try:
+        supabase.table("user_strikes").insert({
+            "user_id": user_id,
+            "receipt_id": receipt_id,
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Failed to record strike: {e}")
+
+
+def count_strikes_in_last_hour(user_id: str) -> int:
+    """Count strikes in the last 60 minutes for user."""
+    supabase = _get_client()
+    try:
+        from datetime import datetime, timedelta, timezone
+        since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        r = supabase.table("user_strikes").select("id").eq("user_id", user_id).gte("created_at", since).execute()
+        return len(r.data or [])
+    except Exception as e:
+        logger.warning(f"Failed to count strikes: {e}")
+        return 0
+
+
+def apply_user_lock(user_id: str, hours: float = 12.0) -> None:
+    """Set user locked until now + hours (upsert by user_id)."""
+    supabase = _get_client()
+    try:
+        from datetime import datetime, timedelta, timezone
+        locked_until = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+        existing = supabase.table("user_lock").select("id").eq("user_id", user_id).execute()
+        if existing.data:
+            supabase.table("user_lock").update({"locked_until": locked_until}).eq("user_id", user_id).execute()
+        else:
+            supabase.table("user_lock").insert({"user_id": user_id, "locked_until": locked_until}).execute()
+    except Exception as e:
+        logger.warning(f"Failed to apply user lock: {e}")
 
 
 # DEPRECATED: save_parsed_receipt is no longer used
@@ -1215,21 +1317,28 @@ def enqueue_unmatched_items_to_classification_review(
             if sc.data:
                 store_chain_name = sc.data[0].get("name")
 
+        # Existing pending rows for this store: (normalized_key -> id). Later submission overrides; do not create duplicate.
+        q = supabase.table("classification_review").select("id, raw_product_name, normalized_name, created_at").eq("status", "pending")
+        if store_chain_id is None:
+            q = q.is_("store_chain_id", "null")
+        else:
+            q = q.eq("store_chain_id", store_chain_id)
+        existing_rows = (q.execute()).data or []
+        existing_by_norm: Dict[str, str] = {}
+        for row in sorted(existing_rows, key=lambda x: (x.get("created_at") or ""), reverse=True):
+            raw = (row.get("raw_product_name") or "").strip()
+            norm = (row.get("normalized_name") or "").strip()
+            key = normalize_name_for_storage(norm or raw) if (norm or raw) else ""
+            if not key:
+                continue
+            if key not in existing_by_norm:
+                existing_by_norm[key] = row["id"]
+
         def _should_skip(raw_name: str) -> bool:
             if not (raw_name or "").strip():
                 return True
-            q = (
-                supabase.table("classification_review")
-                .select("id")
-                .eq("raw_product_name", raw_name.strip())
-                .eq("status", "pending")
-            )
-            if store_chain_id is None:
-                q = q.is_("store_chain_id", "null")
-            else:
-                q = q.eq("store_chain_id", store_chain_id)
-            existing = q.limit(1).execute()
-            return bool(existing.data)
+            key = normalize_name_for_storage(raw_name.strip())
+            return key in existing_by_norm
 
         # 1) Items with no category_id
         items = (
@@ -1288,6 +1397,7 @@ def enqueue_unmatched_items_to_classification_review(
 
         for r in to_enqueue:
             raw_name = r["raw_product_name"]
+            norm_key = normalize_name_for_storage(raw_name)
             sugg = suggestion_map.get(raw_name, {})
             payload = {
                 "raw_product_name": raw_name,
@@ -1303,8 +1413,26 @@ def enqueue_unmatched_items_to_classification_review(
                 payload["size_unit"] = sugg["size_unit"]
             if sugg.get("package_type"):
                 payload["package_type"] = sugg["package_type"]
-            supabase.table("classification_review").insert(payload).execute()
-            inserted += 1
+            if norm_key and norm_key in existing_by_norm:
+                # Same store + same normalized product: override existing row (later submission wins)
+                cr_id = existing_by_norm[norm_key]
+                supabase.table("classification_review").update(payload).eq("id", cr_id).execute()
+                logger.debug("Enqueue: updated existing classification_review row %s (same store+product)", cr_id)
+            else:
+                supabase.table("classification_review").insert(payload).execute()
+                inserted += 1
+                if norm_key:
+                    # Fetch the new row id so we can override if same product appears again in this batch
+                    latest = (
+                        supabase.table("classification_review")
+                        .select("id, created_at")
+                        .eq("source_record_item_id", r["source_record_item_id"])
+                        .order("created_at", desc=True)
+                        .limit(1)
+                        .execute()
+                    )
+                    if latest.data:
+                        existing_by_norm[norm_key] = latest.data[0]["id"]
 
         if inserted:
             logger.info(

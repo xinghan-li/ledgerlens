@@ -30,6 +30,9 @@ export default function DeveloperDashboardPage() {
   const [uploadResult, setUploadResult] = useState<any>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const workingHardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const uploadAbortRef = useRef<AbortController | null>(null)
+  const uploadCancelledByUserRef = useRef(false)
+  const uploadCleanupRef = useRef<{ timeoutId: ReturnType<typeof setTimeout> | null } | null>(null)
   const [receiptList, setReceiptList] = useState<ReceiptListItem[]>([])
   const [receiptListLoading, setReceiptListLoading] = useState(false)
   const [expandedReceiptId, setExpandedReceiptId] = useState<string | null>(null)
@@ -60,6 +63,10 @@ export default function DeveloperDashboardPage() {
   const [categoryUpdateMessage, setCategoryUpdateMessage] = useState<string | null>(null)
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
+  const [userClass, setUserClass] = useState<string | null>(null)
+  const [processingRunsModalReceiptId, setProcessingRunsModalReceiptId] = useState<string | null>(null)
+  const [processingRunsData, setProcessingRunsData] = useState<{ track: string; track_method: string | null; runs: Array<Record<string, unknown>>; workflow_steps: Array<Record<string, unknown>> } | null>(null)
+  const [processingRunsLoading, setProcessingRunsLoading] = useState(false)
   const router = useRouter()
   const supabase = createClient()
 
@@ -82,6 +89,11 @@ export default function DeveloperDashboardPage() {
     return s.slice(0, 5)
   }
 
+  /** 匹配 "City, ST ZIP" 或 "City, ST ZIP-4" 格式，避免把城市/州/邮编误填到 Address line 2 */
+  function looksLikeCityStateZip(s: string): boolean {
+    return /^[A-Za-z\s\-'.]+,\s*[A-Z]{2}\s+\d{5}(-\d{4})?$/i.test((s || '').trim())
+  }
+
   function parseAddressToFields(addr: string): { line1: string; line2: string; cityStateZip: string; country: string } {
     const formatted = formatAddressMultiLine(addr || '')
     const lines = formatted.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
@@ -96,6 +108,15 @@ export default function DeveloperDashboardPage() {
         line2: lines.length >= 3 ? lines[1] : '',
         cityStateZip,
         country: last,
+      }
+    }
+    // 两行时：若第二行是 "City, ST ZIP" 格式，应填到 cityStateZip，不要填到 line2
+    if (lines.length === 2 && looksLikeCityStateZip(lines[1])) {
+      return {
+        line1: lines[0],
+        line2: '',
+        cityStateZip: lines[1],
+        country: '',
       }
     }
     return {
@@ -203,6 +224,7 @@ export default function DeveloperDashboardPage() {
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
         if (cancelled) return
+        setUserClass(data?.user_class ?? null)
         if (data?.user_class === 'super_admin') {
           setDeveloperAllowed(true)
         } else {
@@ -251,6 +273,7 @@ export default function DeveloperDashboardPage() {
     }
 
     // 重置状态
+    uploadCancelledByUserRef.current = false
     setUploading(true)
     setUploadResult(null)
     setUploadError(null)
@@ -268,6 +291,8 @@ export default function DeveloperDashboardPage() {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 180000)
       workingHardTimerRef.current = setTimeout(() => setUploadWorkingHard(true), 30000)
+      uploadAbortRef.current = controller
+      uploadCleanupRef.current = { timeoutId }
 
       try {
         const response = await fetch(`${apiUrl}/api/receipt/workflow`, {
@@ -329,6 +354,11 @@ export default function DeveloperDashboardPage() {
         clearTimeout(workingHardTimerRef.current)
         workingHardTimerRef.current = null
       }
+      if (error instanceof Error && error.name === 'AbortError' && uploadCancelledByUserRef.current) {
+        setUploadError(null)
+        setUploadResult(null)
+        return
+      }
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
           setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
@@ -347,8 +377,20 @@ export default function DeveloperDashboardPage() {
         clearTimeout(workingHardTimerRef.current)
         workingHardTimerRef.current = null
       }
+      uploadAbortRef.current = null
+      uploadCleanupRef.current = null
       e.target.value = ''
     }
+  }
+
+  const handleCancelUpload = (): void => {
+    uploadCancelledByUserRef.current = true
+    if (uploadCleanupRef.current?.timeoutId != null) clearTimeout(uploadCleanupRef.current.timeoutId)
+    if (workingHardTimerRef.current) {
+      clearTimeout(workingHardTimerRef.current)
+      workingHardTimerRef.current = null
+    }
+    uploadAbortRef.current?.abort()
   }
 
   useEffect(() => {
@@ -405,23 +447,30 @@ export default function DeveloperDashboardPage() {
               id="receipt-upload"
               disabled={uploading}
             />
-            <label
-              htmlFor="receipt-upload"
-              className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white cursor-pointer transition select-none min-h-[44px] sm:min-h-0 ${
-                uploading
-                  ? 'bg-green-500 cursor-wait'
-                  : 'bg-green-600 hover:bg-green-700'
-              }`}
-            >
-              {uploading ? (
-                <>
-                  <span className="inline-block animate-spin text-lg">⏳</span>
-                  <span>Processing…</span>
-                </>
-              ) : (
-                'Upload receipt'
-              )}
-            </label>
+            {uploading ? (
+              <div
+                className="group inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-500 cursor-wait select-none min-h-[44px] sm:min-h-0"
+                title="Hover to show Stop"
+              >
+                <span className="inline-block animate-spin text-lg">⏳</span>
+                <span>Processing…</span>
+                <button
+                  type="button"
+                  onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); handleCancelUpload() }}
+                  className="ml-2 px-2.5 py-1 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 focus:outline-none"
+                  aria-label="Stop and cancel upload"
+                >
+                  Stop
+                </button>
+              </div>
+            ) : (
+              <label
+                htmlFor="receipt-upload"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 cursor-pointer transition select-none min-h-[44px] sm:min-h-0"
+              >
+                Upload receipt
+              </label>
+            )}
             <CameraCaptureButton
               token={token}
               disabled={uploading}
@@ -1037,6 +1086,36 @@ export default function DeveloperDashboardPage() {
                                   >
                                     Copy
                                   </button>
+                                  {(userClass === 'admin' || userClass === 'super_admin') && (
+                                    <button
+                                      type="button"
+                                      onClick={async (e) => {
+                                        e.stopPropagation()
+                                        if (!token || !r.id) return
+                                        setProcessingRunsModalReceiptId(r.id)
+                                        setProcessingRunsData(null)
+                                        setProcessingRunsLoading(true)
+                                        try {
+                                          const res = await fetch(`${apiUrl()}/api/receipt/${r.id}/processing-runs`, {
+                                            headers: { Authorization: `Bearer ${token}` },
+                                          })
+                                          if (res.ok) {
+                                            const data = await res.json()
+                                            setProcessingRunsData({ track: data.track ?? 'unknown', track_method: data.track_method ?? null, runs: data.runs ?? [], workflow_steps: data.workflow_steps ?? [] })
+                                          } else {
+                                            setProcessingRunsData({ track: 'unknown', track_method: null, runs: [], workflow_steps: [] })
+                                          }
+                                        } catch {
+                                          setProcessingRunsData({ track: 'unknown', track_method: null, runs: [], workflow_steps: [] })
+                                        } finally {
+                                          setProcessingRunsLoading(false)
+                                        }
+                                      }}
+                                      className="text-sm text-blue-600 hover:text-blue-800 underline"
+                                    >
+                                      View workflow
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={async (e) => {
@@ -1093,6 +1172,64 @@ export default function DeveloperDashboardPage() {
         {/* Data Analysis */}
         <DataAnalysisSection token={token} />
 
+        {/* Processing runs modal (admin only) */}
+        {processingRunsModalReceiptId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setProcessingRunsModalReceiptId(null); setProcessingRunsData(null) }}>
+            <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="px-4 py-3 border-b flex justify-between items-center">
+                <h3 className="font-semibold text-gray-900">Processing workflow — Receipt {processingRunsModalReceiptId.slice(0, 8)}…</h3>
+                <button type="button" onClick={() => { setProcessingRunsModalReceiptId(null); setProcessingRunsData(null) }} className="text-gray-500 hover:text-gray-700 text-lg leading-none">×</button>
+              </div>
+              <div className="p-4 overflow-auto flex-1 min-h-0">
+                {processingRunsLoading ? (
+                  <p className="text-gray-500">Loading…</p>
+                ) : processingRunsData ? (
+                  <>
+                    <div className="mb-4 p-3 bg-gray-100 rounded">
+                      <p className="text-sm font-medium text-gray-700">Track</p>
+                      <p className="text-sm text-gray-900">
+                        {processingRunsData.track === 'specific_rule' ? (
+                          <>Specific rule (method: <code className="bg-white px-1 rounded">{processingRunsData.track_method ?? '—'}</code>)</>
+                        ) : processingRunsData.track === 'general' ? (
+                          <>General track (no store-specific rule matched)</>
+                        ) : (
+                          <>Unknown (no rule_based_cleaning run or failed)</>
+                        )}
+                      </p>
+                    </div>
+                    {Array.isArray(processingRunsData.workflow_steps) && processingRunsData.workflow_steps.length > 0 && (
+                      <div className="mb-4">
+                        <p className="text-sm font-medium text-gray-700 mb-2">Workflow path ({processingRunsData.workflow_steps.length} steps)</p>
+                        <div className="rounded border border-gray-200 bg-gray-50 p-2 flex flex-wrap gap-2">
+                          {(processingRunsData.workflow_steps as Array<Record<string, unknown>>).map((s: Record<string, unknown>, i: number) => {
+                            const r = String(s.result ?? '')
+                            const resultClass = r === 'pass' || r === 'ok' || r === 'yes' ? 'text-green-600' : r === 'fail' || r === 'no' ? 'text-red-600' : 'text-gray-600'
+                            return (
+                              <span key={String(s.id ?? i)} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-mono bg-white border border-gray-200" title={s.details ? JSON.stringify(s.details) : undefined}>
+                                <span className="text-gray-500">{Number(s.sequence) + 1}.</span>
+                                <span className="font-medium">{String(s.step_name ?? '')}</span>
+                                <span className={resultClass}>{r}</span>
+                              </span>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-sm font-medium text-gray-700 mb-2">Runs ({processingRunsData.runs.length})</p>
+                    <div className="space-y-3">
+                      {processingRunsData.runs.map((run: Record<string, unknown>, idx: number) => (
+                        <ProcessingRunCard key={String(run.id ?? idx)} run={run} />
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-gray-500">No data</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* API Test Section — developer only */}
         <div className="mt-8 bg-blue-50 rounded-xl p-6">
           <h3 className="text-lg font-semibold text-blue-900 mb-3">
@@ -1119,5 +1256,49 @@ export default function DeveloperDashboardPage() {
         </div>
       </main>
     </>
+  )
+}
+
+function ProcessingRunCard({ run }: { run: Record<string, unknown> }) {
+  const [showInput, setShowInput] = useState(false)
+  const [showOutput, setShowOutput] = useState(false)
+  const stage = String(run.stage ?? '')
+  const status = String(run.status ?? '')
+  const created = run.created_at ? new Date(String(run.created_at)).toLocaleString() : '—'
+  const provider = run.model_provider ? String(run.model_provider) : ''
+  const model = run.model_name ? String(run.model_name) : ''
+  const validation = run.validation_status ? String(run.validation_status) : ''
+  const err = run.error_message ? String(run.error_message) : ''
+  return (
+    <div className="border rounded p-3 bg-gray-50">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-medium">{stage}</span>
+        <span className={status === 'pass' ? 'text-green-600' : 'text-red-600'}>{status}</span>
+        {validation && <span className="text-gray-500">validation: {validation}</span>}
+        {provider && <span className="text-gray-500">{provider}{model ? ` / ${model}` : ''}</span>}
+        <span className="text-gray-400">{created}</span>
+      </div>
+      {err && <p className="text-xs text-red-600 mt-1">{err}</p>}
+      <div className="mt-2 flex gap-2">
+        <button type="button" onClick={() => setShowInput((v) => !v)} className="text-xs text-blue-600 hover:underline">
+          {showInput ? 'Hide' : 'Show'} input_payload
+        </button>
+        <button type="button" onClick={() => setShowOutput((v) => !v)} className="text-xs text-blue-600 hover:underline">
+          {showOutput ? 'Hide' : 'Show'} output_payload
+        </button>
+      </div>
+      {showInput && run.input_payload != null && (
+        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+          <p className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 border-b border-slate-200">Input</p>
+          <pre className="p-3 text-sm font-mono text-slate-800 whitespace-pre-wrap break-words overflow-auto max-h-72 leading-relaxed">{JSON.stringify(run.input_payload, null, 2).replace(/\\n/g, '\n')}</pre>
+        </div>
+      )}
+      {showOutput && run.output_payload != null && (
+        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+          <p className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 border-b border-slate-200">Output</p>
+          <pre className="p-3 text-sm font-mono text-slate-800 whitespace-pre-wrap break-words overflow-auto max-h-72 leading-relaxed">{JSON.stringify(run.output_payload, null, 2).replace(/\\n/g, '\n')}</pre>
+        </div>
+      )}
+    </div>
   )
 }

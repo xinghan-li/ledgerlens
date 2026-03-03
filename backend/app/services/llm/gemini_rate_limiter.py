@@ -3,13 +3,19 @@ Gemini Rate Limiter: Manage Gemini API free tier limit (15 requests/minute).
 
 Uses UTC time, resets counter every minute.
 Uses asyncio.Lock to ensure thread safety.
+Also checks that GEMINI_API_KEY is set and not invalid (from previous failure).
 """
 from datetime import datetime, timezone
 from typing import Dict, Tuple
 import logging
 import asyncio
 
+from ...config import settings
+
 logger = logging.getLogger(__name__)
+
+# Set by gemini_client when a 400 "API key not valid" is received (avoids repeated failing calls)
+_gemini_key_invalid: bool = False
 
 # Thread-safe state management
 _lock = asyncio.Lock()
@@ -18,9 +24,15 @@ _counter: int = 0
 _max_requests_per_minute: int = 15
 
 
+def set_gemini_key_invalid(invalid: bool = True) -> None:
+    """Mark Gemini API key as invalid (e.g. after 400 from Google). Used by gemini_client."""
+    global _gemini_key_invalid
+    _gemini_key_invalid = invalid
+
+
 async def check_gemini_available() -> Tuple[bool, str]:
     """
-    Check if Gemini is available (not exceeding free tier limit).
+    Check if Gemini is available (key set, key not known invalid, not exceeding free tier limit).
     
     Note: This function is async and uses a lock to ensure thread safety.
     
@@ -30,6 +42,11 @@ async def check_gemini_available() -> Tuple[bool, str]:
         - reason: Reason for unavailability (empty string if available)
     """
     global _current_minute, _counter
+
+    if not (settings.gemini_api_key and settings.gemini_api_key.strip()):
+        return False, "GEMINI_API_KEY is not set in environment"
+    if _gemini_key_invalid:
+        return False, "Gemini API key was rejected by Google (invalid or disabled). Fix GEMINI_API_KEY and restart the backend."
     
     async with _lock:
         # Get current UTC time minute (format: YYYY-MM-DD HH:MM)

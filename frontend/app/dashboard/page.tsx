@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { getFirebaseAuth, getAuthToken } from '@/lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
@@ -29,6 +29,9 @@ export default function DashboardPage() {
   const [uploadResult, setUploadResult] = useState<any>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const workingHardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const uploadAbortRef = useRef<AbortController | null>(null)
+  const uploadCancelledByUserRef = useRef(false)
+  const uploadCleanupRef = useRef<{ clearBanner: () => void; timeoutId: ReturnType<typeof setTimeout> | null } | null>(null)
   const [receiptList, setReceiptList] = useState<ReceiptListItem[]>([])
   const [receiptListLoading, setReceiptListLoading] = useState(false)
   const [expandedReceiptId, setExpandedReceiptId] = useState<string | null>(null)
@@ -59,7 +62,31 @@ export default function DashboardPage() {
   const [categoryUpdateMessage, setCategoryUpdateMessage] = useState<string | null>(null)
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
+  const [smartCategorizeSelectedIds, setSmartCategorizeSelectedIds] = useState<Set<string>>(new Set())
+  const [userClass, setUserClass] = useState<string | null>(null)
+  const [processingRunsModalReceiptId, setProcessingRunsModalReceiptId] = useState<string | null>(null)
+  const [processingRunsData, setProcessingRunsData] = useState<{ track: string; track_method: string | null; runs: Array<Record<string, unknown>>; workflow_steps: Array<Record<string, unknown>> } | null>(null)
+  const [processingRunsLoading, setProcessingRunsLoading] = useState(false)
   const router = useRouter()
+
+  useEffect(() => {
+    setSmartCategorizeSelectedIds(new Set())
+  }, [expandedReceiptId])
+
+  useEffect(() => {
+    if (!token) {
+      setUserClass(null)
+      return
+    }
+    let cancelled = false
+    fetch(`${apiUrl()}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setUserClass(data.user_class ?? null)
+      })
+      .catch(() => { if (!cancelled) setUserClass(null) })
+    return () => { cancelled = true }
+  }, [token])
 
   function formatAddressMultiLine(addr: string): string {
     if (!addr || addr.includes('\n')) return addr || ''
@@ -80,6 +107,11 @@ export default function DashboardPage() {
     return s.slice(0, 5)
   }
 
+  /** 匹配 "City, ST ZIP" 或 "City, ST ZIP-4" 格式，避免把城市/州/邮编误填到 Address line 2 */
+  function looksLikeCityStateZip(s: string): boolean {
+    return /^[A-Za-z\s\-'.]+,\s*[A-Z]{2}\s+\d{5}(-\d{4})?$/i.test((s || '').trim())
+  }
+
   function parseAddressToFields(addr: string): { line1: string; line2: string; cityStateZip: string; country: string } {
     const formatted = formatAddressMultiLine(addr || '')
     const lines = formatted.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
@@ -94,6 +126,15 @@ export default function DashboardPage() {
         line2: lines.length >= 3 ? lines[1] : '',
         cityStateZip,
         country: last,
+      }
+    }
+    // 两行时：若第二行是 "City, ST ZIP" 格式，应填到 cityStateZip，不要填到 line2
+    if (lines.length === 2 && looksLikeCityStateZip(lines[1])) {
+      return {
+        line1: lines[0],
+        line2: '',
+        cityStateZip: lines[1],
+        country: '',
       }
     }
     return {
@@ -128,20 +169,26 @@ export default function DashboardPage() {
     setEditCurrency(receipt.currency ?? 'USD')
     setEditPaymentMethod(receipt.payment_method ?? '')
     setEditPaymentLast4(receipt.card_last4 ?? '')
+    const toDollarItem = (v: any) => {
+      if (v == null || v === '') return ''
+      const n = Number(v)
+      if (Number.isInteger(n) && n >= 100) return (n / 100).toFixed(2)
+      return String(v)
+    }
     setEditItems(
       items.length
         ? items.map((it: any) => ({
             id: it.id ?? undefined,
             product_name: it.product_name ?? '',
-            quantity: it.quantity != null ? String(it.quantity) : '',
+            quantity: it.quantity != null && it.quantity !== '' ? String(it.quantity) : '1',
             unit: it.unit ?? '',
-            unit_price: it.unit_price != null ? String(it.unit_price) : '',
-            line_total: it.line_total != null ? String(it.line_total) : '',
+            unit_price: it.unit_price != null ? (typeof it.unit_price === 'number' || !Number.isNaN(Number(it.unit_price)) ? toDollarItem(it.unit_price) : String(it.unit_price)) : '',
+            line_total: it.line_total != null ? (typeof it.line_total === 'number' || !Number.isNaN(Number(it.line_total)) ? toDollarItem(it.line_total) : String(it.line_total)) : '',
             on_sale: it.on_sale ?? false,
             original_price: it.original_price != null ? String(it.original_price) : '',
             discount_amount: it.discount_amount != null ? String(it.discount_amount) : '',
           }))
-        : [{ product_name: '', quantity: '', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }]
+        : [{ product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }]
     )
     setCorrectionOpen(false)
     setShowRawJson(false)
@@ -230,6 +277,7 @@ export default function DashboardPage() {
     }
 
     // 重置状态
+    uploadCancelledByUserRef.current = false
     setUploading(true)
     setUploadResult(null)
     setUploadError(null)
@@ -254,6 +302,8 @@ export default function DashboardPage() {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 180000) // 3 min
       workingHardTimerRef.current = setTimeout(() => setUploadWorkingHard(true), 30000) // 30s 后显示友好提示
+      uploadAbortRef.current = controller
+      uploadCleanupRef.current = { clearBanner: clearBannerTimers, timeoutId }
 
       try {
         const response = await fetch(`${apiUrl}/api/receipt/workflow`, {
@@ -318,6 +368,12 @@ export default function DashboardPage() {
         clearTimeout(workingHardTimerRef.current)
         workingHardTimerRef.current = null
       }
+      // 用户点击 Stop 取消：不显示错误，直接回到未上传状态
+      if (error instanceof Error && error.name === 'AbortError' && uploadCancelledByUserRef.current) {
+        setUploadError(null)
+        setUploadResult(null)
+        return
+      }
       // 更详细的错误提示
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
@@ -339,9 +395,22 @@ export default function DashboardPage() {
         clearTimeout(workingHardTimerRef.current)
         workingHardTimerRef.current = null
       }
+      uploadAbortRef.current = null
+      uploadCleanupRef.current = null
       // 清空 input value，否则下次选同一文件时 onChange 不会触发（删除小票后未整页刷新时会出现）
       e.target.value = ''
     }
+  }
+
+  const handleCancelUpload = (): void => {
+    uploadCancelledByUserRef.current = true
+    uploadCleanupRef.current?.clearBanner()
+    if (uploadCleanupRef.current?.timeoutId != null) clearTimeout(uploadCleanupRef.current.timeoutId)
+    if (workingHardTimerRef.current) {
+      clearTimeout(workingHardTimerRef.current)
+      workingHardTimerRef.current = null
+    }
+    uploadAbortRef.current?.abort()
   }
 
   if (loading) {
@@ -376,23 +445,30 @@ export default function DashboardPage() {
               id="receipt-upload"
               disabled={uploading}
             />
-            <label
-              htmlFor="receipt-upload"
-              className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white cursor-pointer transition select-none min-h-[44px] sm:min-h-0 ${
-                uploading
-                  ? 'bg-green-500 cursor-wait'
-                  : 'bg-green-600 hover:bg-green-700'
-              }`}
-            >
-              {uploading ? (
-                <>
-                  <span className="inline-block animate-spin text-lg">⏳</span>
-                  <span>Processing…</span>
-                </>
-              ) : (
-                'Upload receipt'
-              )}
-            </label>
+            {uploading ? (
+              <div
+                className="group inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-500 cursor-wait select-none min-h-[44px] sm:min-h-0"
+                title="Hover to show Stop"
+              >
+                <span className="inline-block animate-spin text-lg">⏳</span>
+                <span>Processing…</span>
+                <button
+                  type="button"
+                  onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); handleCancelUpload() }}
+                  className="ml-2 px-2.5 py-1 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 focus:outline-none"
+                  aria-label="Stop and cancel upload"
+                >
+                  Stop
+                </button>
+              </div>
+            ) : (
+              <label
+                htmlFor="receipt-upload"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 cursor-pointer transition select-none min-h-[44px] sm:min-h-0"
+              >
+                Upload receipt
+              </label>
+            )}
             <CameraCaptureButton
               token={token}
               disabled={uploading}
@@ -458,9 +534,19 @@ export default function DashboardPage() {
         )}
         {/* 失败/需人工：bookkeeper 升级提示 */}
         {(uploadError || (uploadResult && uploadResult.success === false && uploadResult.error !== 'duplicate_receipt')) && (
-          <div className="mb-4 p-3 sm:p-4 bg-amber-50 border border-amber-200 rounded-lg">
-            <p className="text-amber-900 font-medium text-sm sm:text-base mb-1">The bookkeeper had questions and escalated.</p>
-            <p className="text-amber-800 text-sm">You can close this page and come back later — we’ll have it ready when they’re done.</p>
+          <div className="mb-4 p-3 sm:p-4 bg-amber-50 border border-amber-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <p className="text-amber-900 font-medium text-sm sm:text-base mb-1">The bookkeeper had questions and escalated.</p>
+              <p className="text-amber-800 text-sm">You can close this page and come back later — we’ll have it ready when they’re done.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setUploadResult(null); setUploadError(null) }}
+              className="text-amber-800 hover:text-amber-900 font-medium text-sm px-3 py-1.5 rounded border border-amber-300 hover:bg-amber-100 shrink-0"
+              aria-label="Dismiss"
+            >
+              Dismiss
+            </button>
           </div>
         )}
         {uploadError && (
@@ -576,171 +662,100 @@ export default function DashboardPage() {
                             )}
                             {expandedReceiptId === r.id && expandedReceiptJson && !expandedReceiptJson.error && (
                               <div className="border-t border-gray-200 bg-gray-50 p-4">
-                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
-                                  <div className="relative bg-white border border-gray-200 rounded-lg p-4 font-mono text-sm text-gray-800 flex flex-col min-h-0">
-                                    <button
-                                      type="button"
-                                      className="absolute top-2 right-2 text-sm text-gray-700 bg-gray-200 hover:bg-gray-300 px-2.5 py-1 rounded border border-gray-300 min-w-26"
-                                      onClick={(e) => { e.stopPropagation(); setCorrectionOpen((o) => !o) }}
-                                    >
-                                      {correctionOpen ? 'Hide Edits' : 'Edit Fields'}
-                                    </button>
-                                    {(() => {
-                                      const rec = expandedReceiptJson?.data?.receipt
-                                      const items = expandedReceiptJson?.data?.items || []
-                                      const chainName = expandedReceiptJson?.data?.chain_name
-                                      const $ = (v: any) => (v == null || v === '' ? null : String(v))
-                                      const money = (v: any) => {
-                                        if (v == null || v === '') return null
-                                        const n = Number(v)
-                                        if (Number.isInteger(n) && n >= 100) return (n / 100).toFixed(2)
-                                        return Number.isFinite(n) ? n.toFixed(2) : String(v)
-                                      }
-                                      const preserveUpper = new Set(['US', 'CA', 'USA', 'UK', 'BC', 'WA'])
-                                      const titleCase = (s: string) =>
-                                        s ? s.replace(/\w\S*/g, (w) => {
-                                          const u = w.toUpperCase()
-                                          if (preserveUpper.has(u)) return u
-                                          return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
-                                        }) : ''
-                                      if (!rec && items.length === 0) return <span>(No data)</span>
-                                      const displayName = chainName || titleCase(rec?.merchant_name || '') || rec?.merchant_name || ''
-                                      const rawAddress = $(rec?.merchant_address)
-                                      const addressLines = rawAddress ? rawAddress.split(/\r?\n/).map((l: string) => l.trim()).filter(Boolean) : []
-                                      const lastLine = addressLines[addressLines.length - 1]
-                                      const isCountryOnly = lastLine && /^[A-Z]{2}$/i.test(lastLine)
-                                      const address = addressLines.length
-                                        ? isCountryOnly && addressLines.length >= 2
-                                          ? [...addressLines.slice(0, -2), addressLines[addressLines.length - 2] + ' ' + lastLine].join('\n')
-                                          : addressLines.join('\n')
-                                        : ''
-                                      const lineCount = 1 + addressLines.length + (rec?.merchant_phone ? 1 : 0)
-                                      return (
-                                        <div className="space-y-0">
-                                          {/* Section1: 店名+地址+Tel 在一个 div 里，5 行 box 高 100px；分割线保留 my-2 pt-2 */}
-                                          <div className="min-h-22">
-                                            {(displayName || address || rec?.merchant_phone) ? (
-                                              <div className="text-gray-800 whitespace-pre-line leading-5 font-mono text-sm">
-                                                {displayName && <span className="font-semibold">{displayName}</span>}
-                                                {address && <>{'\n'}<span className="text-gray-600">{address}</span></>}
-                                                {rec?.merchant_phone && <>{'\n'}<span className="text-gray-600">Tel: {rec.merchant_phone}</span></>}
-                                              </div>
-                                            ) : null}
-                                            {(displayName || address) && (
-                                              <div className="border-t border-dashed border-gray-300 my-2 pt-2" />
-                                            )}
+                                <div className="relative bg-white border border-gray-200 rounded-lg overflow-hidden flex flex-col min-h-0">
+                                  {(() => {
+                                    const rec = expandedReceiptJson?.data?.receipt
+                                    const items = expandedReceiptJson?.data?.items || []
+                                    const chainName = expandedReceiptJson?.data?.chain_name
+                                    const $ = (v: any) => (v == null || v === '' ? null : String(v))
+                                    const money = (v: any) => {
+                                      if (v == null || v === '') return null
+                                      const n = Number(v)
+                                      if (Number.isInteger(n) && n >= 100) return (n / 100).toFixed(2)
+                                      return Number.isFinite(n) ? n.toFixed(2) : String(v)
+                                    }
+                                    const preserveUpper = new Set(['US', 'CA', 'USA', 'UK', 'BC', 'WA'])
+                                    const titleCase = (s: string) =>
+                                      s ? s.replace(/\w\S*/g, (w) => {
+                                        const u = w.toUpperCase()
+                                        if (preserveUpper.has(u)) return u
+                                        return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+                                      }) : ''
+                                    if (!rec && items.length === 0) return <span>(No data)</span>
+                                    const displayName = chainName || titleCase(rec?.merchant_name || '') || rec?.merchant_name || ''
+                                    const rawAddress = $(rec?.merchant_address)
+                                    const addressLines = rawAddress ? rawAddress.split(/\r?\n/).map((l: string) => l.trim()).filter(Boolean) : []
+                                    const lastLine = addressLines[addressLines.length - 1]
+                                    const isCountryOnly = lastLine && /^[A-Z]{2}$/i.test(lastLine)
+                                    const address = addressLines.length
+                                      ? isCountryOnly && addressLines.length >= 2
+                                        ? [...addressLines.slice(0, -2), addressLines[addressLines.length - 2] + ' ' + lastLine].join('\n')
+                                        : addressLines.join('\n')
+                                      : ''
+                                    return (
+                                      <>
+                                      {/*
+                                        视觉两栏，结构5块：
+                                          [左上: 店铺信息] [右上: 分类头]
+                                          [中间: 全宽8列表，第4-5列之间有空列做分隔线]
+                                          [左下: 小计/支付] [右下: 消息/空]
+                                        Edit 面板覆盖右半（absolute left-1/2 ... right-0）
+                                      */}
+                                      <div className="relative bg-white border border-gray-200 rounded-lg overflow-hidden font-mono text-sm text-gray-800">
+                                        {/*
+                                          统一 CSS Grid：10 列 = [product(2fr) | qty(3rem) | unit$(4rem) | $amt(5.5rem) | sep(8px) | lvlI(1fr) | lvlII(1fr) | lvlIII(1fr) | checkbox(2rem) | edit(2.5rem)]
+                                          所有行（header/col-labels/items/footer）共用同一个 grid container，分隔线位置数学上完全一致。
+                                          头行和尾行：左侧 col-span-4，sep 1列，右侧 col-span-5。
+                                        */}
+                                        <div
+                                          className="grid overflow-x-auto"
+                                          style={{ gridTemplateColumns: 'minmax(0,2fr) 3rem 4rem 5.5rem 8px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 2rem 2.5rem' }}
+                                        >
+                                          {/* ① 左上：店铺信息 + Edit Fields | sep | 右上：Classification + Smart */}
+                                          <div className="col-span-4 p-4 border-b border-gray-200 flex items-start justify-between gap-2">
+                                            <div className="text-gray-800 whitespace-pre-line leading-5 min-w-0">
+                                              {displayName && <span className="font-semibold">{displayName}</span>}
+                                              {address && <>{'\n'}<span className="text-gray-600">{address}</span></>}
+                                              {rec?.merchant_phone && <>{'\n'}<span className="text-gray-600">Tel: {rec.merchant_phone}</span></>}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              className="shrink-0 text-sm text-gray-700 bg-gray-200 hover:bg-gray-300 px-2.5 py-1 rounded border border-gray-300 whitespace-nowrap ml-2"
+                                              onClick={(e) => { e.stopPropagation(); setCorrectionOpen((o) => !o) }}
+                                            >
+                                              {correctionOpen ? 'Hide Edits' : 'Edit Fields'}
+                                            </button>
                                           </div>
-                                          {/* Section2: items table — each row min-h-7 to align with classification */}
-                                          {items.length > 0 && (
-                                            <>
-                                              <div className="grid grid-cols-[1fr_3rem_5rem_5rem] gap-x-3 gap-y-0 text-left mb-0.5 min-h-7 items-center">
-                                                <div className="text-gray-500 text-xs" />
-                                                <div className="text-gray-500 text-xs text-center">Qty</div>
-                                                <div className="text-gray-500 text-xs text-right">Unit $</div>
-                                                <div className="text-gray-500 text-xs text-right">$ Amount</div>
-                                              </div>
-                                              {items.map((it: any, i: number) => {
-                                                const name = it.product_name ?? it.original_product_name ?? ''
-                                                const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
-                                                const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
-                                                const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
-                                                return (
-                                                  <div key={i} className="grid grid-cols-[1fr_3rem_5rem_5rem] gap-x-3 gap-y-0 min-h-7 items-center">
-                                                    <div className="truncate" title={name}>{name}</div>
-                                                    <div className="text-center tabular-nums">{Number.isFinite(qty) ? qty : ''}</div>
-                                                    <div className="text-right tabular-nums">{u}</div>
-                                                    <div className="text-right tabular-nums">{p}</div>
-                                                  </div>
-                                                )
-                                              })}
-                                              <div className="border-t border-dashed border-gray-300 my-2 pt-2" />
-                                            </>
-                                          )}
-                                          {/* Subtotal / Tax / Total 与第四栏 price 对齐 */}
-                                          {rec && (
-                                            <>
-                                              <div className="grid grid-cols-[1fr_3rem_5rem_5rem] gap-x-3">
-                                                <div>Subtotal</div>
-                                                <div />
-                                                <div />
-                                                <div className="text-right tabular-nums">{rec.subtotal != null ? (money(rec.subtotal) ?? rec.subtotal) : ''}</div>
-                                              </div>
-                                              <div className="grid grid-cols-[1fr_3rem_5rem_5rem] gap-x-3">
-                                                <div>Tax</div>
-                                                <div />
-                                                <div />
-                                                <div className="text-right tabular-nums">{rec.tax != null ? (money(rec.tax) ?? rec.tax) : ''}</div>
-                                              </div>
-                                              <div className="grid grid-cols-[1fr_3rem_5rem_5rem] gap-x-3 font-medium">
-                                                <div>Total</div>
-                                                <div />
-                                                <div />
-                                                <div className="text-right tabular-nums">{rec.total != null ? (money(rec.total) ?? rec.total) : ''}</div>
-                                              </div>
-                                              <div className="border-t border-dashed border-gray-300 my-2 pt-2" />
-                                              {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
-                                              {$(rec.card_last4) && <div>Card: ****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
-                                              {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
-                                              {(editPurchaseTime?.trim() || $(rec.purchase_time)) && (
-                                                <div>Time: {formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '')}</div>
-                                              )}
-                                            </>
-                                          )}
-                                        </div>
-                                      )
-                                    })()}
-                                  </div>
-                                  <div className="relative border border-gray-200 rounded-lg overflow-hidden bg-white min-h-[200px] flex flex-col">
-                                    {/* Row 1: CLASSIFICATION title + Smart categorization button */}
-                                    <div className="px-3 py-2 border-b border-gray-200 bg-gray-50 flex items-center justify-between gap-2 shrink-0">
-                                      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Classification</p>
-                                      <button
-                                        type="button"
-                                        className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:bg-blue-50 px-2 py-1.5 rounded border border-blue-200"
-                                        onClick={async () => {
-                                          if (!expandedReceiptId || !token) return
-                                          setSmartCategorizeLoading(true)
-                                          setSmartCategorizeMessage(null)
-                                          try {
-                                            const res = await fetch(`${apiUrl()}/api/receipt/${expandedReceiptId}/smart-categorize`, {
-                                              method: 'POST',
-                                              headers: { Authorization: `Bearer ${token}` },
-                                            })
-                                            const data = await res.json().catch(() => ({}))
-                                            if (res.ok) {
-                                              setSmartCategorizeMessage(data.updated_count ? `Updated ${data.updated_count} item(s)` : 'No uncategorized items')
-                                              await refetchReceiptDetail()
-                                            } else {
-                                              setSmartCategorizeMessage(data.detail || 'Failed')
-                                            }
-                                          } catch (e) {
-                                            setSmartCategorizeMessage('Network error')
-                                          } finally {
-                                            setSmartCategorizeLoading(false)
-                                          }
-                                        }}
-                                        disabled={smartCategorizeLoading}
-                                      >
-                                        {smartCategorizeLoading ? '…' : 'Smart categorization'}
-                                      </button>
-                                    </div>
-                                    {/* 右边留白高度 63px（由左边/右侧其他 box 计算得出，此处先固定） */}
-                                    <div aria-hidden="true" className="shrink-0" style={{ minHeight: '63px' }} />
-                                    {/* "Category" row — no top margin so it sits flush under whitespace */}
-                                    <div className="px-3 pt-2 min-h-7 flex items-end">
-                                      <span className="text-xs text-gray-500">Category</span>
-                                    </div>
-                                    {/* Row 3: level I / II / III + 修改 — aligns with left "Qty Unit $ $ Amount" row */}
-                                    <div className="px-3 overflow-auto">
-                                      {(expandedReceiptJson?.data?.items || []).length > 0 ? (
-                                        <>
-                                          <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-x-2 gap-y-0 text-left mb-0.5 min-h-7 items-center text-xs text-gray-500 font-medium">
-                                            <div>level I</div>
-                                            <div>level II</div>
-                                            <div>level III</div>
-                                            <div className="w-14" />
+                                          <div className="border-b border-l border-r border-gray-200 bg-gray-100" />
+                                          <div className="col-span-5 p-4 border-b border-gray-200 bg-gray-50/50 flex items-center">
+                                            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Classification</p>
                                           </div>
-                                          {(expandedReceiptJson?.data?.items || []).map((it: any, i: number) => {
+
+                                          {/* ② 列标签行：大写加粗，无分割线 */}
+                                          <div className="py-1.5 px-3 text-xs text-gray-700 font-semibold uppercase">Product</div>
+                                          <div className="py-1.5 pl-3 pr-2 text-xs text-gray-700 font-semibold uppercase text-center">Qty</div>
+                                          <div className="py-1.5 pl-3 pr-2 text-xs text-gray-700 font-semibold uppercase text-right">Unit $</div>
+                                          <div className="py-1.5 pl-3 pr-2 text-xs text-gray-700 font-semibold uppercase text-right">$ Amount</div>
+                                          <div className="bg-gray-100" />
+                                          <div className="py-1.5 px-3 text-xs text-gray-700 font-semibold uppercase">Level I</div>
+                                          <div className="py-1.5 px-2 text-xs text-gray-700 font-semibold uppercase">Level II</div>
+                                          <div className="py-1.5 px-2 text-xs text-gray-700 font-semibold uppercase">Level III</div>
+                                          <div className="py-1.5 px-1 flex items-center justify-center" title="Select for Smart Categorization" />
+                                          <div />
+
+                                          {/* ③ item 行：每个 React.Fragment 贡献 9 个 grid 子元素 */}
+                                          {items.length === 0 && (
+                                            <React.Fragment>
+                                              <div className="col-span-4 px-3 py-3 text-gray-400 text-sm">No items</div>
+                                              <div className="bg-gray-100" />
+                                              <div className="col-span-5" />
+                                            </React.Fragment>
+                                          )}
+                                          {items.map((it: any, i: number) => {
+                                            const name = it.product_name ?? it.original_product_name ?? ''
+                                            const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
+                                            const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
+                                            const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
                                             const path = (it.category_path ?? '').trim()
                                             const parts = path ? path.split(/\s*[\/>]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
                                             const [c1, c2, c3] = [parts[0] ?? '—', parts[1] ?? '—', parts[2] ?? '—']
@@ -768,23 +783,17 @@ export default function DashboardPage() {
                                               setEditCatL2('')
                                               setEditCatL3('')
                                             }
-                                            const cancelEdit = () => {
-                                              setEditingItemId(null)
-                                              setCategoryUpdateMessage(null)
-                                            }
+                                            const cancelEdit = () => { setEditingItemId(null); setCategoryUpdateMessage(null) }
                                             const confirmEdit = async () => {
                                               if (!expandedReceiptId || !token) return
                                               setCategoryUpdateMessage(null)
                                               const toSend = editCatL3 || editCatL2 || editCatL1 || null
                                               try {
-                                                const res = await fetch(
-                                                  `${apiUrl()}/api/receipt/${expandedReceiptId}/item/${itemId}/category`,
-                                                  {
-                                                    method: 'PATCH',
-                                                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                    body: JSON.stringify({ category_id: toSend }),
-                                                  }
-                                                )
+                                                const res = await fetch(`${apiUrl()}/api/receipt/${expandedReceiptId}/item/${itemId}/category`, {
+                                                  method: 'PATCH',
+                                                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                  body: JSON.stringify({ category_id: toSend }),
+                                                })
                                                 if (res.ok) {
                                                   setCategoryUpdateMessage('Saved')
                                                   await refetchReceiptDetail()
@@ -798,77 +807,156 @@ export default function DashboardPage() {
                                               }
                                             }
                                             return (
-                                              <div key={itemId ?? i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-x-2 gap-y-0 min-h-7 items-center text-sm">
-                                                {isEditing ? (
-                                                  <>
-                                                    <select
-                                                      className="border rounded px-1 py-0.5 text-xs w-full max-w-[120px]"
-                                                      value={editCatL1}
+                                              <React.Fragment key={itemId ?? i}>
+                                                <div className="py-1.5 px-3 truncate min-w-0 text-gray-800" title={name}>{name}</div>
+                                                <div className="py-1.5 pl-3 pr-2 text-center tabular-nums">{Number.isFinite(qty) ? qty : ''}</div>
+                                                <div className="py-1.5 pl-3 pr-2 text-right tabular-nums">{u}</div>
+                                                <div className="py-1.5 pl-3 pr-2 text-right tabular-nums">{p}</div>
+                                                <div className="bg-gray-100" />
+                                                <div className="py-1.5 px-3">
+                                                  {isEditing ? (
+                                                    <select className="border rounded px-1 py-0.5 text-xs w-full" value={editCatL1} onChange={(e) => { setEditCatL1(e.target.value); setEditCatL2(''); setEditCatL3('') }}><option value="">—</option>{L1List.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+                                                  ) : (
+                                                    <span className="truncate block text-gray-800" title={c1}>{c1}</span>
+                                                  )}
+                                                </div>
+                                                <div className="py-1.5 px-2">
+                                                  {isEditing ? (
+                                                    <select className="border rounded px-1 py-0.5 text-xs w-full" value={editCatL2} onChange={(e) => { setEditCatL2(e.target.value); setEditCatL3('') }}><option value="">—</option>{L2List.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+                                                  ) : (
+                                                    <span className="truncate block text-gray-800" title={c2}>{c2}</span>
+                                                  )}
+                                                </div>
+                                                <div className="py-1.5 px-2">
+                                                  {isEditing ? (
+                                                    <select className="border rounded px-1 py-0.5 text-xs w-full" value={editCatL3} onChange={(e) => setEditCatL3(e.target.value)}><option value="">—</option>{L3List.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+                                                  ) : (
+                                                    <span className="truncate block text-gray-800" title={c3}>{c3}</span>
+                                                  )}
+                                                </div>
+                                                <div className="py-1.5 px-1 flex items-center justify-center">
+                                                  <label className="relative cursor-pointer flex items-center justify-center w-5 h-5 rounded border border-gray-300 bg-white has-[:checked]:bg-green-600 has-[:checked]:border-green-600">
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={smartCategorizeSelectedIds.has(itemId)}
                                                       onChange={(e) => {
-                                                        setEditCatL1(e.target.value)
-                                                        setEditCatL2('')
-                                                        setEditCatL3('')
+                                                        setSmartCategorizeSelectedIds((prev) => {
+                                                          const next = new Set(prev)
+                                                          if (e.target.checked) next.add(itemId)
+                                                          else next.delete(itemId)
+                                                          return next
+                                                        })
                                                       }}
-                                                    >
-                                                      <option value="">—</option>
-                                                      {L1List.map((c) => (
-                                                        <option key={c.id} value={c.id}>{c.name}</option>
-                                                      ))}
-                                                    </select>
-                                                    <select
-                                                      className="border rounded px-1 py-0.5 text-xs w-full max-w-[120px]"
-                                                      value={editCatL2}
-                                                      onChange={(e) => {
-                                                        setEditCatL2(e.target.value)
-                                                        setEditCatL3('')
-                                                      }}
-                                                    >
-                                                      <option value="">—</option>
-                                                      {L2List.map((c) => (
-                                                        <option key={c.id} value={c.id}>{c.name}</option>
-                                                      ))}
-                                                    </select>
-                                                    <select
-                                                      className="border rounded px-1 py-0.5 text-xs w-full max-w-[120px]"
-                                                      value={editCatL3}
-                                                      onChange={(e) => setEditCatL3(e.target.value)}
-                                                    >
-                                                      <option value="">—</option>
-                                                      {L3List.map((c) => (
-                                                        <option key={c.id} value={c.id}>{c.name}</option>
-                                                      ))}
-                                                    </select>
-                                                    <div className="flex items-center gap-0.5 w-14">
+                                                      className="sr-only peer"
+                                                    />
+                                                    <span className="absolute inset-0 flex items-center justify-center pointer-events-none select-none text-white text-xs font-bold opacity-0 peer-checked:opacity-100">✓</span>
+                                                  </label>
+                                                </div>
+                                                <div className="py-1.5 px-2 flex items-center">
+                                                  {isEditing ? (
+                                                    <div className="flex items-center gap-0.5">
                                                       <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200" onClick={confirmEdit} title="Confirm">✓</button>
                                                       <button type="button" className="p-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300" onClick={cancelEdit} title="Cancel">✕</button>
                                                     </div>
-                                                  </>
-                                                ) : (
-                                                  <>
-                                                    <div className="truncate text-gray-800" title={c1}>{c1}</div>
-                                                    <div className="truncate text-gray-800" title={c2}>{c2}</div>
-                                                    <div className="truncate text-gray-800" title={c3}>{c3}</div>
+                                                  ) : (
                                                     <button type="button" className="p-1 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded" onClick={startEdit} title="Edit">✏️</button>
-                                                  </>
-                                                )}
-                                              </div>
+                                                  )}
+                                                </div>
+                                              </React.Fragment>
                                             )
                                           })}
-                                          {(categoryUpdateMessage || smartCategorizeMessage) && (
-                                            <div className={`mt-1 text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage && smartCategorizeMessage.startsWith('Updated')) ? 'text-green-600' : 'text-red-600'}`}>
-                                              {categoryUpdateMessage || smartCategorizeMessage}
+
+                                          {/* ④ 左下：小计/支付 | sep | ⑤ 右下：消息/空 */}
+                                          <div className="col-span-4 p-4 border-t border-gray-200">
+                                            {rec && (
+                                              <>
+                                                {/* 用与左侧4列相同的列宽做子网格，让数字对齐 $ Amount 列 */}
+                                                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) 3rem 4rem 5.5rem' }}>
+                                                  <div>Subtotal</div><div /><div />
+                                                  <div className="text-right tabular-nums">{rec.subtotal != null ? `$${money(rec.subtotal) ?? rec.subtotal}` : ''}</div>
+                                                  <div>Tax</div><div /><div />
+                                                  <div className="text-right tabular-nums">{rec.tax != null ? `$${money(rec.tax) ?? rec.tax}` : ''}</div>
+                                                  <div className="font-medium">Total</div><div /><div />
+                                                  <div className="text-right tabular-nums font-medium">{rec.total != null ? `$${money(rec.total) ?? rec.total}` : ''}</div>
+                                                </div>
+                                                <div className="border-t border-dashed border-gray-300 my-2 pt-2" />
+                                                {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
+                                                {$(rec.card_last4) && <div>Card: ****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
+                                                {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
+                                                {(editPurchaseTime?.trim() || $(rec.purchase_time)) && <div>Time: {formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '')}</div>}
+                                              </>
+                                            )}
+                                          </div>
+                                          <div className="border-t border-gray-200 bg-gray-100" />
+                                          <div className="col-span-5 p-4 border-t border-gray-200 flex flex-col gap-2">
+                                            <div className="flex items-start gap-3">
+                                              <span className="text-sm text-gray-900 whitespace-nowrap font-medium pt-0.5">Run Smart Categorization on</span>
+                                              <div className="flex flex-col gap-1 w-36 shrink-0 ml-auto">
+                                                <button
+                                                  type="button"
+                                                  disabled={smartCategorizeLoading || smartCategorizeSelectedIds.size === 0}
+                                                  onClick={async () => {
+                                                    if (!expandedReceiptId || !token || smartCategorizeSelectedIds.size === 0) return
+                                                    setSmartCategorizeLoading(true)
+                                                    setSmartCategorizeMessage(null)
+                                                    try {
+                                                      const res = await fetch(`${apiUrl()}/api/receipt/${expandedReceiptId}/smart-categorize`, {
+                                                        method: 'POST',
+                                                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                        body: JSON.stringify({ item_ids: Array.from(smartCategorizeSelectedIds) }),
+                                                      })
+                                                      const data = await res.json().catch(() => ({}))
+                                                      if (res.ok) {
+                                                        setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done'))
+                                                        setSmartCategorizeSelectedIds(new Set())
+                                                        await refetchReceiptDetail()
+                                                      } else setSmartCategorizeMessage(data.detail || 'Failed')
+                                                    } catch (e) { setSmartCategorizeMessage('Network error') }
+                                                    finally { setSmartCategorizeLoading(false) }
+                                                  }}
+                                                  className="w-full text-sm text-gray-700 bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-center"
+                                                >
+                                                  {smartCategorizeLoading ? 'Running…' : 'Selected Only'}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  disabled={smartCategorizeLoading}
+                                                  onClick={async () => {
+                                                    if (!expandedReceiptId || !token) return
+                                                    setSmartCategorizeLoading(true)
+                                                    setSmartCategorizeMessage(null)
+                                                    try {
+                                                      const res = await fetch(`${apiUrl()}/api/receipt/${expandedReceiptId}/smart-categorize`, {
+                                                        method: 'POST',
+                                                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                        body: JSON.stringify({}),
+                                                      })
+                                                      const data = await res.json().catch(() => ({}))
+                                                      if (res.ok) {
+                                                        setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done'))
+                                                        await refetchReceiptDetail()
+                                                      } else setSmartCategorizeMessage(data.detail || 'Failed')
+                                                    } catch (e) { setSmartCategorizeMessage('Network error') }
+                                                    finally { setSmartCategorizeLoading(false) }
+                                                  }}
+                                                  className="w-full text-sm text-gray-700 bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-center"
+                                                >
+                                                  {smartCategorizeLoading ? 'Running…' : 'All'}
+                                                </button>
+                                              </div>
                                             </div>
-                                          )}
-                                        </>
-                                      ) : (
-                                        <p className="text-gray-400 text-sm">No items</p>
-                                      )}
-                                    </div>
-                                    {/* Edit panel: overlays only this CLASSIFICATION column; scrollable inside */}
-                                    <div
-                                      className={`absolute inset-0 z-10 flex flex-col bg-white border border-gray-200 rounded-lg shadow-lg transition-transform duration-200 ease-out ${correctionOpen ? 'translate-x-0' : 'translate-x-full'}`}
-                                      onClick={(e) => e.stopPropagation()}
-                                    >
+                                            {(categoryUpdateMessage || smartCategorizeMessage) && (
+                                              <div className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage && smartCategorizeMessage.startsWith('Updated')) ? 'text-green-600' : 'text-red-600'}`}>
+                                                {categoryUpdateMessage || smartCategorizeMessage}
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                        {/* Edit panel: 覆盖右侧半块 */}
+                                        <div
+                                          className={`absolute left-1/2 top-0 right-0 bottom-0 z-10 flex flex-col bg-white border-l border-gray-200 shadow-lg transition-transform duration-200 ease-out ${correctionOpen ? 'translate-x-0' : 'translate-x-full'}`}
+                                          onClick={(e) => e.stopPropagation()}
+                                        >
                                       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-gray-50 shrink-0">
                                         <span className="text-sm font-medium text-gray-700">Edit receipt</span>
                                         <button
@@ -946,17 +1034,29 @@ export default function DashboardPage() {
                                         </div>
                                         <div>
                                           <p className="text-xs text-gray-600 mb-2">Item lines</p>
-                                          <div className="space-y-2 max-h-48 overflow-auto">
-                                            {editItems.map((row, idx) => (
-                                              <div key={idx} className="flex flex-wrap gap-2 items-center text-sm border-b border-gray-100 pb-2">
-                                                <input className="min-w-[120px] border rounded px-1.5 py-0.5" placeholder="Product name" value={row.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], product_name: e.target.value }; return n })} />
-                                                <input className="w-14 border rounded px-1.5 py-0.5" placeholder="Qty" value={row.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], quantity: e.target.value }; return n })} />
-                                                <input className="w-14 border rounded px-1.5 py-0.5" placeholder="Unit price" value={row.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], unit_price: e.target.value }; return n })} />
-                                                <input className="w-16 border rounded px-1.5 py-0.5" placeholder="Line total" value={row.line_total} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], line_total: e.target.value }; return n })} />
-                                              </div>
-                                            ))}
+                                          <div className="max-h-48 overflow-auto border border-gray-200 rounded">
+                                            <table className="w-full border-collapse text-sm">
+                                              <thead>
+                                                <tr className="text-xs text-gray-500 font-medium bg-gray-50 border-b border-gray-200">
+                                                  <th className="text-left py-1.5 px-2 font-normal">Product name</th>
+                                                  <th className="text-left py-1.5 px-2 w-16">Qty</th>
+                                                  <th className="text-left py-1.5 px-2 w-20">Unit pr</th>
+                                                  <th className="text-left py-1.5 px-2 w-20">$ Amount</th>
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {editItems.map((row, idx) => (
+                                                  <tr key={idx} className="border-b border-gray-100 last:border-0">
+                                                    <td className="py-1 px-2"><input className="w-full min-w-[120px] border rounded px-1.5 py-0.5" placeholder="Product name" value={row.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], product_name: e.target.value }; return n })} /></td>
+                                                    <td className="py-1 px-2"><input type="text" inputMode="numeric" className="w-full border rounded px-1.5 py-0.5" value={row.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], quantity: e.target.value }; return n })} /></td>
+                                                    <td className="py-1 px-2"><input className="w-full border rounded px-1.5 py-0.5" value={row.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], unit_price: e.target.value }; return n })} /></td>
+                                                    <td className="py-1 px-2"><input className="w-full border rounded px-1.5 py-0.5" value={row.line_total} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], line_total: e.target.value }; return n })} /></td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </table>
                                           </div>
-                                          <button type="button" className="mt-2 text-sm text-blue-600 hover:underline" onClick={() => setEditItems((prev) => [...prev, { product_name: '', quantity: '', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])}>
+                                          <button type="button" className="mt-2 text-sm text-blue-600 hover:underline" onClick={() => setEditItems((prev) => [...prev, { product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])}>
                                             + Add row
                                           </button>
                                         </div>
@@ -1005,6 +1105,8 @@ export default function DashboardPage() {
                                               const data = res.ok ? await res.json().catch(() => ({})) : await res.json().catch(() => ({}))
                                               if (!res.ok) throw new Error(data.detail || data.detail?.detail || 'Submit failed')
                                               setCorrectMessage('Saved. Receipt updated.')
+                                              setUploadResult(null)
+                                              setUploadError(null)
                                               fetchReceiptList()
                                               const detailRes = await fetch(`${apiUrl()}/api/receipt/${r.id}`, {
                                                 headers: { Authorization: `Bearer ${token}` },
@@ -1025,7 +1127,9 @@ export default function DashboardPage() {
                                       </div>
                                     </div>
                                   </div>
-                                </div>
+                                </>
+                                );
+                                  })()}
                                 <div className="mt-4 flex flex-wrap items-center gap-2">
                                   <button
                                     type="button"
@@ -1045,6 +1149,36 @@ export default function DashboardPage() {
                                   >
                                     Copy
                                   </button>
+                                  {(userClass === 'admin' || userClass === 'super_admin') && (
+                                    <button
+                                      type="button"
+                                      onClick={async (e) => {
+                                        e.stopPropagation()
+                                        if (!token || !r.id) return
+                                        setProcessingRunsModalReceiptId(r.id)
+                                        setProcessingRunsData(null)
+                                        setProcessingRunsLoading(true)
+                                        try {
+                                          const res = await fetch(`${apiUrl()}/api/receipt/${r.id}/processing-runs`, {
+                                            headers: { Authorization: `Bearer ${token}` },
+                                          })
+                                          if (res.ok) {
+                                            const data = await res.json()
+                                            setProcessingRunsData({ track: data.track ?? 'unknown', track_method: data.track_method ?? null, runs: data.runs ?? [], workflow_steps: data.workflow_steps ?? [] })
+                                          } else {
+                                            setProcessingRunsData({ track: 'unknown', track_method: null, runs: [], workflow_steps: [] })
+                                          }
+                                        } catch {
+                                          setProcessingRunsData({ track: 'unknown', track_method: null, runs: [], workflow_steps: [] })
+                                        } finally {
+                                          setProcessingRunsLoading(false)
+                                        }
+                                      }}
+                                      className="text-sm text-blue-600 hover:text-blue-800 underline"
+                                    >
+                                      View workflow
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={async (e) => {
@@ -1086,6 +1220,7 @@ export default function DashboardPage() {
                                   </div>
                                 )}
                               </div>
+                              </div>
                             )}
                           </div>
                         ))}
@@ -1100,7 +1235,109 @@ export default function DashboardPage() {
 
         {/* Data Analysis */}
         <DataAnalysisSection token={token} />
+
+        {/* Processing runs modal (admin only) */}
+        {processingRunsModalReceiptId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setProcessingRunsModalReceiptId(null); setProcessingRunsData(null) }}>
+            <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="px-4 py-3 border-b flex justify-between items-center">
+                <h3 className="font-semibold text-gray-900">Processing workflow — Receipt {processingRunsModalReceiptId.slice(0, 8)}…</h3>
+                <button type="button" onClick={() => { setProcessingRunsModalReceiptId(null); setProcessingRunsData(null) }} className="text-gray-500 hover:text-gray-700 text-lg leading-none">×</button>
+              </div>
+              <div className="p-4 overflow-auto flex-1 min-h-0">
+                {processingRunsLoading ? (
+                  <p className="text-gray-500">Loading…</p>
+                ) : processingRunsData ? (
+                  <>
+                    <div className="mb-4 p-3 bg-gray-100 rounded">
+                      <p className="text-sm font-medium text-gray-700">Track</p>
+                      <p className="text-sm text-gray-900">
+                        {processingRunsData.track === 'specific_rule' ? (
+                          <>Specific rule (method: <code className="bg-white px-1 rounded">{processingRunsData.track_method ?? '—'}</code>)</>
+                        ) : processingRunsData.track === 'general' ? (
+                          <>General track (no store-specific rule matched)</>
+                        ) : (
+                          <>Unknown (no rule_based_cleaning run or failed)</>
+                        )}
+                      </p>
+                    </div>
+                    {Array.isArray(processingRunsData.workflow_steps) && processingRunsData.workflow_steps.length > 0 && (
+                      <div className="mb-4">
+                        <p className="text-sm font-medium text-gray-700 mb-2">Workflow path ({processingRunsData.workflow_steps.length} steps)</p>
+                        <div className="rounded border border-gray-200 bg-gray-50 p-2 flex flex-wrap gap-2">
+                          {(processingRunsData.workflow_steps as Array<Record<string, unknown>>).map((s: Record<string, unknown>, i: number) => {
+                            const r = String(s.result ?? '')
+                            const resultClass = r === 'pass' || r === 'ok' || r === 'yes' ? 'text-green-600' : r === 'fail' || r === 'no' ? 'text-red-600' : 'text-gray-600'
+                            return (
+                              <span key={String(s.id ?? i)} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-mono bg-white border border-gray-200" title={s.details ? JSON.stringify(s.details) : undefined}>
+                                <span className="text-gray-500">{Number(s.sequence) + 1}.</span>
+                                <span className="font-medium">{String(s.step_name ?? '')}</span>
+                                <span className={resultClass}>{r}</span>
+                              </span>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-sm font-medium text-gray-700 mb-2">Runs ({processingRunsData.runs.length})</p>
+                    <div className="space-y-3">
+                      {processingRunsData.runs.map((run: Record<string, unknown>, idx: number) => (
+                        <ProcessingRunCard key={String(run.id ?? idx)} run={run} />
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-gray-500">No data</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </>
+  )
+}
+
+function ProcessingRunCard({ run }: { run: Record<string, unknown> }) {
+  const [showInput, setShowInput] = useState(false)
+  const [showOutput, setShowOutput] = useState(false)
+  const stage = String(run.stage ?? '')
+  const status = String(run.status ?? '')
+  const created = run.created_at ? new Date(String(run.created_at)).toLocaleString() : '—'
+  const provider = run.model_provider ? String(run.model_provider) : ''
+  const model = run.model_name ? String(run.model_name) : ''
+  const validation = run.validation_status ? String(run.validation_status) : ''
+  const err = run.error_message ? String(run.error_message) : ''
+  return (
+    <div className="border rounded p-3 bg-gray-50">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-medium">{stage}</span>
+        <span className={status === 'pass' ? 'text-green-600' : 'text-red-600'}>{status}</span>
+        {validation && <span className="text-gray-500">validation: {validation}</span>}
+        {provider && <span className="text-gray-500">{provider}{model ? ` / ${model}` : ''}</span>}
+        <span className="text-gray-400">{created}</span>
+      </div>
+      {err && <p className="text-xs text-red-600 mt-1">{err}</p>}
+      <div className="mt-2 flex gap-2">
+        <button type="button" onClick={() => setShowInput((v) => !v)} className="text-xs text-blue-600 hover:underline">
+          {showInput ? 'Hide' : 'Show'} input_payload
+        </button>
+        <button type="button" onClick={() => setShowOutput((v) => !v)} className="text-xs text-blue-600 hover:underline">
+          {showOutput ? 'Hide' : 'Show'} output_payload
+        </button>
+      </div>
+      {showInput && run.input_payload != null && (
+        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+          <p className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 border-b border-slate-200">Input</p>
+          <pre className="p-3 text-sm font-mono text-slate-800 whitespace-pre-wrap break-words overflow-auto max-h-72 leading-relaxed">{JSON.stringify(run.input_payload, null, 2).replace(/\\n/g, '\n')}</pre>
+        </div>
+      )}
+      {showOutput && run.output_payload != null && (
+        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+          <p className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 border-b border-slate-200">Output</p>
+          <pre className="p-3 text-sm font-mono text-slate-800 whitespace-pre-wrap break-words overflow-auto max-h-72 leading-relaxed">{JSON.stringify(run.output_payload, null, 2).replace(/\\n/g, '\n')}</pre>
+        </div>
+      )}
+    </div>
   )
 }

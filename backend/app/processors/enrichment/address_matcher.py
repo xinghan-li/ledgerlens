@@ -29,6 +29,26 @@ def _normalize_address_for_compare(s: Optional[str]) -> str:
     return " ".join(s.lower().replace("\n", " ").replace("\r", " ").split())
 
 
+def _street_number_typo_match(addr_norm: str, db_addr: str) -> bool:
+    """
+    True if the two addresses differ only in the first token (street number) by at most one character.
+    Handles common OCR errors (e.g. 13109 vs 18109, 1 vs 8).
+    """
+    if not addr_norm or not db_addr:
+        return False
+    a_tokens = addr_norm.split()
+    b_tokens = db_addr.split()
+    if len(a_tokens) != len(b_tokens) or len(a_tokens) < 2:
+        return False
+    if a_tokens[0] == b_tokens[0]:
+        return True
+    first_a, first_b = a_tokens[0], b_tokens[0]
+    if len(first_a) != len(first_b) or len(first_a) < 2:
+        return False
+    diffs = sum(1 for x, y in zip(first_a, first_b) if x != y)
+    return diffs <= 1
+
+
 def _populate_store_cache():
     """Populate: list of all locations + address_string; index by chain/location name (multi-location chains not overwritten)."""
     global _cache_populated, _locations_list, _locations_by_chain_name, _locations_by_location_name
@@ -162,6 +182,12 @@ def match_store(
             logger.debug(f"Address match score {best_score:.2f} but store name mismatch, skipping")
         # Had address but no DB location matched => no match (do not fall back to name; send to store_candidates)
         logger.info(f"Receipt has address but no store_location matched (best score: {best_score:.2f}). Will not assign any location.")
+        if best_location and best_score >= 0.80:
+            db_addr_best = _normalize_address_for_compare(best_location.get("address_string")) or ""
+            logger.info(
+                "[STORE_DEBUG] near-miss: addr_norm=%r | db_addr=%r (compare lengths/tokens to see why score < 0.90)",
+                addr_norm[:80], db_addr_best[:80],
+            )
         logger.info("[STORE_DEBUG] match_store OUT (address path, no match): matched=False")
         return result
 
