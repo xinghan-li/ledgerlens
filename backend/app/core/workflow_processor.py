@@ -26,7 +26,7 @@ from ..processors.core.sum_checker import check_receipt_sums, apply_field_confli
 from ..services.llm.llm_client import parse_receipt_with_llm
 from ..prompts.prompt_manager import format_prompt, get_default_prompt
 from ..prompts.prompt_loader import get_debug_prompt_system
-from ..services.llm.gemini_client import parse_receipt_with_gemini_vision, parse_receipt_with_gemini
+from ..services.llm.gemini_client import parse_receipt_with_gemini_vision, parse_receipt_with_gemini, is_image_receipt_like
 from ..services.llm.llm_client import parse_receipt_with_llm
 from ..config import settings
 from ..services.database.statistics_manager import record_api_call
@@ -41,11 +41,17 @@ from ..services.database.supabase_client import (
     get_store_chain,
     create_store_candidate,
     save_non_receipt_reject,
+    append_workflow_step,
+    check_user_locked,
+    record_strike,
+    count_strikes_in_last_hour,
+    apply_user_lock,
 )
+from ..processors.enrichment.address_matcher import match_store
 from ..services.ocr.ocr_normalizer import normalize_ocr_result, extract_unified_info
 import shutil
 from ..exporters.csv_exporter import convert_receipt_to_csv_rows, append_to_daily_csv, get_csv_headers
-from ..processors.stores.tnt_supermarket import clean_tnt_receipt_items
+from ..processors.stores.chain_cleaners import apply_chain_cleaner
 from ..processors.enrichment.address_matcher import correct_address
 from ..processors.text.data_cleaner import clean_llm_result
 from ..processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
@@ -341,6 +347,21 @@ async def process_receipt_workflow(
         else:
             logger.warning("get_test_user_id() returned None")
     
+    # 12h lock check (non-admin): 3 strikes in 1h -> locked
+    if user_id:
+        user_class = get_user_class(user_id)
+        if user_class not in ("super_admin", "admin"):
+            locked, locked_until = check_user_locked(user_id)
+            if locked:
+                return {
+                    "success": False,
+                    "receipt_id": None,
+                    "status": "locked",
+                    "error": "user_locked",
+                    "message": "Upload is temporarily locked due to repeated non-receipt uploads. Please try again later.",
+                    "locked_until": locked_until.isoformat() if locked_until else None,
+                }
+    
     # Check for duplicate before processing (if user_id is available)
     # Only admin and super_admin may upload duplicates; others get a clear error for frontend.
     if user_id:
@@ -383,6 +404,8 @@ async def process_receipt_workflow(
         try:
             db_receipt_id = create_receipt(user_id=user_id, raw_file_url=None, file_hash=file_hash)
             logger.info(f"✓ Created receipt record in database: {db_receipt_id}")
+            if db_receipt_id:
+                append_workflow_step(db_receipt_id, "create_db", "ok")
         except Exception as e:
             error_msg = str(e)
             # Check if it's a duplicate error (unique constraint on file_hash)
@@ -446,7 +469,7 @@ async def process_receipt_workflow(
                             ocr_duration = entry.get("duration_ms")
                             break
                     
-                    save_processing_run(
+                    ocr_run_id = save_processing_run(
                         receipt_id=db_receipt_id,
                         stage="ocr",
                         model_provider="google_documentai",
@@ -459,6 +482,7 @@ async def process_receipt_workflow(
                         error_message=None
                     )
                     logger.info(f"Saved OCR processing run for receipt {db_receipt_id}")
+                    append_workflow_step(db_receipt_id, "ocr", "pass", run_id=ocr_run_id)
                     
                     # Record API call for statistics
                     ocr_duration = _get_duration_from_timeline(timeline, "google_ocr")
@@ -476,27 +500,46 @@ async def process_receipt_workflow(
             valid, reject_reason = _validate_receipt_like(google_ocr_result)
             if not valid:
                 timeline.end("google_ocr")
-                image_path_reject = _save_image_for_manual_review(receipt_id, image_bytes, filename)
-                save_non_receipt_reject(
-                    user_id=user_id,
-                    file_hash=original_file_hash,
-                    image_path=str(image_path_reject) if image_path_reject else None,
-                    reason=reject_reason,
-                    ocr_text_snippet=(google_ocr_result.get("raw_text") or "")[:5000],
-                )
                 if db_receipt_id:
+                    append_workflow_step(db_receipt_id, "valid", "fail", details={"reason": reject_reason})
+                    image_path_reject = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+                    if image_path_reject:
+                        try:
+                            update_receipt_file_url(db_receipt_id, str(image_path_reject))
+                        except Exception as url_err:
+                            logger.warning(f"Failed to update receipt file URL: {url_err}")
                     try:
-                        update_receipt_status(db_receipt_id, current_status="failed", current_stage="rejected_not_receipt")
+                        update_receipt_status(db_receipt_id, current_status="failed", current_stage="pending_receipt_confirm")
                     except Exception as e:
-                        logger.warning(f"Failed to update receipt status after reject: {e}")
+                        logger.warning(f"Failed to update receipt status: {e}")
                 logger.warning(f"Receipt-like validation failed: {reject_reason}")
                 return {
                     "success": False,
-                    "receipt_id": receipt_id,
-                    "status": "rejected",
+                    "receipt_id": db_receipt_id or receipt_id,
+                    "status": "pending_receipt_confirm",
                     "error": "not_a_receipt",
-                    "message": "Uploaded image does not appear to be a receipt. Please upload a clear photo of a receipt (with total amount and store name visible).",
+                    "needs_user_confirm": True,
+                    "message": "This does not look like a receipt. Please confirm this is a clear photo of a receipt (with total and store name visible).",
                 }
+            if db_receipt_id:
+                append_workflow_step(db_receipt_id, "valid", "ok")
+            # Pre-rule address correction: match and correct merchant name/address before initial_parse
+            normalized_early = normalize_ocr_result(google_ocr_result, provider="google_documentai")
+            unified_info = extract_unified_info(normalized_early)
+            merchant_name_early = (unified_info.get("merchant_name") or "").strip()
+            store_address_early = (unified_info.get("merchant_address") or "").strip()
+            store_match = match_store(merchant_name_early, store_address_early or None)
+            if store_match.get("matched") and store_match.get("location_data"):
+                corrected_merchant_name = (store_match["location_data"].get("store_name") or merchant_name_early) or merchant_name_early
+                corrected_address = (store_match["location_data"].get("address_string") or store_address_early) or store_address_early
+                if db_receipt_id:
+                    append_workflow_step(db_receipt_id, "addr_match", "ok", details={"corrected_merchant": corrected_merchant_name[:80]})
+            else:
+                corrected_merchant_name = merchant_name_early
+                corrected_address = store_address_early
+                if db_receipt_id:
+                    append_workflow_step(db_receipt_id, "addr_match", "skip")
+            store_in_chain = bool(store_match.get("matched"))
             
         except Exception as e:
             timeline.end("google_ocr")
@@ -528,14 +571,42 @@ async def process_receipt_workflow(
                             logger.warning(f"Failed to update receipt file URL: {url_error}")
                 except Exception as db_error:
                     logger.warning(f"Failed to save failed OCR run: {db_error}")
+                append_workflow_step(db_receipt_id, "ocr", "fail")
             
-            # Fallback to AWS OCR
-            return await _fallback_to_aws_ocr(image_bytes, filename, receipt_id, timeline, error=f"Google OCR failed: {e}", db_receipt_id=db_receipt_id, user_id=user_id)
+            # OCR failed: ask Gemini "is this image receipt-like?" then branch
+            like_receipt = await is_image_receipt_like(image_bytes, mime_type=mime_type)
+            if not like_receipt:
+                if db_receipt_id:
+                    append_workflow_step(db_receipt_id, "like_receipt", "no")
+                    try:
+                        update_receipt_status(db_receipt_id, current_status="failed", current_stage="pending_receipt_confirm")
+                    except Exception as ex:
+                        logger.warning(f"Failed to update receipt status: {ex}")
+                return {
+                    "success": False,
+                    "receipt_id": db_receipt_id or receipt_id,
+                    "status": "pending_receipt_confirm",
+                    "error": "ocr_failed_not_receipt_like",
+                    "needs_user_confirm": True,
+                    "message": "OCR failed and this does not look like a receipt. Please confirm this is a clear photo of a receipt.",
+                }
+            if db_receipt_id:
+                append_workflow_step(db_receipt_id, "like_receipt", "yes")
+            return await _run_ocr_fail_vision_then_textract(
+                image_bytes=image_bytes,
+                filename=filename,
+                receipt_id=receipt_id,
+                timeline=timeline,
+                mime_type=mime_type,
+                db_receipt_id=db_receipt_id,
+                user_id=user_id,
+                error=f"Google OCR failed: {e}",
+            )
         
         # Save Google OCR result (temporarily not saved, will save when needed)
         google_ocr_data = google_ocr_result
         
-        # Step 1.5: Run Initial Parse (rule-based extraction before LLM)
+        # Step 1.5: Run Initial Parse (rule-based extraction before LLM) using corrected merchant
         timeline.start("initial_parse")
         initial_parse_result = None
         try:
@@ -544,13 +615,10 @@ async def process_receipt_workflow(
             if coordinate_data:
                 # Extract text blocks with coordinates
                 blocks = extract_text_blocks_with_coordinates(coordinate_data, apply_receipt_body_filter=True)
-                
-                # Get merchant name from OCR
-                merchant_name = google_ocr_result.get("merchant_name", "")
-                
+                # Use corrected merchant name from pre-rule address match
+                merchant_name = corrected_merchant_name
                 # Load store config
                 store_config = get_store_config_for_receipt(merchant_name, blocks=blocks)
-                
                 # Run rule-based pipeline
                 initial_parse_result = process_receipt_pipeline(
                     blocks=blocks,
@@ -584,7 +652,7 @@ async def process_receipt_workflow(
                     "merchant_name": google_ocr_result.get("merchant_name"),
                 }
                 rule_output: Dict[str, Any] = initial_parse_result if isinstance(initial_parse_result, dict) else {"success": False, "reason": "no result"}
-                save_processing_run(
+                rule_run_id = save_processing_run(
                     receipt_id=db_receipt_id,
                     stage="rule_based_cleaning",
                     model_provider=None,
@@ -596,21 +664,16 @@ async def process_receipt_workflow(
                     status="pass" if (initial_parse_result and initial_parse_result.get("success")) else "fail",
                     error_message=None if (initial_parse_result and initial_parse_result.get("success")) else "initial_parse failed or no coordinate data",
                 )
+                append_workflow_step(
+                    db_receipt_id, "rule_clean", "pass" if (initial_parse_result and initial_parse_result.get("success")) else "fail", run_id=rule_run_id
+                )
             except Exception as e:
                 logger.warning(f"Failed to save rule_based_cleaning run: {e}")
         
-        # Determine store_in_chain for workflow branch (in-chain: feed RBSJ only; not-in-chain: vision with OCR+RBSJ+image)
-        store_in_chain = False
-        try:
-            normalized_ocr = normalize_ocr_result(google_ocr_data, provider="google_documentai")
-            unified_info = extract_unified_info(normalized_ocr)
-            merchant_name_early = (unified_info.get("merchant_name") or "").strip()
-            store_address_early = (unified_info.get("merchant_address") or "").strip()
-            store_match = get_store_chain(merchant_name_early, store_address_early or None)
-            store_in_chain = bool(store_match.get("matched"))
-            logger.info(f"Store in chain: {store_in_chain} (merchant_name=%r)", merchant_name_early or None)
-        except Exception as e:
-            logger.warning(f"Could not determine store_in_chain: {e}")
+        # store_in_chain already set from pre-rule addr_match (match_store)
+        if db_receipt_id:
+            append_workflow_step(db_receipt_id, "in_chain", "yes" if store_in_chain else "no", details={"store_in_chain": store_in_chain})
+        logger.info(f"Store in chain: {store_in_chain} (merchant_name=%r)", corrected_merchant_name or None)
         
         # Step 2: Decide which LLM to use
         gemini_available, gemini_reason = await check_gemini_available()
@@ -647,25 +710,16 @@ async def process_receipt_workflow(
                     store_in_chain=True,
                 )
             else:
-                # Not in chain: single prompt with OCR + RBSJ + image (vision) when Gemini available
-                if llm_provider.lower() == "gemini" and image_bytes:
-                    first_llm_result = await _process_receipt_vision_ocr_rbsj(
-                        image_bytes=image_bytes,
-                        mime_type=mime_type,
-                        google_ocr_data=google_ocr_data,
-                        initial_parse_result=initial_parse_result,
-                        db_receipt_id=db_receipt_id,
-                    )
-                else:
-                    first_llm_result = await process_receipt_with_llm_from_ocr(
-                        ocr_result=google_ocr_data,
-                        merchant_name=None,
-                        ocr_provider="google_documentai",
-                        llm_provider=llm_provider,
-                        receipt_id=db_receipt_id,
-                        initial_parse_result=initial_parse_result,
-                        store_in_chain=False,
-                    )
+                # Not in chain: we have image (OCR came from it). Do LLM 全量 OCR first; only on failure fall back to OCR+image to Gemini for debug.
+                first_llm_result = await process_receipt_with_llm_from_ocr(
+                    ocr_result=google_ocr_data,
+                    merchant_name=None,
+                    ocr_provider="google_documentai",
+                    llm_provider=llm_provider,
+                    receipt_id=db_receipt_id,
+                    initial_parse_result=initial_parse_result,
+                    store_in_chain=False,
+                )
             timeline.end(f"{llm_provider}_llm")
             
             # Merge store-specific fields from initial_parse (e.g. Trader Joe's transaction_info, merchant_phone, purchase_time) into payload before save
@@ -723,9 +777,12 @@ async def process_receipt_workflow(
                 except Exception as db_error:
                     logger.warning(f"Failed to save failed LLM run: {db_error}")
             
-            # When Gemini failed: try once more with image + failure context (vision retry) before AWS OCR + OpenAI
-            if llm_provider.lower() == "gemini" and image_bytes:
-                logger.info("Gemini (text) failed; trying Gemini vision retry with receipt image + failure context")
+            # When first LLM failed and we have image: try once with full OCR + image to Gemini for debug (whether first was Gemini or OpenAI)
+            if image_bytes:
+                logger.info(
+                    "First LLM (%s) failed; trying Gemini vision retry with full OCR + receipt image for debug",
+                    llm_provider,
+                )
                 vision_retry_result = await _try_gemini_vision_retry(
                     image_bytes=image_bytes,
                     mime_type=mime_type,
@@ -760,7 +817,7 @@ async def process_receipt_workflow(
         
         # Step 4.5: Apply T&T-specific cleaning rules (remove membership lines, extract card number)
         timeline.start("tt_cleaning")
-        first_llm_result = clean_tnt_receipt_items(first_llm_result)
+        first_llm_result = apply_chain_cleaner(first_llm_result)
         timeline.end("tt_cleaning")
         
         # Step 4.6: Correct address using fuzzy matching against canonical database
@@ -790,7 +847,7 @@ async def process_receipt_workflow(
                 _summary = _initial_parse_summary_for_run(initial_parse_result)
                 if _summary is not None:
                     _input["initial_parse_summary"] = _summary
-                save_processing_run(
+                llm_run_id = save_processing_run(
                     receipt_id=db_receipt_id,
                     stage="llm",
                     model_provider=llm_provider,
@@ -802,6 +859,7 @@ async def process_receipt_workflow(
                     status="pass",
                     error_message=None
                 )
+                append_workflow_step(db_receipt_id, "llm_primary", "pass", run_id=llm_run_id)
                 logger.info(f"Saved LLM processing run for receipt {db_receipt_id} (after address correction)")
             except Exception as e:
                 logger.warning(f"Failed to save LLM processing run: {e}")
@@ -912,6 +970,15 @@ async def process_receipt_workflow(
                             update_receipt_file_url(db_receipt_id, image_path)
                         except Exception as url_err:
                             logger.warning(f"Failed to update receipt file URL: {url_err}")
+                    # Persist LLM result to record_summaries/record_items so frontend can show editable fields
+                    try:
+                        cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+                        if cat_result.get("success"):
+                            logger.info(f"Saved parsed data for manual review receipt {db_receipt_id}")
+                        else:
+                            logger.warning(f"Categorization for needs_review skipped: {cat_result.get('message')}")
+                    except Exception as cat_err:
+                        logger.warning(f"Categorization for needs_review failed for {db_receipt_id}: {cat_err}")
                 except Exception as e:
                     logger.warning(f"Failed to update receipt stage to sum_check_failed: {e}")
             
@@ -1034,7 +1101,7 @@ async def _llm_debug_cascade(
 
     if debug_ocr_result and isinstance(debug_ocr_result, dict):
         debug_ocr_result = clean_llm_result(debug_ocr_result)
-        debug_ocr_result = clean_tnt_receipt_items(debug_ocr_result)
+        debug_ocr_result = apply_chain_cleaner(debug_ocr_result)
         debug_ocr_result = correct_address(debug_ocr_result, auto_correct=True)
         sum_check_passed_debug, _ = check_receipt_sums(debug_ocr_result)
         if sum_check_passed_debug and db_receipt_id:
@@ -1106,7 +1173,7 @@ async def _llm_debug_cascade(
 
     if debug_vision_result and isinstance(debug_vision_result, dict):
         debug_vision_result = clean_llm_result(debug_vision_result)
-        debug_vision_result = clean_tnt_receipt_items(debug_vision_result)
+        debug_vision_result = apply_chain_cleaner(debug_vision_result)
         debug_vision_result = correct_address(debug_vision_result, auto_correct=True)
         sum_check_passed_v, _ = check_receipt_sums(debug_vision_result)
         if sum_check_passed_v and db_receipt_id:
@@ -1295,7 +1362,7 @@ async def _backup_check_with_aws_ocr(
     
     # Step 3.5: Apply T&T cleaning on backup result
     timeline.start("tt_cleaning_backup")
-    backup_llm_result = clean_tnt_receipt_items(backup_llm_result)
+    backup_llm_result = apply_chain_cleaner(backup_llm_result)
     timeline.end("tt_cleaning_backup")
     
     # Step 3.6: Correct address
@@ -1486,6 +1553,127 @@ def _build_backup_prompt(
 Output the corrected JSON now:"""
     
     return prompt
+
+
+async def _run_ocr_fail_vision_then_textract(
+    image_bytes: bytes,
+    filename: str,
+    receipt_id: str,
+    timeline: TimelineRecorder,
+    mime_type: str,
+    db_receipt_id: Optional[str],
+    user_id: Optional[str],
+    error: str,
+) -> Dict[str, Any]:
+    """OCR failed but image is receipt-like: try Gemini Vision (image only), then Textract+OpenAI if needed."""
+    prompt_config = get_default_prompt()
+    output_schema = prompt_config.get("output_schema") or {}
+    output_schema_json = json.dumps(output_schema, indent=2, ensure_ascii=False)
+    timeline.start("gemini_vision_first")
+    try:
+        vision_result = await parse_receipt_with_gemini_vision(
+            image_bytes=image_bytes,
+            failure_context="OCR failed. Please extract receipt data from the image only.",
+            output_schema_json=output_schema_json,
+            mime_type=mime_type,
+        )
+        timeline.end("gemini_vision_first")
+        if not vision_result or not isinstance(vision_result, dict):
+            raise ValueError("Gemini vision returned empty or invalid")
+        rec = vision_result.get("receipt", {})
+        merchant_name_v = (rec.get("merchant_name") or "").strip()
+        address_v = (rec.get("merchant_address") or "").strip()
+        store_match = get_store_chain(merchant_name_v, address_v or None)
+        vision_result.setdefault("_metadata", {})
+        vision_result["_metadata"].update({
+            "merchant_name": merchant_name_v or None,
+            "chain_id": store_match.get("chain_id"),
+            "location_id": store_match.get("location_id"),
+            "ocr_provider": None,
+            "llm_provider": "gemini",
+            "validation_status": vision_result.get("_metadata", {}).get("validation_status", "unknown"),
+            "rag_metadata": {"vision_image_only": True},
+        })
+        vision_result = clean_llm_result(vision_result)
+        vision_result = apply_chain_cleaner(vision_result)
+        vision_result = correct_address(vision_result, auto_correct=True)
+        sum_ok, sum_details = check_receipt_sums(vision_result)
+        if sum_ok and db_receipt_id:
+            run_id = save_processing_run(
+                receipt_id=db_receipt_id,
+                stage="llm",
+                model_provider="gemini",
+                model_name=settings.gemini_model,
+                model_version=None,
+                input_payload={"vision_image_only": True, "ocr_fail": True},
+                output_payload=vision_result,
+                output_schema_version="0.1",
+                status="pass",
+                error_message=None,
+            )
+            append_workflow_step(db_receipt_id, "llm_vision_first", "pass", run_id=run_id)
+            update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_fallback")
+            await _save_output(receipt_id, vision_result, timeline, {}, user_id=user_id)
+            try:
+                await asyncio.to_thread(categorize_receipt, db_receipt_id)
+            except Exception as ce:
+                logger.warning(f"Categorization after vision-first failed: {ce}")
+            return {
+                "success": True,
+                "receipt_id": receipt_id,
+                "status": "passed_vision_first",
+                "data": vision_result,
+                "sum_check": sum_details,
+                "llm_provider": "gemini",
+            }
+        if db_receipt_id:
+            append_workflow_step(db_receipt_id, "llm_vision_first", "fail", details={"sum_check": sum_details})
+    except Exception as vision_err:
+        timeline.end("gemini_vision_first")
+        logger.warning(f"Gemini vision (image only) failed: {vision_err}")
+        if db_receipt_id:
+            append_workflow_step(db_receipt_id, "llm_vision_first", "fail", details={"error": str(vision_err)})
+    return await _fallback_to_aws_ocr(
+        image_bytes=image_bytes,
+        filename=filename,
+        receipt_id=receipt_id,
+        timeline=timeline,
+        error=error,
+        db_receipt_id=db_receipt_id,
+        user_id=user_id,
+    )
+
+
+async def process_receipt_workflow_after_confirm(
+    receipt_id: str,
+    image_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    user_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    User confirmed "this is a clear receipt" after Valid fail or OCR fail + not receipt-like.
+    Run Gemini Vision (image only) then Textract+OpenAI if needed. On final failure can record strike.
+    """
+    timeline = TimelineRecorder(receipt_id)
+    append_workflow_step(receipt_id, "user_confirm", "yes")
+    result = await _run_ocr_fail_vision_then_textract(
+        image_bytes=image_bytes,
+        filename=filename,
+        receipt_id=receipt_id,
+        timeline=timeline,
+        mime_type=mime_type,
+        db_receipt_id=receipt_id,
+        user_id=user_id,
+        error="User confirmed receipt after initial reject",
+    )
+    # If still failed (needs_review or error), optionally record strike for repeated non-receipt
+    if not result.get("success") and user_id:
+        n = count_strikes_in_last_hour(user_id)
+        record_strike(user_id, receipt_id=receipt_id)
+        if n + 1 >= 3:
+            apply_user_lock(user_id, hours=12.0)
+    return result
 
 
 async def _fallback_to_aws_ocr(
@@ -1849,7 +2037,7 @@ async def _try_gemini_vision_retry(
 
     # Same post-processing as primary LLM path
     vision_result = clean_llm_result(vision_result)
-    vision_result = clean_tnt_receipt_items(vision_result)
+    vision_result = apply_chain_cleaner(vision_result)
     vision_result = correct_address(vision_result, auto_correct=True)
 
     sum_check_passed, sum_check_details = check_receipt_sums(vision_result)
@@ -1919,18 +2107,47 @@ async def _fallback_to_other_llm(
     user_id: Optional[str] = None,
     image_bytes: Optional[bytes] = None
 ) -> Dict[str, Any]:
-    """First LLM failed, fallback to another LLM."""
+    """First LLM failed, fallback to another LLM. When image_bytes provided and other is Gemini, use OCR+image vision."""
     other_provider = "openai" if failed_provider == "gemini" else "gemini"
-    
+    mime_type = "image/jpeg"
+
     timeline.start(f"{other_provider}_llm_fallback")
     try:
-        llm_result = await process_receipt_with_llm_from_ocr(
-            ocr_result=google_ocr_data,
-            merchant_name=None,
-            ocr_provider="google_documentai",
-            llm_provider=other_provider,
-            receipt_id=db_receipt_id
-        )
+        if image_bytes and other_provider == "gemini":
+            prompt_config = get_default_prompt()
+            output_schema_json = json.dumps(prompt_config.get("output_schema") or {}, indent=2, ensure_ascii=False)
+            failure_context = _build_vision_retry_failure_context(
+                error=error, google_ocr_data=google_ocr_data, initial_parse_result=None
+            )
+            llm_result = await parse_receipt_with_gemini_vision(
+                image_bytes=image_bytes,
+                failure_context=failure_context,
+                output_schema_json=output_schema_json,
+                mime_type=mime_type,
+            )
+            if llm_result:
+                rec = llm_result.get("receipt", {})
+                merchant_name_v = (rec.get("merchant_name") or "").strip()
+                address_v = (rec.get("merchant_address") or "").strip()
+                store_match = get_store_chain(merchant_name_v, address_v or None)
+                llm_result.setdefault("_metadata", {})
+                llm_result["_metadata"].update({
+                    "chain_id": store_match.get("chain_id"),
+                    "location_id": store_match.get("location_id"),
+                    "llm_provider": "gemini",
+                    "rag_metadata": {"fallback_vision": True},
+                })
+                llm_result = clean_llm_result(llm_result)
+                llm_result = apply_chain_cleaner(llm_result)
+                llm_result = correct_address(llm_result, auto_correct=True)
+        else:
+            llm_result = await process_receipt_with_llm_from_ocr(
+                ocr_result=google_ocr_data,
+                merchant_name=None,
+                ocr_provider="google_documentai",
+                llm_provider=other_provider,
+                receipt_id=db_receipt_id
+            )
         timeline.end(f"{other_provider}_llm_fallback")
         
         if llm_result is None:
@@ -2014,10 +2231,18 @@ async def _fallback_to_other_llm(
             # Sum check failed after fallback LLM, trigger AWS OCR backup check
             logger.warning(f"Sum check failed for {receipt_id} after {other_provider} fallback, triggering AWS OCR backup check")
             
-            # Update stage to sum_check_failed
+            # Update stage to sum_check_failed and persist parsed data for manual review
             if db_receipt_id:
                 try:
                     update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="manual")
+                    try:
+                        cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+                        if cat_result.get("success"):
+                            logger.info(f"Saved parsed data for manual review receipt {db_receipt_id} (after fallback)")
+                        else:
+                            logger.warning(f"Categorization for needs_review skipped: {cat_result.get('message')}")
+                    except Exception as cat_err:
+                        logger.warning(f"Categorization for needs_review failed for {db_receipt_id}: {cat_err}")
                 except Exception as e:
                     logger.warning(f"Failed to update receipt stage to sum_check_failed: {e}")
             

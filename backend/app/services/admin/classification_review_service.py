@@ -80,6 +80,57 @@ def delete_classification_review(cr_id: str) -> None:
     logger.info(f"Hard-deleted classification_review row {cr_id}")
 
 
+def _dedupe_key(row: Dict[str, Any]) -> Tuple[Optional[str], str]:
+    """(store_chain_id, normalized_name) for grouping. Later submission overrides earlier."""
+    store_chain_id = row.get("store_chain_id")
+    raw = (row.get("raw_product_name") or "").strip()
+    norm = (row.get("normalized_name") or "").strip()
+    name_for_key = normalize_name_for_storage(norm or raw) if (norm or raw) else ""
+    return (str(store_chain_id) if store_chain_id else None, name_for_key or "")
+
+
+def dedupe_classification_review() -> Dict[str, Any]:
+    """
+    Remove duplicate classification_review rows: same store_chain_id + same normalized product.
+    Keeps the latest row (by created_at) per (store_chain_id, normalized_name); deletes the rest.
+    So "later submission overrides earlier" and we never keep duplicate items under the same store.
+    Returns {"deleted": N, "message": "..."}.
+    """
+    supabase = _get_client()
+    res = (
+        supabase.table("classification_review")
+        .select("id, store_chain_id, normalized_name, raw_product_name, created_at")
+        .execute()
+    )
+    rows = list(res.data or [])
+    groups: Dict[Tuple[Optional[str], str], List[Dict[str, Any]]] = {}
+    for r in rows:
+        key = _dedupe_key(r)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(r)
+
+    to_delete: List[str] = []
+    for key, group in groups.items():
+        if len(group) <= 1:
+            continue
+        # Keep latest (max created_at), delete the rest
+        group_sorted = sorted(group, key=lambda x: (x.get("created_at") or ""), reverse=True)
+        for r in group_sorted[1:]:
+            to_delete.append(r["id"])
+
+    for cr_id in to_delete:
+        supabase.table("classification_review").delete().eq("id", cr_id).execute()
+        logger.info(f"Dedupe: deleted classification_review row {cr_id}")
+
+    if to_delete:
+        logger.info(f"Dedupe: removed {len(to_delete)} duplicate classification_review row(s)")
+    return {
+        "deleted": len(to_delete),
+        "message": f"Removed {len(to_delete)} duplicate row(s). Kept latest per (store, product).",
+    }
+
+
 def update_classification_review(
     cr_id: str,
     normalized_name: Optional[str] = None,

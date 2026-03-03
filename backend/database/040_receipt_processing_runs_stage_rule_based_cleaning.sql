@@ -2,7 +2,7 @@
 -- Migration 040: Allow stage 'rule_based_cleaning' in receipt_processing_runs
 -- ============================================
 -- Purpose: Support new workflow stage for rule-based cleaning (OCR -> RBSJ).
--- See docs/architecture/RECEIPT_WORKFLOW_LLM_DEBUG_CASCADE.md
+-- See docs/architecture/RECEIPT_WORKFLOW_CASCADE.md
 --
 -- Run after: 039
 -- ============================================

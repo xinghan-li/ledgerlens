@@ -3,7 +3,7 @@
 -- ============================================
 -- Purpose: Add receipt_parse_debug_ocr and receipt_parse_debug_vision for
 -- Sum-check failure path: debug with raw OCR, then with image + reason.
--- See docs/architecture/RECEIPT_WORKFLOW_LLM_DEBUG_CASCADE.md
+-- See docs/architecture/RECEIPT_WORKFLOW_CASCADE.md
 --
 -- Run after: 040
 -- ============================================

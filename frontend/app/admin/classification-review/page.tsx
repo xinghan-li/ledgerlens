@@ -57,18 +57,18 @@ function CategoryCascade({
   if (disabled) {
     return (
       <>
-        <td className="px-3 py-2">{l1Name}</td>
-        <td className="px-3 py-2">{l2Name}</td>
-        <td className="px-3 py-2">{l3Name}</td>
+        <td className="px-2 py-2 truncate" title={l1Name}>{l1Name}</td>
+        <td className="px-2 py-2 truncate" title={l2Name}>{l2Name}</td>
+        <td className="px-2 py-2 truncate" title={l3Name}>{l3Name}</td>
       </>
     )
   }
 
   return (
     <>
-      <td className="px-3 py-2">
+      <td className="px-2 py-2 overflow-hidden">
         <select
-          className="border border-gray-200 rounded px-1 w-28 focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+          className="border border-gray-200 rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
           value={l1Id}
           onChange={(e) => {
             const v = e.target.value || ''
@@ -83,9 +83,9 @@ function CategoryCascade({
           ))}
         </select>
       </td>
-      <td className="px-3 py-2">
+      <td className="px-2 py-2 overflow-hidden">
         <select
-          className="border border-gray-200 rounded px-1 w-28 focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+          className="border border-gray-200 rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
           value={l2Id}
           onChange={(e) => {
             const v = e.target.value || ''
@@ -99,9 +99,9 @@ function CategoryCascade({
           ))}
         </select>
       </td>
-      <td className="px-3 py-2">
+      <td className="px-2 py-2 overflow-hidden">
         <select
-          className="border border-gray-200 rounded px-1 w-36 focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+          className="border border-gray-200 rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
           value={effectiveCategoryId}
           onChange={(e) => onEditedCategoryId(row.id, e.target.value || '')}
         >
@@ -143,6 +143,7 @@ export default function ClassificationReviewPage() {
   const [token, setToken] = useState<string | null>(null)
   const [backfillLoading, setBackfillLoading] = useState(false)
   const [backfillResult, setBackfillResult] = useState<{ updated: number; total_processed: number; need_clean: number; need_onsale: number; need_product_id: number; message: string } | null>(null)
+  const [dedupeLoading, setDedupeLoading] = useState(false)
   const [categories, setCategories] = useState<{ id: string; name: string; path: string; level: number; parent_id: string | null }[]>([])
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -449,32 +450,60 @@ export default function ClassificationReviewPage() {
           <li><code>product_id</code>: match by normalized_name + store chain and backfill</li>
         </ul>
         <p className="text-sm text-gray-500 mb-2">After confirming a batch of Classification Review, run backfill once to link new products to history record_items.</p>
-        <button
-          type="button"
-          disabled={backfillLoading}
-          onClick={async () => {
-            if (!token) return
-            setBackfillLoading(true)
-            setBackfillResult(null)
-            try {
-              const res = await fetch(`${apiUrl}/api/admin/classification-review/backfill-record-items?limit=0&batch=200`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
-              })
-              const data = await res.json().catch(() => ({}))
-              if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Backfill failed')
-              setBackfillResult(data)
-              setSuccessMessage(data.message || `Backfilled ${data.updated ?? 0} rows`)
-            } catch (e) {
-              setError(e instanceof Error ? e.message : 'Backfill failed')
-            } finally {
-              setBackfillLoading(false)
-            }
-          }}
-          className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
-        >
-          {backfillLoading ? 'Running…' : 'Backfill now'}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={backfillLoading}
+            onClick={async () => {
+              if (!token) return
+              setBackfillLoading(true)
+              setBackfillResult(null)
+              try {
+                const res = await fetch(`${apiUrl}/api/admin/classification-review/backfill-record-items?limit=0&batch=200`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}` },
+                })
+                const data = await res.json().catch(() => ({}))
+                if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Backfill failed')
+                setBackfillResult(data)
+                setSuccessMessage(data.message || `Backfilled ${data.updated ?? 0} rows`)
+              } catch (e) {
+                setError(e instanceof Error ? e.message : 'Backfill failed')
+              } finally {
+                setBackfillLoading(false)
+              }
+            }}
+            className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
+          >
+            {backfillLoading ? 'Running…' : 'Backfill now'}
+          </button>
+          <button
+            type="button"
+            disabled={dedupeLoading}
+            onClick={async () => {
+              if (!token) return
+              setDedupeLoading(true)
+              setError(null)
+              try {
+                const res = await fetch(`${apiUrl}/api/admin/classification-review/dedupe`, {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${token}` },
+                })
+                const data = await res.json().catch(() => ({}))
+                if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Dedupe failed')
+                setSuccessMessage(data.message ?? `Removed ${data.deleted ?? 0} duplicate row(s).`)
+                await fetchList()
+              } catch (e) {
+                setError(e instanceof Error ? e.message : '去重失败')
+              } finally {
+                setDedupeLoading(false)
+              }
+            }}
+            className="px-3 py-1.5 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+          >
+            {dedupeLoading ? 'Running…' : '去重'}
+          </button>
+        </div>
         {backfillResult && (
           <p className="mt-2 text-sm text-gray-600">
             This run: processed {backfillResult.total_processed}, updated {backfillResult.updated} (need_clean: {backfillResult.need_clean}, need_onsale: {backfillResult.need_onsale}, need_product_id: {backfillResult.need_product_id}).
@@ -570,61 +599,61 @@ export default function ClassificationReviewPage() {
         <p className="text-gray-500">Loading…</p>
       ) : (
         <div className="overflow-x-auto bg-white rounded-lg shadow">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
+          <table className="w-full table-fixed divide-y divide-gray-200 text-sm">
             <thead className="bg-gray-50">
               <tr>
                 <th
-                  className="px-3 py-2 text-left cursor-pointer select-none hover:bg-gray-100"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[12%]"
                   onClick={() => handleSort('raw_product_name')}
                 >
                   raw_product_name {sortColumn === 'raw_product_name' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th
-                  className="px-3 py-2 text-left cursor-pointer select-none hover:bg-gray-100"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[11%]"
                   onClick={() => handleSort('normalized_name')}
                 >
                   normalized_name {sortColumn === 'normalized_name' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th
-                  className="px-3 py-2 text-left cursor-pointer select-none hover:bg-gray-100"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[11%]"
                   onClick={() => handleSort('category')}
                 >
                   Category I {sortColumn === 'category' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
-                <th className="px-3 py-2 text-left">Category II</th>
-                <th className="px-3 py-2 text-left">Category III</th>
+                <th className="px-2 py-2 text-left w-[11%]">Category II</th>
+                <th className="px-2 py-2 text-left w-[11%]">Category III</th>
                 <th
-                  className="px-3 py-2 text-left cursor-pointer select-none hover:bg-gray-100"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[6%]"
                   onClick={() => handleSort('size_quantity')}
                 >
                   size_qty {sortColumn === 'size_quantity' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th
-                  className="px-3 py-2 text-left cursor-pointer select-none hover:bg-gray-100"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[5%]"
                   onClick={() => handleSort('size_unit')}
                 >
                   unit {sortColumn === 'size_unit' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th
-                  className="px-3 py-2 text-left cursor-pointer select-none hover:bg-gray-100"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[7%]"
                   onClick={() => handleSort('package_type')}
                 >
                   package {sortColumn === 'package_type' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
-                <th className="px-3 py-2 text-left">status</th>
-                <th className="px-3 py-2 text-left">Actions</th>
+                <th className="px-2 py-2 text-left w-[7%]">status</th>
+                <th className="px-2 py-2 text-left w-[13%]">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {displayedRows.map((r) => (
                 <tr key={r.id}>
-                  <td className="px-3 py-2">{r.raw_product_name}</td>
-                  <td className="px-3 py-2">
+                  <td className="px-2 py-2 truncate" title={r.raw_product_name}>{r.raw_product_name}</td>
+                  <td className="px-2 py-2 overflow-hidden">
                     {r.status === 'confirmed' ? (
-                      <span>{editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}</span>
+                      <span className="truncate block" title={editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}>{editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}</span>
                     ) : (
                       <input
-                        className="border border-gray-200 rounded px-1 w-40 focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+                        className="border border-gray-200 rounded px-1 w-full max-w-[7rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
                         value={editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}
                         onChange={(e) => setEditedNormalizedName((prev) => ({ ...prev, [r.id]: e.target.value }))}
                       />
@@ -644,12 +673,12 @@ export default function ClassificationReviewPage() {
                     onEditedCategoryId={(id, val) => setEditedCategoryId((p) => ({ ...p, [id]: val }))}
                     disabled={r.status === 'confirmed'}
                   />
-                  <td className="px-3 py-2">
+                  <td className="px-2 py-2">
                     {r.status === 'confirmed' ? (
                       <span>{editedSizeQuantity[r.id] ?? (r.size_quantity != null ? String(r.size_quantity) : '')}</span>
                     ) : (
                       <input
-                        className="border border-gray-200 rounded px-1 w-16 focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+                        className="border border-gray-200 rounded px-1 w-full max-w-[3rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
                         type="text"
                         inputMode="decimal"
                         placeholder="3.5"
@@ -658,31 +687,31 @@ export default function ClassificationReviewPage() {
                       />
                     )}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-2 py-2">
                     {r.status === 'confirmed' ? (
                       <span>{editedSizeUnit[r.id] ?? r.size_unit ?? ''}</span>
                     ) : (
                       <input
-                        className="border border-gray-200 rounded px-1 w-16 focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+                        className="border border-gray-200 rounded px-1 w-full max-w-[2.5rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
                         placeholder="oz"
                         value={editedSizeUnit[r.id] ?? r.size_unit ?? ''}
                         onChange={(e) => setEditedSizeUnit((p) => ({ ...p, [r.id]: e.target.value }))}
                       />
                     )}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-2 py-2">
                     {r.status === 'confirmed' ? (
                       <span>{editedPackageType[r.id] ?? r.package_type ?? ''}</span>
                     ) : (
                       <input
-                        className="border border-gray-200 rounded px-1 w-16 focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+                        className="border border-gray-200 rounded px-1 w-full max-w-[4rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
                         placeholder="bottle"
                         value={editedPackageType[r.id] ?? r.package_type ?? ''}
                         onChange={(e) => setEditedPackageType((p) => ({ ...p, [r.id]: e.target.value }))}
                       />
                     )}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-2 py-2">
                     {r.status === 'confirmed' ? (
                       <button
                         className="px-2 py-1 bg-red-100 rounded text-red-800 hover:bg-red-200"
@@ -692,9 +721,10 @@ export default function ClassificationReviewPage() {
                       </button>
                     ) : (
                       <select
-                        className="border border-gray-200 rounded px-1 focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+                        className="border border-gray-200 rounded px-1 w-full max-w-[4.5rem] text-xs focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
                         value={r.status}
                         onChange={(e) => handlePatch(r.id, { status: e.target.value })}
+                        title={r.status}
                       >
                         <option value="pending">pending</option>
                         <option value="unable_to_decide">unable_to_decide</option>
@@ -703,7 +733,7 @@ export default function ClassificationReviewPage() {
                       </select>
                     )}
                   </td>
-                  <td className="px-3 py-2 flex flex-wrap items-center gap-2">
+                  <td className="px-2 py-2 flex flex-col items-stretch gap-1">
                     {r.status === 'pending' && (
                       <button
                         className="px-2 py-1 bg-green-100 rounded text-green-800 disabled:opacity-50"

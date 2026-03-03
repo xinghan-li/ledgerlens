@@ -9,12 +9,41 @@ from typing import Dict, Any, Optional
 import logging
 import json
 
+from .gemini_rate_limiter import set_gemini_key_invalid
+
 logger = logging.getLogger(__name__)
+
+# Message to show when Gemini API key is rejected by Google
+_GEMINI_KEY_INVALID_HINT = (
+    "Gemini API key was rejected. Get a valid key from https://aistudio.google.com/apikey "
+    "and set GEMINI_API_KEY in backend/.env. If using a Google Cloud key, enable "
+    "'Generative Language API' in your project. Then restart the backend."
+)
 
 # Thread-safe state management
 import asyncio
 _lock = asyncio.Lock()
 _client = None
+
+
+def _handle_gemini_api_error(api_error: Exception, context: str) -> None:
+    """If error is 400 API key invalid, mark key invalid and log actionable message."""
+    err_str = str(api_error).lower()
+    is_key_error = (
+        "api key not valid" in err_str
+        or "api_key_invalid" in err_str
+        or ("api key" in err_str and "invalid" in err_str)
+    )
+    if is_key_error:
+        set_gemini_key_invalid(True)
+        logger.error(
+            "%s call failed: %s. %s",
+            context,
+            api_error,
+            _GEMINI_KEY_INVALID_HINT,
+        )
+    else:
+        logger.error("%s API call failed: %s", context, api_error)
 
 
 async def _get_client():
@@ -88,7 +117,7 @@ async def parse_receipt_with_gemini(
             )
             logger.debug(f"Gemini API response received: {type(response)}")
         except Exception as api_error:
-            logger.error(f"Gemini API call exception: {type(api_error).__name__}: {api_error}")
+            _handle_gemini_api_error(api_error, "Gemini text")
             raise
         
         # Extract text from response
@@ -187,7 +216,7 @@ Instructions:
             config=config,
         )
     except Exception as api_error:
-        logger.error(f"Gemini vision retry API call failed: {type(api_error).__name__}: {api_error}")
+        _handle_gemini_api_error(api_error, "Gemini vision")
         raise
 
     if hasattr(response, "text"):
@@ -212,6 +241,39 @@ Instructions:
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON from Gemini vision response: {e}")
         raise ValueError(f"Invalid JSON response from Gemini vision: {e}")
+
+
+async def is_image_receipt_like(
+    image_bytes: bytes,
+    mime_type: str = "image/jpeg",
+    model: Optional[str] = None,
+) -> bool:
+    """
+    Ask Gemini vision whether the image looks like a receipt (for OCR-fail branch).
+    Returns True if yes, False if no. On API error, returns True (assume receipt-like and continue).
+    """
+    client = await _get_client()
+    model = model or settings.gemini_model
+    blob = types.Blob(data=image_bytes, mime_type=mime_type)
+    prompt = "Does this image show a receipt (e.g. a store receipt with items and a total amount)? Answer with exactly one word: yes or no."
+    parts = [types.Part(inline_data=blob), types.Part(text=prompt)]
+    config = types.GenerateContentConfig(temperature=0)
+    try:
+        response = client.models.generate_content(model=model, contents=parts, config=config)
+        if hasattr(response, "text"):
+            text = (response.text or "").strip().lower()
+        elif hasattr(response, "candidates") and response.candidates:
+            c0 = response.candidates[0]
+            if hasattr(c0, "content") and hasattr(c0.content, "parts") and c0.content.parts:
+                text = (c0.content.parts[0].text or "").strip().lower()
+            else:
+                text = "yes"
+        else:
+            text = "yes"
+        return text.startswith("yes")
+    except Exception as e:
+        logger.warning(f"Gemini is_image_receipt_like failed: {e}, assuming receipt-like")
+        return True
 
 
 def _extract_json_from_response(text: str) -> str:

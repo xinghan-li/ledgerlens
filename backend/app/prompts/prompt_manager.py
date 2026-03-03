@@ -84,13 +84,14 @@ def _get_default_system_message() -> str:
 Key requirements:
 1. Output ONLY valid JSON, no additional text
 2. Follow the exact schema provided
-3. Perform validation: quantity × unit_price ≈ line_total (tolerance: ±0.01) - **EXCEPT for package price discounts** (see tag-based instructions)
-4. Sum of all line_totals must ≈ total (tolerance: ±0.01)
-5. If information is missing or uncertain, set to null and document in tbd
-6. Do not hallucinate or guess values
-7. **IMPORTANT**: If you see package discount patterns (e.g., "2/$9.00"), follow the tag-based instructions - do NOT validate quantity × unit_price = line_total for those items
-8. **NEW**: If an Initial Parse Result is provided, use it as a reference to reduce hallucination. The initial parse is from a rule-based system that extracts items, totals, and validation from OCR coordinates. Cross-check your extraction with the initial parse result, but correct any OCR errors you find in product names.
-9. If you cannot be confident or need to escalate, set top-level "reason" to your finding; otherwise omit or null. Still output the best-effort JSON."""
+3. **All monetary amounts must be output in CENTS (integer), not dollars.** For example: $14.99 → 1499, $198.59 → 19859. This applies to receipt.subtotal, receipt.tax, receipt.total, receipt.fees, and every item's line_total, unit_price, original_price, discount_amount. We use cents to avoid floating-point errors; do not output decimals for money.
+4. Perform validation in cents: quantity × unit_price ≈ line_total (tolerance: ±1 cent) - **EXCEPT for package price discounts** (see tag-based instructions)
+5. Sum of all line_totals must ≈ total (tolerance: ±1 cent)
+6. If information is missing or uncertain, set to null and document in tbd
+7. Do not hallucinate or guess values
+8. **IMPORTANT**: If you see package discount patterns (e.g., "2/$9.00"), follow the tag-based instructions - do NOT validate quantity × unit_price = line_total for those items
+9. **NEW**: If an Initial Parse Result is provided, use it as a reference to reduce hallucination. The initial parse is from a rule-based system that extracts items, totals, and validation from OCR coordinates. Cross-check your extraction with the initial parse result, but correct any OCR errors you find in product names.
+10. If you cannot be confident or need to escalate, set top-level "reason" to your finding; otherwise omit or null. Still output the best-effort JSON."""
 
 
 def _get_default_prompt_template() -> str:
@@ -127,6 +128,7 @@ def _get_default_prompt_template() -> str:
    - line_total (must match quantity × unit_price if both are present, **EXCEPT for package price discounts** - see tag-based instructions)
 3. Important: Extract subtotal, tax, and ALL fees/deposits:
    - Extract subtotal ONLY if explicitly stated (e.g., "SUB TOTAL", "Subtotal")
+{costco_usa_totals_instructions}
    - Extract tax ONLY if explicitly stated (e.g., "Tax", "GST", "PST", "HST")
    - Extract ALL deposits and fees as separate line items:
      * "Bottle Deposit" → include as item with product_name="Bottle Deposit"
@@ -136,19 +138,20 @@ def _get_default_prompt_template() -> str:
    - Deposits, fees, and other charges are NOT tax - they are separate line items
    - If subtotal is not shown: set subtotal to null
    - If tax is not shown: set tax to null
-4. Validate calculations (CRITICAL - follow this exact order):
-   a) **Line items sum check**: Sum of all line_totals (including deposits, fees, etc.) should ≈ subtotal (±0.03)
+4. **Monetary output**: All amounts (subtotal, tax, total, fees, line_total, unit_price, etc.) must be integers in CENTS (e.g. $36.75 → 3675). No floats for money.
+5. Validate calculations (CRITICAL - follow this exact order, all in cents):
+   a) **Line items sum check**: Sum of all line_totals (including deposits, fees, etc.) should ≈ subtotal (±3 cents)
       - If subtotal is NOT shown on receipt, skip this check
       - If subtotal IS shown, this MUST pass
    b) **Total sum check**: Starting from subtotal, add each component in order:
-      - subtotal + tax + deposits + fees = total (±0.03)
+      - subtotal + tax + deposits + fees = total (±3 cents)
       - Example: If receipt shows "SUB TOTAL: $36.75, Tax: $1.73, Bottle Deposit: $0.05, Environment fee: $0.01, TOTAL: $38.54"
-        * Verify: $36.75 + $1.73 + $0.05 + $0.01 = $38.54
+        * Output as cents: subtotal 3675, tax 173, bottle 5, env 1, total 3854; verify 3675+173+5+1=3854
       - Extract ALL fees/deposits as separate line items (Bottle Deposit, Environment fee, etc.)
-      - Include them in the items array with their exact names and amounts
-   c) **Item price validation**: For each item (if quantity and unit_price exist), verify: quantity × unit_price ≈ line_total (±0.01)
+      - Include them in the items array with their exact names and amounts (amounts in cents)
+   c) **Item price validation**: For each item (if quantity and unit_price exist), verify: quantity × unit_price ≈ line_total (±1 cent)
       - **EXCEPTION**: If the item is part of a package price discount (e.g., "2/$9.00", "3 for $10"), **SKIP this validation** - use the actual line_total from receipt
-5. Document any issues in the "tbd" section:
+6. Document any issues in the "tbd" section:
    - Items with inconsistent price calculations
    - Field conflicts between raw_text and trusted_hints
    - Missing information
@@ -167,7 +170,7 @@ Output the JSON now:"""
 
 
 def _get_default_output_schema() -> Dict[str, Any]:
-    """Default output schema. Top-level 'reason' used when escalating or not confident."""
+    """Default output schema. All monetary amounts in cents (integer) to avoid floating point."""
     return {
         "reason": "string or null (if escalating or not confident, explain here; otherwise omit or null)",
         "receipt": {
@@ -178,9 +181,9 @@ def _get_default_output_schema() -> Dict[str, Any]:
             "currency": "string (USD, CAD, etc.)",
             "purchase_date": "string (YYYY-MM-DD format ONLY, e.g. '2026-01-25') or null",
             "purchase_time": "string (HH:MM:SS or HH:MM format ONLY, e.g. '13:00:00') or null",
-            "subtotal": "number or null",
-            "tax": "number or null",
-            "total": "number",
+            "subtotal": "integer or null (amount in CENTS, e.g. 19859 for $198.59)",
+            "tax": "integer or null (amount in CENTS)",
+            "total": "integer (amount in CENTS)",
             "payment_method": "string or null",
             "card_last4": "string or null"
         },
@@ -190,8 +193,8 @@ def _get_default_output_schema() -> Dict[str, Any]:
                 "product_name": "string or null",
                 "quantity": "number or null",
                 "unit": "string or null",
-                "unit_price": "number or null",
-                "line_total": "number or null",
+                "unit_price": "integer or null (amount in CENTS)",
+                "line_total": "integer or null (amount in CENTS)",
                 "is_on_sale": "boolean",
                 "category": "string or null"
             }
@@ -310,6 +313,15 @@ def format_prompt(
         output_schema_str = output_schema
     else:
         output_schema_str = json.dumps(output_schema, indent=2, ensure_ascii=False)
+
+    # Costco USA only: first subtotal/total and CC Rewards instructions (do not apply to other chains)
+    costco_usa_totals_instructions = ""
+    if merchant_name and "costco" in (merchant_name or "").lower():
+        if (country_code or "").upper() not in ("CA", "CANADA") and "canada" not in (merchant_name or "").lower():
+            costco_usa_totals_instructions = (
+                "   - **Use the FIRST occurrence** of SUBTOTAL and TOTAL only. If the receipt shows a first SUBTOTAL/TAX/TOTAL block and later a line like \"CC Rewards $X.XX\" and then a second subtotal, record receipt.subtotal and receipt.total from the **first** block (e.g. SUBTOTAL $198.59, TOTAL $198.59), NOT the second (e.g. $114.07). The amount after CC Rewards is the amount charged to the card, not the receipt total for our records.\n"
+                "   - If there is a \"CC Rewards\" or \"Credit Card Rewards\" line (a negative/credit applied after the first total), record payment_method as the card type plus \" / CC Rewards\" (e.g. \"Visa / CC Rewards\"). Do not use the second subtotal/total that appears after the rewards line.\n"
+            )
     
     # Add initial parse result to user message if available
     initial_parse_str = ""
@@ -345,12 +357,15 @@ We have already run a rule-based parser on the OCR data. Please use this as a re
     else:
         rag_metadata["initial_parse_provided"] = False
     
-    # Format user message
-    user_message = prompt_template.format(
-        raw_text=raw_text,
-        trusted_hints=trusted_hints_str,
-        output_schema=output_schema_str
-    ) + initial_parse_str
+    # Format user message (default template has {costco_usa_totals_instructions}; library template may not)
+    format_kwargs = {
+        "raw_text": raw_text,
+        "trusted_hints": trusted_hints_str,
+        "output_schema": output_schema_str,
+    }
+    if "{costco_usa_totals_instructions}" in (prompt_template or ""):
+        format_kwargs["costco_usa_totals_instructions"] = costco_usa_totals_instructions
+    user_message = prompt_template.format(**format_kwargs) + initial_parse_str
     
     return system_message, user_message, rag_metadata
 

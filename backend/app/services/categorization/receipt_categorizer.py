@@ -307,15 +307,16 @@ def _enrich_items_category_from_rules(
             logger.debug(f"Rule lookup for '{product_name}': {e}")
 
 
-def _enrich_items_category_from_llm(
+async def _enrich_items_category_from_llm(
     items_data: List[Dict[str, Any]],
     store_chain_name: Optional[str],
 ) -> None:
     """
     For items still without category_id, call LLM to suggest category and set item['category_id']
     when the suggested path resolves to an existing level-3 category. Mutates items_data in place.
+    Must be awaited when called from async context (e.g. smart-categorize API). When called from sync
+    context in a worker thread (e.g. categorize_receipt via asyncio.to_thread), use _enrich_items_category_from_llm_sync.
     """
-    import asyncio
     still_unmatched = [
         (i, it) for i, it in enumerate(items_data)
         if not it.get("category_id") and (it.get("product_name") or it.get("original_product_name"))
@@ -328,9 +329,9 @@ def _enrich_items_category_from_llm(
     ]
     try:
         from ..admin.classification_llm import suggest_classifications
-        suggestions = asyncio.run(suggest_classifications(names, store_chain_name))
+        suggestions = await suggest_classifications(names, store_chain_name)
     except Exception as e:
-        logger.warning(f"LLM category suggestion failed: {e}")
+        logger.warning(f"LLM category suggestion failed: %s", e)
         return
     by_name: Dict[str, Dict[str, Any]] = {s["raw_product_name"].strip(): s for s in suggestions if s.get("raw_product_name")}
     for idx, item in still_unmatched:
@@ -338,7 +339,19 @@ def _enrich_items_category_from_llm(
         sug = by_name.get(name)
         if sug and sug.get("category_id"):
             items_data[idx]["category_id"] = str(sug["category_id"])
-            logger.debug(f"LLM suggested category for '{name}' -> category_id {items_data[idx]['category_id']}")
+            logger.debug(f"LLM suggested category for '%s' -> category_id %s", name, items_data[idx]["category_id"])
+
+
+def _enrich_items_category_from_llm_sync(
+    items_data: List[Dict[str, Any]],
+    store_chain_name: Optional[str],
+) -> None:
+    """
+    Sync wrapper for _enrich_items_category_from_llm. Use from sync code that runs in a thread
+    (e.g. categorize_receipt via asyncio.to_thread), where asyncio.run() is safe (no running loop).
+    """
+    import asyncio
+    asyncio.run(_enrich_items_category_from_llm(items_data, store_chain_name))
 
 
 def _ensure_dict(value: Any) -> Dict[str, Any]:
@@ -366,15 +379,14 @@ def _single_row(data: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _is_likely_cents(val: Any) -> bool:
-    """True if value looks like an amount already in cents (int in plausible range)."""
+def _cents_to_dollars(val: Any) -> Any:
+    """Convert amount from cents (integer) to dollars (float). LLM and store pipelines both output cents."""
     if val is None:
-        return False
+        return None
     try:
-        v = int(val)
-        return 1 <= v <= 10_000_000
+        return round(int(val) / 100.0, 2)
     except (TypeError, ValueError):
-        return False
+        return val
 
 
 def _is_quantity_x100(val: Any) -> bool:
@@ -395,8 +407,7 @@ def _normalize_output_payload_to_dollars(
     merchant_phone_top: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
-    Normalize amounts to dollars so save_receipt_summary/save_receipt_items don't double-convert.
-    Store processors (e.g. Trader Joe's, pipeline) may output subtotal/line_total in cents and quantity as x100.
+    Normalize amounts from cents to dollars. LLM and store processors both output amounts in cents (integer).
     Also merge transaction_info.cashier and top-level merchant_phone into receipt_data.
     """
     receipt = dict(receipt_data)
@@ -413,17 +424,22 @@ def _normalize_output_payload_to_dollars(
                 receipt["purchase_time"] = dt
     if merchant_phone_top and receipt.get("merchant_phone") is None:
         receipt["merchant_phone"] = merchant_phone_top
-    for key in ("subtotal", "tax", "fees", "total"):
+    for key in ("subtotal", "tax", "total"):
         v = receipt.get(key)
-        if _is_likely_cents(v):
-            receipt[key] = round(int(v) / 100.0, 2)
+        if v is not None:
+            receipt[key] = _cents_to_dollars(v)
+    fees = receipt.get("fees")
+    if isinstance(fees, list):
+        receipt["fees"] = [_cents_to_dollars(x) for x in fees]
+    elif fees is not None:
+        receipt["fees"] = _cents_to_dollars(fees)
     items = []
     for it in items_data or []:
         item = dict(it)
         for key in ("line_total", "unit_price", "original_price", "discount_amount"):
             v = item.get(key)
-            if _is_likely_cents(v):
-                item[key] = round(int(v) / 100.0, 2)
+            if v is not None:
+                item[key] = _cents_to_dollars(v)
         q = item.get("quantity")
         if _is_quantity_x100(q):
             item["quantity"] = int(q) / 100.0
@@ -431,11 +447,15 @@ def _normalize_output_payload_to_dollars(
     return receipt, items
 
 
-def smart_categorize_receipt_items(receipt_id: str, user_id: str) -> Dict[str, Any]:
+async def smart_categorize_receipt_items(
+    receipt_id: str,
+    user_id: str,
+    item_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """
-    For this receipt, only categorize record_items that have no category_id (rules + LLM).
-    Does not touch items that already have a category (user or rule-set). Updates in place.
-    Returns { "success": bool, "updated_count": int, "message": str }.
+    For this receipt, run rules + LLM to suggest category and update record_items.
+    - If item_ids is provided (non-empty): fetch only those items and re-run on them (overwrite category).
+    - Otherwise: only items with no category_id (unchanged behavior). Returns { "success", "updated_count", "message" }.
     """
     supabase = _get_client()
     rec = (
@@ -467,16 +487,26 @@ def smart_categorize_receipt_items(receipt_id: str, user_id: str) -> Dict[str, A
             receipt_id, None, store_name, None
         )
 
-    items_rows = (
-        supabase.table("record_items")
-        .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount")
-        .eq("receipt_id", receipt_id)
-        .is_("category_id", "null")
-        .order("item_index")
-        .execute()
-    )
+    if item_ids:
+        items_rows = (
+            supabase.table("record_items")
+            .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount")
+            .eq("receipt_id", receipt_id)
+            .in_("id", item_ids)
+            .order("item_index")
+            .execute()
+        )
+    else:
+        items_rows = (
+            supabase.table("record_items")
+            .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount")
+            .eq("receipt_id", receipt_id)
+            .is_("category_id", "null")
+            .order("item_index")
+            .execute()
+        )
     if not items_rows.data:
-        return {"success": True, "updated_count": 0, "message": "No uncategorized items"}
+        return {"success": True, "updated_count": 0, "message": "No items to categorize" if item_ids else "No uncategorized items"}
 
     items_data = []
     for row in items_rows.data:
@@ -495,7 +525,7 @@ def smart_categorize_receipt_items(receipt_id: str, user_id: str) -> Dict[str, A
         })
 
     _enrich_items_category_from_rules(items_data, store_chain_id_uuid)
-    _enrich_items_category_from_llm(items_data, store_name)
+    await _enrich_items_category_from_llm(items_data, store_name)
 
     updated = 0
     for it in items_data:
@@ -518,8 +548,8 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
     
     条件：
     1. Receipt 必须存在
-    2. Current_status 必须是 'success' (通过了 sum check)
-    3. 必须有 receipt_processing_runs 记录
+    2. Current_status 为 'success' 或 'needs_review'（needs_review 时也写入解析结果，供前端人工复核页展示/编辑）
+    3. 必须有 receipt_processing_runs 记录（stage=llm, status=pass）
     4. output_payload 必须有效
     
     Returns:
@@ -539,9 +569,10 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
         if not receipt_data:
             return False, f"Receipt {receipt_id} not found"
         
-        # 必须是 success 状态
-        if receipt_data.get("current_status") != "success":
-            return False, f"Receipt status is '{receipt_data.get('current_status')}', must be 'success'"
+        # success：通过 sum check；needs_review：未通过但需把解析结果写入 DB 供前端编辑
+        status = receipt_data.get("current_status")
+        if status not in ("success", "needs_review"):
+            return False, f"Receipt status is '{status}', must be 'success' or 'needs_review'"
         
         # 检查是否有 processing run
         runs = supabase.table("receipt_processing_runs")\
@@ -678,7 +709,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     # 4a. Enrich items with category_id from product_categorization_rules (use UUID, not string tag)
     _enrich_items_category_from_rules(items_data, store_chain_id_uuid)
     # 4b. For items still without category_id, call LLM to suggest category (so record_items get category_id when level-3 exists)
-    _enrich_items_category_from_llm(items_data, receipt_data.get("merchant_name"))
+    _enrich_items_category_from_llm_sync(items_data, receipt_data.get("merchant_name"))
     
     # 4. 如果 force=True，删除旧数据
     if force:
