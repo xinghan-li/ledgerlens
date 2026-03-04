@@ -2,10 +2,11 @@
 Sum Checker: Validate mathematical correctness of receipt data.
 
 All amounts (subtotal, tax, total, line_total) are in CENTS (LLM and pipelines output cents).
+Tolerance: max(3 cents, 1% of reference amount) — never use a bare number like 3.
 Validation rules:
-1. sum(line_total) ≈ subtotal (tolerance ±3 cents)
-2. subtotal + tax ≈ total (tolerance ±3 cents)
-3. If subtotal is null, cannot validate, return requires backup check
+1. sum(line_total) ≈ subtotal (within tolerance)
+2. subtotal + tax ≈ total (within tolerance)
+3. If subtotal is null, compare line_total sum to total; if both null, fail
 4. If tax is null, treat as 0
 5. Package price discounts (e.g., "2/$9.00") are valid if items sum to package price
 """
@@ -15,8 +16,37 @@ import re
 
 logger = logging.getLogger(__name__)
 
-TOLERANCE_CENTS = 3  # Error tolerance in cents (amounts are in cents)
-TOLERANCE_DOLLARS = 0.03  # For package discount: price from raw text is in dollars
+TOLERANCE_CENTS = 3  # Minimum error tolerance in cents
+TOLERANCE_DOLLARS = 0.03  # Minimum in dollars (3 cents); also for package discount in raw text
+TOLERANCE_PERCENT = 0.01  # 1% of reference amount (for larger receipts)
+
+
+def _effective_tolerance(subtotal: Any, total: Any, line_total_sum: float) -> float:
+    """
+    Return tolerance in the same unit as the amounts: max(3 cents, 1% of reference).
+    - Prevents mis-pass when LLM returns dollars but we compare against a literal number.
+    - Small receipts: at least 3 cents (0.03 dollars); large: 1% of total/subtotal.
+    """
+    ref = None
+    if total is not None:
+        try:
+            ref = float(total)
+        except (TypeError, ValueError):
+            pass
+    if ref is None and subtotal is not None:
+        try:
+            ref = float(subtotal)
+        except (TypeError, ValueError):
+            pass
+    if ref is None:
+        ref = line_total_sum
+    ref = abs(ref)
+    # Values typically < 1000 are dollars; >= 1000 are cents
+    if ref < 1000:
+        # Dollars: max(0.03, 1% of ref)
+        return max(TOLERANCE_DOLLARS, ref * TOLERANCE_PERCENT)
+    # Cents: max(3, 1% of ref)
+    return max(float(TOLERANCE_CENTS), ref * TOLERANCE_PERCENT)
 
 
 def detect_package_price_discounts(
@@ -89,6 +119,25 @@ def detect_package_price_discounts(
     return detected_discounts
 
 
+def _extract_receipt_item_count(raw_text: str) -> Optional[int]:
+    """Extract expected item count from receipt text (e.g. 'Item count: 9', 'Iten count: 9')."""
+    if not raw_text or not isinstance(raw_text, str):
+        return None
+    patterns = [
+        r'item\s*count\s*:?\s*(\d+)',
+        r'iten\s*count\s*:?\s*(\d+)',  # OCR typo on T&T
+        r'items?\s*:?\s*(\d+)\s*$',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw_text, re.IGNORECASE | re.MULTILINE)
+        if match:
+            try:
+                return int(match.group(1))
+            except (ValueError, IndexError):
+                continue
+    return None
+
+
 def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
     """Check mathematical correctness of receipt."""
     receipt = llm_result.get("receipt", {})
@@ -98,8 +147,24 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
     check_details = {
         "line_total_sum": None, "subtotal": None, "tax": None, "total": None,
         "line_total_sum_check": None, "subtotal_tax_sum_check": None,
-        "package_discounts": package_discounts, "errors": []
+        "package_discounts": package_discounts, "errors": [],
+        "item_count_check": None,
     }
+    # Item count: if receipt states "Item count: N" and we have fewer than N items, fail (missing items)
+    actual_item_count = len([i for i in items if (i.get("product_name") or i.get("line_total"))])
+    expected_item_count = _extract_receipt_item_count(raw_text)
+    if expected_item_count is not None:
+        item_count_passed = actual_item_count >= expected_item_count
+        check_details["item_count_check"] = {
+            "passed": item_count_passed,
+            "expected": expected_item_count,
+            "actual": actual_item_count,
+            "reason": "fewer_items_than_receipt" if actual_item_count < expected_item_count else "ok",
+        }
+        if actual_item_count < expected_item_count:
+            check_details["errors"].append(
+                f"Item count mismatch: receipt states {expected_item_count} items, only {actual_item_count} parsed (missing items)"
+            )
     subtotal = receipt.get("subtotal")
     tax = receipt.get("tax") or 0.0
     total = receipt.get("total")
@@ -112,8 +177,8 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
             try:
                 line_total_float = float(line_total)
                 line_total_sum += line_total_float
-                product_name = item.get("product_name", "").lower()
-                raw_t = item.get("raw_text", "").lower()
+                product_name = (item.get("product_name") or "").lower()
+                raw_t = (item.get("raw_text") or "").lower()
                 is_deposit_or_fee = (
                     "bottle deposit" in product_name or "bottle deposit" in raw_t or
                     "env fee" in product_name or "env fee" in raw_t or
@@ -145,13 +210,14 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
     if subtotal is None:
         if total is not None:
             total_float = float(total)
+            tol = _effective_tolerance(subtotal, total, line_total_sum)
             line_total_diff = abs(line_total_sum - total_float)
-            line_total_check_passed = line_total_diff <= TOLERANCE_CENTS
+            line_total_check_passed = line_total_diff <= tol
             check_details["line_total_sum_check"] = {
                 "passed": line_total_check_passed,
                 "reason": "subtotal_is_null_using_total",
                 "calculated": round(line_total_sum, 2), "expected": round(total_float, 2),
-                "difference": round(line_total_diff, 2), "tolerance": TOLERANCE_CENTS
+                "difference": round(line_total_diff, 2), "tolerance": tol
             }
             check_details["subtotal_tax_sum_check"] = None
             if not line_total_check_passed:
@@ -164,9 +230,11 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
         check_details["line_total_sum_check"] = {"passed": False, "reason": "subtotal_and_total_null", "calculated": line_total_sum, "expected": None}
         return False, check_details
     subtotal_float = float(subtotal)
+    total_float = float(total) if total is not None else None
+    tol = _effective_tolerance(subtotal, total, line_total_sum)
     line_total_diff = abs(product_line_total_sum - subtotal_float)
-    line_total_check_passed = line_total_diff <= TOLERANCE_CENTS
-    if not line_total_check_passed and abs(line_total_sum - subtotal_float) <= TOLERANCE_CENTS:
+    line_total_check_passed = line_total_diff <= tol
+    if not line_total_check_passed and abs(line_total_sum - subtotal_float) <= tol:
         line_total_check_passed = True
     check_details["line_total_sum_check"] = {
         "passed": line_total_check_passed,
@@ -174,7 +242,7 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
         "calculated_with_all_items": round(line_total_sum, 2),
         "expected": round(subtotal_float, 2),
         "deposit_fee_sum": round(deposit_fee_sum, 2),
-        "difference": round(line_total_diff, 2), "tolerance": TOLERANCE_CENTS,
+        "difference": round(line_total_diff, 2), "tolerance": tol,
         "note": "Comparing sum of product line_totals (excluding deposits/fees) to subtotal"
     }
     if not line_total_check_passed:
@@ -183,26 +251,27 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
         check_details["errors"].append("Total is null, cannot perform sum check.")
         check_details["subtotal_tax_sum_check"] = {"passed": False, "reason": "total_is_null", "calculated": subtotal_float + tax, "expected": None}
         return False, check_details
-    total_float = float(total)
+    if total_float is None:
+        total_float = float(total)
     if not line_total_check_passed:
         line_total_plus_tax = line_total_sum + tax
-        if abs(line_total_plus_tax - total_float) <= TOLERANCE_CENTS:
+        if abs(line_total_plus_tax - total_float) <= tol:
             check_details["subtotal_tax_sum_check"] = {
                 "passed": True, "reason": "line_total_sum_plus_tax_equals_total",
                 "calculated": round(line_total_plus_tax, 2), "expected": round(total_float, 2),
-                "difference": round(abs(line_total_plus_tax - total_float), 2), "tolerance": TOLERANCE_CENTS
+                "difference": round(abs(line_total_plus_tax - total_float), 2), "tolerance": tol
             }
             return True, check_details
     subtotal_plus_tax_plus_fees = subtotal_float + tax + deposit_fee_sum
     total_diff = abs(subtotal_plus_tax_plus_fees - total_float)
-    total_check_passed = total_diff <= TOLERANCE_CENTS
+    total_check_passed = total_diff <= tol
     if not total_check_passed:
-        if abs(subtotal_float + tax - total_float) <= TOLERANCE_CENTS:
+        if abs(subtotal_float + tax - total_float) <= tol:
             total_check_passed = True
             check_details["subtotal_tax_sum_check"] = {
                 "passed": True, "calculated": round(subtotal_float + tax, 2),
                 "expected": round(total_float, 2), "deposit_fee_sum": round(deposit_fee_sum, 2),
-                "tolerance": TOLERANCE_CENTS, "formula": "subtotal + tax = total (deposits/fees included in subtotal)"
+                "tolerance": tol, "formula": "subtotal + tax = total (deposits/fees included in subtotal)"
             }
         else:
             check_details["subtotal_tax_sum_check"] = {
@@ -211,7 +280,7 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
                 "expected": round(total_float, 2),
                 "difference": round(total_diff, 2),
                 "deposit_fee_sum": round(deposit_fee_sum, 2),
-                "tolerance": TOLERANCE_CENTS,
+                "tolerance": tol,
                 "formula": "subtotal + tax + deposits/fees = total"
             }
             check_details["errors"].append(
@@ -221,10 +290,14 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
         check_details["subtotal_tax_sum_check"] = {
             "passed": True, "calculated": round(subtotal_plus_tax_plus_fees, 2),
             "expected": round(total_float, 2), "difference": round(total_diff, 2),
-            "deposit_fee_sum": round(deposit_fee_sum, 2), "tolerance": TOLERANCE_CENTS,
+            "deposit_fee_sum": round(deposit_fee_sum, 2), "tolerance": tol,
             "formula": "subtotal + tax + deposits/fees = total"
         }
     is_valid = line_total_check_passed and total_check_passed
+    # Fail if receipt states item count and we parsed fewer items (missing lines → needs_review)
+    item_count_info = check_details.get("item_count_check")
+    if item_count_info and item_count_info.get("passed") is False:
+        is_valid = False
     return is_valid, check_details
 
 
@@ -240,6 +313,8 @@ def apply_field_conflicts_resolution(llm_result: Dict[str, Any]) -> Dict[str, An
                "payment_method": "payment_method", "card_last4": "card_last4"}
     resolved_fields = []
     for field_name, conflict_info in field_conflicts.items():
+        if not isinstance(conflict_info, dict):
+            continue
         from_trusted_hints = conflict_info.get("from_trusted_hints")
         if from_trusted_hints is not None:
             receipt_field_name = mapping.get(field_name)

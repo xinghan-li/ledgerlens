@@ -86,6 +86,12 @@ class Settings(BaseSettings):
         alias="ENV",
         description="Environment (local, staging, production)"
     )
+    # CORS: 逗号分隔的额外允许的 origin，用于手机/ngrok 测前端（例如 https://xxx.ngrok-free.app,http://192.168.1.100:3000）
+    cors_origins_extra: Optional[str] = Field(
+        default=None,
+        alias="CORS_ORIGINS",
+        description="Comma-separated extra origins for CORS (e.g. ngrok frontend URL for mobile testing)"
+    )
     log_level: str = Field(
         default="info",
         alias="LOG_LEVEL",
@@ -107,6 +113,11 @@ class Settings(BaseSettings):
         default="gpt-4o-mini",
         alias="OPENAI_MODEL",
         description="OpenAI model to use (e.g., gpt-4o-mini, gpt-4o, gpt-4-turbo)"
+    )
+    openai_escalation_model: Optional[str] = Field(
+        default=None,
+        alias="OPENAI_ESCALATION_MODEL",
+        description="When set (e.g. gpt-5.1), cascade failures escalate to this model with image input instead of Textract+OpenAI"
     )
     
     # AWS settings
@@ -130,6 +141,11 @@ class Settings(BaseSettings):
             "Free tier: gemini-1.5-flash (recommended), gemini-1.5-pro. "
             "Paid tier: gemini-2.0-flash-exp (experimental, requires paid plan)"
         )
+    )
+    gemini_escalation_model: Optional[str] = Field(
+        default=None,
+        alias="GEMINI_ESCALATION_MODEL",
+        description="When set (e.g. gemini-3), cascade failures escalate to this model with image input for consensus with OpenAI escalation"
     )
     
     # Debug settings

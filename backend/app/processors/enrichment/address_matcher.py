@@ -29,6 +29,26 @@ def _normalize_address_for_compare(s: Optional[str]) -> str:
     return " ".join(s.lower().replace("\n", " ").replace("\r", " ").split())
 
 
+def _fix_ocr_address(s: Optional[str]) -> Optional[str]:
+    """
+    最早层 OCR 纠错：在地址匹配前把常见误识替换掉（如 Huy -> Hwy），
+    并统一为与 DB 常用写法一致（Hwy -> Highway）便于模糊匹配。
+    只做整词替换，避免误伤。
+    """
+    if not s or not isinstance(s, str):
+        return s
+    # Hwy 常被 OCR 成 Huy，先纠错
+    s = re.sub(r"\bHuy\b", "Hwy", s, flags=re.IGNORECASE)
+    # 统一为 Highway 便于与 DB 里 "highway" 全拼匹配
+    s = re.sub(r"\bHwy\b", "Highway", s, flags=re.IGNORECASE)
+    return s
+
+
+def fix_ocr_address(s: Optional[str]) -> Optional[str]:
+    """Public alias for _fix_ocr_address (Huy->Hwy, etc.) for use in workflow/normalizer."""
+    return _fix_ocr_address(s)
+
+
 def _street_number_typo_match(addr_norm: str, db_addr: str) -> bool:
     """
     True if the two addresses differ only in the first token (street number) by at most one character.
@@ -133,6 +153,7 @@ def match_store(
     }
     if not store_name:
         return result
+    store_address = _fix_ocr_address(store_address)
     _addr_preview = (store_address[:100] + "...") if store_address and len(store_address) > 100 else store_address
     logger.info("[STORE_DEBUG] match_store IN: store_name=%r, store_address=%r", store_name, _addr_preview)
 
@@ -277,7 +298,7 @@ def correct_address(
     """
     receipt = llm_result.get("receipt", {})
     store_name = receipt.get("merchant_name")  # Keep merchant_name for backward compatibility
-    store_address = receipt.get("merchant_address")
+    store_address = _fix_ocr_address(receipt.get("merchant_address"))
     _addr_preview = (store_address[:100] + "...") if store_address and len(store_address) > 100 else store_address
     logger.info("[STORE_DEBUG] correct_address IN: merchant_name=%r, merchant_address=%r", store_name, _addr_preview)
     

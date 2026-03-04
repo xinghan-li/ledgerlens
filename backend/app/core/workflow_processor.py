@@ -26,8 +26,13 @@ from ..processors.core.sum_checker import check_receipt_sums, apply_field_confli
 from ..services.llm.llm_client import parse_receipt_with_llm
 from ..prompts.prompt_manager import format_prompt, get_default_prompt
 from ..prompts.prompt_loader import get_debug_prompt_system
-from ..services.llm.gemini_client import parse_receipt_with_gemini_vision, parse_receipt_with_gemini, is_image_receipt_like
-from ..services.llm.llm_client import parse_receipt_with_llm
+from ..services.llm.gemini_client import (
+    parse_receipt_with_gemini_vision,
+    parse_receipt_with_gemini,
+    parse_receipt_with_gemini_vision_escalation,
+    is_image_receipt_like,
+)
+from ..services.llm.llm_client import parse_receipt_with_llm, parse_receipt_with_openai_vision
 from ..config import settings
 from ..services.database.statistics_manager import record_api_call
 from ..services.database.supabase_client import (
@@ -47,7 +52,7 @@ from ..services.database.supabase_client import (
     count_strikes_in_last_hour,
     apply_user_lock,
 )
-from ..processors.enrichment.address_matcher import match_store
+from ..processors.enrichment.address_matcher import match_store, fix_ocr_address
 from ..services.ocr.ocr_normalizer import normalize_ocr_result, extract_unified_info
 import shutil
 from ..exporters.csv_exporter import convert_receipt_to_csv_rows, append_to_daily_csv, get_csv_headers
@@ -89,6 +94,44 @@ INPUT_ROOT = PROJECT_ROOT / "input"
 # Ensure root directories exist
 OUTPUT_ROOT.mkdir(exist_ok=True)
 INPUT_ROOT.mkdir(exist_ok=True)
+
+# Escalation prompt: when cascade fails, send image to strongest models (GPT-5.1 / Gemini 3)
+ESCALATION_VISION_PROMPT = """You are a bookkeeper for personal shopping categorization. This is a grocery receipt image. Traditional OCR and the initial Gemini 2.5 model could not correctly handle it and there are needs_review bugs.
+
+As the escalated stronger model, please read the image and output a single structured JSON object with this exact structure. All monetary amounts in cents (integers).
+
+{
+  "receipt": {
+    "merchant_name": "store name",
+    "merchant_phone": "phone or null",
+    "merchant_address": "full address (address1, address2, city, state, zip, country in one string or separate fields)",
+    "subtotal": 2201,
+    "tax": 0,
+    "total": 2269,
+    "currency": "USD",
+    "payment_method": "Visa etc",
+    "card_last4": "3719",
+    "purchase_date": "YYYY-MM-DD",
+    "purchase_time": "HH:MM or HH:MM:SS"
+  },
+  "items": [
+    {
+      "product_name": "item name",
+      "quantity": 1,
+      "unit": "lb or null",
+      "unit_price": 199,
+      "line_total": 199,
+      "raw_text": "line as on receipt",
+      "is_on_sale": false
+    }
+  ]
+}
+
+Rules:
+1. Extract every line item with product_name, quantity, unit, unit_price, line_total.
+2. Perform a sum check: sum(line_total) must equal receipt.subtotal (within 3 cents or 1%), and subtotal + tax must equal receipt.total.
+3. Only output the JSON if your sum check passes. If it does not pass, fix the numbers so it passes, then output.
+4. Output only valid JSON, no markdown or extra text."""
 
 
 class TimelineRecorder:
@@ -527,7 +570,7 @@ async def process_receipt_workflow(
             normalized_early = normalize_ocr_result(google_ocr_result, provider="google_documentai")
             unified_info = extract_unified_info(normalized_early)
             merchant_name_early = (unified_info.get("merchant_name") or "").strip()
-            store_address_early = (unified_info.get("merchant_address") or "").strip()
+            store_address_early = (fix_ocr_address(unified_info.get("merchant_address")) or "").strip()
             store_match = match_store(merchant_name_early, store_address_early or None)
             if store_match.get("matched") and store_match.get("location_data"):
                 corrected_merchant_name = (store_match["location_data"].get("store_name") or merchant_name_early) or merchant_name_early
@@ -619,12 +662,13 @@ async def process_receipt_workflow(
                 merchant_name = corrected_merchant_name
                 # Load store config
                 store_config = get_store_config_for_receipt(merchant_name, blocks=blocks)
-                # Run rule-based pipeline
+                # Run rule-based pipeline (pass corrected address so output shows Hwy not Huy)
                 initial_parse_result = process_receipt_pipeline(
                     blocks=blocks,
                     llm_result={},  # No LLM result yet
                     store_config=store_config,
-                    merchant_name=merchant_name
+                    merchant_name=merchant_name,
+                    merchant_address=corrected_address or None,
                 )
                 
                 logger.info(f"Initial parse completed: success={initial_parse_result.get('success')}, "
@@ -864,17 +908,24 @@ async def process_receipt_workflow(
             except Exception as e:
                 logger.warning(f"Failed to save LLM processing run: {e}")
         
-        # Step 5: Sum check
+        # Step 5: Sum check (use OCR raw_text so receipt footer "Item count: N" is available for item-count check)
+        if google_ocr_data and isinstance(google_ocr_data.get("raw_text"), str) and (google_ocr_data.get("raw_text") or "").strip():
+            first_llm_result = {**first_llm_result, "raw_text": google_ocr_data.get("raw_text", "") or first_llm_result.get("raw_text", "")}
         timeline.start("sum_check")
         sum_check_passed, sum_check_details = check_receipt_sums(first_llm_result)
         timeline.end("sum_check")
         
         # Step 6: Process results
         if sum_check_passed:
+            # If LLM explicitly marked needs_review (e.g. missing items, conflicts), do not mark success
+            llm_validation = (first_llm_result.get("_metadata") or {}).get("validation_status")
+            force_needs_review = (llm_validation == "needs_review")
+            if force_needs_review:
+                logger.info(f"Sum check passed but LLM validation_status=needs_review, treating as needs_review for receipt {db_receipt_id}")
             # Sum check passed
             field_conflicts = first_llm_result.get("tbd", {}).get("field_conflicts", {})
             
-            if not field_conflicts:
+            if not field_conflicts and not force_needs_review:
                 # Fully passed, return directly
                 timeline.start("save_output")
                 await _save_output(receipt_id, first_llm_result, timeline, google_ocr_data, user_id=user_id)
@@ -914,8 +965,44 @@ async def process_receipt_workflow(
                     "sum_check": sum_check_details,
                     "llm_provider": llm_provider
                 }
+            elif force_needs_review:
+                # Sum check passed but LLM marked needs_review: save and categorize for manual edit, do not mark success
+                data_to_save = apply_field_conflicts_resolution(first_llm_result) if field_conflicts else first_llm_result
+                timeline.start("save_output")
+                await _save_output(receipt_id, data_to_save, timeline, google_ocr_data, user_id=user_id)
+                timeline.end("save_output")
+                if db_receipt_id:
+                    try:
+                        update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="manual")
+                    except Exception as e:
+                        logger.warning(f"Failed to update receipt status: {e}")
+                    try:
+                        cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+                        if cat_result.get("success"):
+                            logger.info(f"Saved parsed data for needs_review receipt {db_receipt_id}")
+                        else:
+                            logger.warning(f"Categorization skipped for {db_receipt_id}: {cat_result.get('message')}")
+                    except Exception as cat_err:
+                        logger.warning(f"Categorization failed for {db_receipt_id}: {cat_err}")
+                llm_duration = _get_duration_from_timeline(timeline, f"{llm_provider}_llm")
+                record_api_call(
+                    call_type="llm",
+                    provider=llm_provider,
+                    receipt_id=db_receipt_id,
+                    duration_ms=int(llm_duration) if llm_duration else None,
+                    status="success"
+                )
+                return {
+                    "success": False,
+                    "receipt_id": receipt_id,
+                    "status": "needs_review",
+                    "data": data_to_save,
+                    "sum_check": sum_check_details,
+                    "llm_provider": llm_provider,
+                    "reason": "LLM validation_status=needs_review",
+                }
             else:
-                # Sum check passed but has field_conflicts, apply resolution
+                # Sum check passed but has field_conflicts (no force_needs_review), apply resolution and success
                 resolved_result = apply_field_conflicts_resolution(first_llm_result)
                 timeline.start("save_output")
                 await _save_output(receipt_id, resolved_result, timeline, google_ocr_data, user_id=user_id)
@@ -1202,13 +1289,241 @@ async def _llm_debug_cascade(
                 logger.warning(f"Categorization failed after debug vision: {ce}")
             return {"success": True, "receipt_id": receipt_id, "status": "passed_after_vision_retry", "data": debug_vision_result}
 
-    # Step 3: Fallback to Textract + OpenAI
+    # Step 3: Escalation to strongest models (image → GPT-5.1 & Gemini 3) or fallback to Textract + OpenAI
+    if getattr(settings, "openai_escalation_model", None) and getattr(settings, "gemini_escalation_model", None):
+        escalation_result = await _escalation_to_strongest_models(
+            image_bytes=image_bytes,
+            filename=filename,
+            receipt_id=receipt_id,
+            timeline=timeline,
+            user_id=user_id,
+            db_receipt_id=db_receipt_id,
+            google_ocr_data=google_ocr_data,
+        )
+        if escalation_result is not None:
+            return escalation_result
+        # Escalation failed or disagreed → fall through to Textract
     return await _backup_check_with_aws_ocr(
         image_bytes, filename, receipt_id, timeline,
         google_ocr_data, first_llm_result, sum_check_details, first_llm_provider,
         user_id=user_id,
         db_receipt_id=db_receipt_id,
     )
+
+
+async def _escalation_to_strongest_models(
+    image_bytes: bytes,
+    filename: str,
+    receipt_id: str,
+    timeline: TimelineRecorder,
+    user_id: str,
+    db_receipt_id: Optional[str] = None,
+    google_ocr_data: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    When cascade fails: send image to OpenAI escalation model + Gemini escalation model,
+    get two structured JSONs, run sum check on both. If both pass and agree (same item count,
+    same sum check result), return success with one payload; else escalate (needs_review) and return.
+    Returns None to fall back to Textract when escalation is not configured or both calls fail.
+    """
+    openai_model = getattr(settings, "openai_escalation_model", None) or ""
+    gemini_model = getattr(settings, "gemini_escalation_model", None) or ""
+    if not openai_model or not gemini_model:
+        return None
+    timeline.start("escalation_vision")
+    try:
+        gemini_task = asyncio.create_task(
+            parse_receipt_with_gemini_vision_escalation(
+                image_bytes, ESCALATION_VISION_PROMPT, gemini_model, "image/jpeg"
+            )
+        )
+        openai_task = asyncio.create_task(
+            asyncio.to_thread(
+                parse_receipt_with_openai_vision,
+                image_bytes,
+                ESCALATION_VISION_PROMPT,
+                openai_model,
+                "image/jpeg",
+            )
+        )
+        gemini_result, openai_result = await asyncio.gather(gemini_task, openai_task)
+    except Exception as e:
+        timeline.end("escalation_vision")
+        logger.warning(f"Escalation vision (one or both models) failed: {e}, falling back to Textract")
+        return None
+    timeline.end("escalation_vision")
+    for name, raw in [("gemini", gemini_result), ("openai", openai_result)]:
+        if not raw or not isinstance(raw, dict):
+            logger.warning(f"Escalation {name} returned invalid result, escalating")
+            return await _escalation_mark_needs_review(
+                receipt_id, timeline, db_receipt_id, user_id,
+                image_bytes, filename, gemini_result, openai_result,
+                reason="one or both escalation models returned invalid JSON",
+            )
+    gemini_clean = clean_llm_result(gemini_result)
+    openai_clean = clean_llm_result(openai_result)
+    gemini_clean = apply_chain_cleaner(gemini_clean)
+    openai_clean = apply_chain_cleaner(openai_clean)
+    gemini_clean = correct_address(gemini_clean, auto_correct=True)
+    openai_clean = correct_address(openai_clean, auto_correct=True)
+    gemini_pass, gemini_sum = check_receipt_sums(gemini_clean)
+    openai_pass, openai_sum = check_receipt_sums(openai_clean)
+    items_g = (gemini_clean.get("items") or [])
+    items_o = (openai_clean.get("items") or [])
+    count_g = len([i for i in items_g if (i.get("product_name") or i.get("line_total"))])
+    count_o = len([i for i in items_o if (i.get("product_name") or i.get("line_total"))])
+    if not gemini_pass or not openai_pass:
+        logger.info("Escalation: sum check failed for one or both models, escalating")
+        return await _escalation_mark_needs_review(
+            receipt_id, timeline, db_receipt_id, user_id,
+            image_bytes, filename, gemini_clean, openai_clean,
+            reason="sum check failed for one or both escalation models",
+        )
+    if count_g != count_o:
+        logger.info(f"Escalation: item count mismatch gemini={count_g} openai={count_o}, escalating")
+        return await _escalation_mark_needs_review(
+            receipt_id, timeline, db_receipt_id, user_id,
+            image_bytes, filename, gemini_clean, openai_clean,
+            reason=f"item count mismatch: gemini={count_g}, openai={count_o}",
+        )
+    rec_g = gemini_clean.get("receipt", {})
+    rec_o = openai_clean.get("receipt", {})
+    total_g = rec_g.get("total")
+    total_o = rec_o.get("total")
+    if total_g is not None and total_o is not None:
+        try:
+            if abs(float(total_g) - float(total_o)) > max(3, abs(float(total_g)) * 0.01):
+                logger.info("Escalation: total mismatch between models, escalating")
+                return await _escalation_mark_needs_review(
+                    receipt_id, timeline, db_receipt_id, user_id,
+                    image_bytes, filename, gemini_clean, openai_clean,
+                    reason="total amount mismatch between escalation models",
+                )
+        except (TypeError, ValueError):
+            pass
+    # Consensus: both pass sum check, same item count, totals agree → success with one payload (use Gemini)
+    # Input payload includes full prompt so DB has exact input for future debug
+    _escalation_input = {
+        "escalation_vision": True,
+        "image_bytes_length": len(image_bytes),
+        "mime_type": "image/jpeg",
+        "escalation_prompt": ESCALATION_VISION_PROMPT,
+    }
+    if db_receipt_id:
+        try:
+            save_processing_run(
+                receipt_id=db_receipt_id,
+                stage="llm",
+                model_provider="openai",
+                model_name=openai_model,
+                model_version=None,
+                input_payload=_escalation_input,
+                output_payload=openai_clean,
+                output_schema_version="0.1",
+                status="pass",
+                error_message=None,
+            )
+            save_processing_run(
+                receipt_id=db_receipt_id,
+                stage="llm",
+                model_provider="gemini",
+                model_name=gemini_model,
+                model_version=None,
+                input_payload=_escalation_input,
+                output_payload=gemini_clean,
+                output_schema_version="0.1",
+                status="pass",
+                error_message=None,
+            )
+            update_receipt_status(db_receipt_id, current_status="success", current_stage="llm_fallback")
+        except Exception as e:
+            logger.warning(f"Failed to save escalation runs or update status: {e}")
+    await _save_output(receipt_id, gemini_clean, timeline, google_ocr_data or {}, user_id=user_id)
+    if db_receipt_id:
+        try:
+            cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+            if cat_result.get("success"):
+                logger.info(f"✅ Categorization completed after escalation for {db_receipt_id}")
+        except Exception as ce:
+            logger.warning(f"Categorization after escalation failed: {ce}")
+    return {
+        "success": True,
+        "receipt_id": receipt_id,
+        "status": "passed_escalation_consensus",
+        "data": gemini_clean,
+        "escalation_used": True,
+    }
+
+
+async def _escalation_mark_needs_review(
+    receipt_id: str,
+    timeline: TimelineRecorder,
+    db_receipt_id: Optional[str],
+    user_id: str,
+    image_bytes: bytes,
+    filename: str,
+    gemini_payload: Dict[str, Any],
+    openai_payload: Dict[str, Any],
+    reason: str,
+) -> Dict[str, Any]:
+    """Save both escalation payloads and mark receipt needs_review."""
+    if db_receipt_id:
+        try:
+            update_receipt_status(db_receipt_id, current_status="needs_review", current_stage="manual")
+            image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+            if image_path:
+                update_receipt_file_url(db_receipt_id, image_path)
+        except Exception as e:
+            logger.warning(f"Failed to update receipt for escalation needs_review: {e}")
+        _escalation_input_review = {
+            "escalation_vision": True,
+            "image_bytes_length": len(image_bytes),
+            "mime_type": "image/jpeg",
+            "escalation_prompt": ESCALATION_VISION_PROMPT,
+            "escalate_reason": reason,
+        }
+        try:
+            save_processing_run(
+                receipt_id=db_receipt_id,
+                stage="llm",
+                model_provider="openai",
+                model_name=getattr(settings, "openai_escalation_model", "openai_escalation"),
+                model_version=None,
+                input_payload=_escalation_input_review,
+                output_payload=openai_payload,
+                output_schema_version="0.1",
+                status="pass",
+                error_message=None,
+            )
+            save_processing_run(
+                receipt_id=db_receipt_id,
+                stage="llm",
+                model_provider="gemini",
+                model_name=getattr(settings, "gemini_escalation_model", "gemini_escalation"),
+                model_version=None,
+                input_payload=_escalation_input_review,
+                output_payload=gemini_payload,
+                output_schema_version="0.1",
+                status="pass",
+                error_message=None,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to save escalation runs: {e}")
+        try:
+            cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
+            if cat_result.get("success"):
+                logger.info(f"Saved escalation payloads for needs_review receipt {db_receipt_id}")
+        except Exception as ce:
+            logger.warning(f"Categorization for escalation needs_review failed: {ce}")
+    return {
+        "success": False,
+        "receipt_id": receipt_id,
+        "status": "needs_review",
+        "data": gemini_payload,
+        "reason": reason,
+        "escalation_openai_payload": openai_payload,
+        "escalation_gemini_payload": gemini_payload,
+    }
 
 
 async def _backup_check_with_aws_ocr(

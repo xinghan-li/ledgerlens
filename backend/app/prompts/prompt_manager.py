@@ -112,6 +112,7 @@ def _get_default_prompt_template() -> str:
    - **Date format**: Must be YYYY-MM-DD (e.g., "2026-01-25")
    - **Time format**: Must be HH:MM:SS or HH:MM (e.g., "13:00:00" or "13:00")
    - Do NOT include newlines or extra text in date/time fields
+   - **Payment**: Use full card brand name for payment_method (e.g. "Discover" not "DCVR", "Visa" not "VISA"). card_last4 = last 4 digits only (e.g. "3713" from "DCVR ************3713").
    - **Address parsing**: When extracting merchant_address, include the full address with proper structure:
      * Street address should be on first line
      * Unit/Suite/Apt number should be separate (identify by keywords: Suite, Ste, Unit, Apt, #, or format like "#1000-3700" in Canadian addresses)

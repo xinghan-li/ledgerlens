@@ -96,6 +96,8 @@ def find_chain_id_by_merchant_name(merchant_name: str) -> Optional[str]:
     if not config_dir.exists():
         return None
     merchant_upper = merchant_name.upper().strip()
+    # Prefer T&T when name clearly indicates T&T (avoid Costco matching on "Lynnwood" in "T&T Supermarket Lynnwood")
+    has_tnt = "T&T" in merchant_upper or "TNT" in merchant_upper
     paths = sorted(config_dir.glob("*.json"), key=lambda p: p.name)
     for path in paths:
         if path.name.startswith("schema") or path.name.startswith("aggregated"):
@@ -109,6 +111,10 @@ def find_chain_id_by_merchant_name(merchant_name: str) -> Optional[str]:
         primary = (ident.get("primary_name") or "").upper()
         aliases = [a.upper() for a in ident.get("aliases", [])]
         keywords = ident.get("match_keywords", [])
+        cid = (cfg.get("chain_id") or path.stem or "").upper()
+        # If receipt is clearly T&T, skip Costco (e.g. "Lynnwood" in keywords would otherwise match)
+        if has_tnt and "COSTCO" in cid:
+            continue
         if primary and primary in merchant_upper:
             return path.stem  # Use filename stem for loading, not cfg["chain_id"]
         if any(a in merchant_upper for a in aliases):

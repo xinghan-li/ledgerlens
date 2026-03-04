@@ -243,6 +243,59 @@ Instructions:
         raise ValueError(f"Invalid JSON response from Gemini vision: {e}")
 
 
+async def parse_receipt_with_gemini_vision_escalation(
+    image_bytes: bytes,
+    instruction: str,
+    model: str,
+    mime_type: str = "image/jpeg",
+) -> Dict[str, Any]:
+    """
+    Escalation path: send receipt image + single instruction to Gemini (vision).
+    Same instruction is used for both OpenAI and Gemini escalation for consensus.
+    """
+    client = await _get_client()
+    blob = types.Blob(data=image_bytes, mime_type=mime_type)
+    parts = [
+        types.Part(inline_data=blob),
+        types.Part(text=instruction),
+    ]
+    config = types.GenerateContentConfig(
+        temperature=0,
+        response_mime_type="application/json",
+    )
+    logger.info(f"Calling Gemini vision escalation with model={model}, image size={len(image_bytes)} bytes")
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=parts,
+            config=config,
+        )
+    except Exception as api_error:
+        _handle_gemini_api_error(api_error, "Gemini vision escalation")
+        raise
+    if hasattr(response, "text"):
+        content = response.text.strip()
+    elif hasattr(response, "candidates") and response.candidates:
+        c0 = response.candidates[0]
+        if hasattr(c0, "content"):
+            if hasattr(c0.content, "parts") and c0.content.parts:
+                content = c0.content.parts[0].text.strip()
+            elif hasattr(c0.content, "text"):
+                content = c0.content.text.strip()
+            else:
+                raise ValueError("Unexpected Gemini vision escalation response format")
+        else:
+            raise ValueError("Unexpected Gemini vision escalation response format")
+    else:
+        raise ValueError("Unexpected Gemini vision escalation response format")
+    content = _extract_json_from_response(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON from Gemini vision escalation: {e}")
+        raise ValueError(f"Invalid JSON from Gemini vision escalation: {e}")
+
+
 async def is_image_receipt_like(
     image_bytes: bytes,
     mime_type: str = "image/jpeg",

@@ -26,6 +26,7 @@ from ..database.supabase_client import (
     save_receipt_summary,
     save_receipt_items,
     enqueue_unmatched_items_to_classification_review,
+    _store_name_to_title_case,
 )
 from ..standardization.product_normalizer import normalize_name_for_storage
 
@@ -389,6 +390,35 @@ def _cents_to_dollars(val: Any) -> Any:
         return val
 
 
+def _payload_already_in_dollars(receipt_data: Dict[str, Any], items_data: List[Dict[str, Any]]) -> bool:
+    """
+    Detect if amounts are already in dollars (e.g. 12.04, 5.85) to avoid x100 error.
+    Contract: pipeline should output cents (1204, 585); some LLM/store outputs dollars (12.04, 5.85).
+    Heuristic: total >= 1000 -> cents; total < 100 -> dollars; 100 <= total < 1000 and has decimal -> dollars.
+    """
+    total = receipt_data.get("total")
+    if total is None:
+        # Fallback: check max line_total
+        amounts = [it.get("line_total") for it in (items_data or []) if it.get("line_total") is not None]
+        if not amounts:
+            return False
+        total = max(amounts) if amounts else None
+    if total is None:
+        return False
+    try:
+        t = float(total)
+    except (TypeError, ValueError):
+        return False
+    if t >= 1000:
+        return False  # 1204 -> cents
+    if t < 100:
+        return True  # 12.04, 50 -> dollars
+    # 100 <= t < 1000: integer like 199 -> cents ($1.99); with decimal 199.99 -> dollars
+    if t != int(round(t)):
+        return True  # has decimal part -> dollars
+    return False
+
+
 def _is_quantity_x100(val: Any) -> bool:
     """True if value looks like quantity stored as x100 (e.g. 100 = 1.0, 200 = 2.0)."""
     if val is None:
@@ -400,6 +430,19 @@ def _is_quantity_x100(val: Any) -> bool:
         return False
 
 
+def _normalize_amount_to_dollars(val: Any, from_cents: bool) -> Any:
+    """Convert to dollars: if from_cents then /100 and round(2); else round(2)."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if from_cents:
+            return round(f / 100.0, 2)
+        return round(f, 2)
+    except (TypeError, ValueError):
+        return val
+
+
 def _normalize_output_payload_to_dollars(
     receipt_data: Dict[str, Any],
     items_data: List[Dict[str, Any]],
@@ -407,8 +450,8 @@ def _normalize_output_payload_to_dollars(
     merchant_phone_top: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
-    Normalize amounts from cents to dollars. LLM and store processors both output amounts in cents (integer).
-    Also merge transaction_info.cashier and top-level merchant_phone into receipt_data.
+    Normalize amounts to dollars. Pipeline contract is cents; some outputs are already dollars (x100 error).
+    When payload is already in dollars we only round; otherwise convert cents -> dollars.
     """
     receipt = dict(receipt_data)
     # Merge cashier, purchase_time, (and merchant_phone below) from transaction_info / top-level (e.g. Trader Joe's)
@@ -416,32 +459,40 @@ def _normalize_output_payload_to_dollars(
         if receipt.get("cashier") is None and transaction_info.get("cashier"):
             receipt["cashier"] = transaction_info.get("cashier")
         if receipt.get("purchase_time") is None and transaction_info.get("datetime"):
-            # Extract time part from "YYYY-MM-DD HH:MM" or "01-25-2026 13:00"
             dt = transaction_info.get("datetime")
             if isinstance(dt, str) and " " in dt:
-                receipt["purchase_time"] = dt.split(" ", 1)[1].strip()  # e.g. "13:00"
+                receipt["purchase_time"] = dt.split(" ", 1)[1].strip()
             elif dt:
                 receipt["purchase_time"] = dt
     if merchant_phone_top and receipt.get("merchant_phone") is None:
         receipt["merchant_phone"] = merchant_phone_top
+
+    already_dollars = _payload_already_in_dollars(receipt, items_data or [])
     for key in ("subtotal", "tax", "total"):
         v = receipt.get(key)
         if v is not None:
-            receipt[key] = _cents_to_dollars(v)
+            receipt[key] = _normalize_amount_to_dollars(v, from_cents=not already_dollars)
     fees = receipt.get("fees")
     if isinstance(fees, list):
-        receipt["fees"] = [_cents_to_dollars(x) for x in fees]
+        receipt["fees"] = [_normalize_amount_to_dollars(x, not already_dollars) for x in fees]
     elif fees is not None:
-        receipt["fees"] = _cents_to_dollars(fees)
+        receipt["fees"] = _normalize_amount_to_dollars(fees, not already_dollars)
+
     items = []
     for it in items_data or []:
         item = dict(it)
         for key in ("line_total", "unit_price", "original_price", "discount_amount"):
             v = item.get(key)
             if v is not None:
-                item[key] = _cents_to_dollars(v)
+                item[key] = _normalize_amount_to_dollars(v, from_cents=not already_dollars)
         q = item.get("quantity")
-        if _is_quantity_x100(q):
+        if already_dollars:
+            if q is not None:
+                try:
+                    item["quantity"] = round(float(q), 2)
+                except (TypeError, ValueError):
+                    item["quantity"] = q
+        elif _is_quantity_x100(q):
             item["quantity"] = int(q) / 100.0
         items.append(item)
     return receipt, items
@@ -683,6 +734,11 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         transaction_info=transaction_info,
         merchant_phone_top=output_payload.get("merchant_phone"),
     )
+    # 店名统一为首字母大写；若 receipt 里无店名则用 _metadata.merchant_name（LLM 阶段必有），保证 record_summaries 有店名、列表不显示 Unknown store
+    if not (receipt_data.get("merchant_name") or "").strip():
+        receipt_data["merchant_name"] = (output_payload.get("_metadata", {}) or {}).get("merchant_name") or ""
+    if receipt_data.get("merchant_name"):
+        receipt_data["merchant_name"] = _store_name_to_title_case(receipt_data["merchant_name"]) or receipt_data["merchant_name"]
     metadata = output_payload.get("_metadata", {})
     chain_id = metadata.get("chain_id")
     location_id = metadata.get("location_id")
@@ -720,14 +776,14 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"Failed to delete old data: {e}")
     
-    # 5. 保存 receipt_summary
+    # 5. 保存 receipt_summary（用解析后的 store_chain_id_uuid 写入，确保 record_summaries.store_chain_id 为 UUID，从而存首字母大写的 chain name）
     summary_id = None
     try:
         summary_id = save_receipt_summary(
             receipt_id=receipt_id,
             user_id=user_id,
             receipt_data=receipt_data,
-            chain_id=chain_id,
+            chain_id=store_chain_id_uuid or chain_id,
             location_id=location_id,
             items_data=items_data,
         )

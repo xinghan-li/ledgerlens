@@ -33,9 +33,12 @@ PAYMENT_TYPE_MAPPING: Dict[str, str] = {
     "amex": "AmEx",
     "americanexpress": "AmEx",
     "american express credit": "AmEx",
-    # Discover
+    # Discover (DISC/DSVR/DCVR = Discover abbreviations on receipts)
     "discover": "Discover",
     "discover card": "Discover",
+    "dcvr": "Discover",
+    "disc": "Discover",
+    "dsvr": "Discover",
     # Cash
     "cash": "Cash",
     # Gift Card

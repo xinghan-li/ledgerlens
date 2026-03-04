@@ -33,6 +33,7 @@ export default function DeveloperDashboardPage() {
   const uploadAbortRef = useRef<AbortController | null>(null)
   const uploadCancelledByUserRef = useRef(false)
   const uploadCleanupRef = useRef<{ timeoutId: ReturnType<typeof setTimeout> | null } | null>(null)
+  const cameraUploadTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const [receiptList, setReceiptList] = useState<ReceiptListItem[]>([])
   const [receiptListLoading, setReceiptListLoading] = useState(false)
   const [expandedReceiptId, setExpandedReceiptId] = useState<string | null>(null)
@@ -68,7 +69,6 @@ export default function DeveloperDashboardPage() {
   const [processingRunsData, setProcessingRunsData] = useState<{ track: string; track_method: string | null; runs: Array<Record<string, unknown>>; workflow_steps: Array<Record<string, unknown>> } | null>(null)
   const [processingRunsLoading, setProcessingRunsLoading] = useState(false)
   const router = useRouter()
-  const supabase = createClient()
 
   function formatAddressMultiLine(addr: string): string {
     if (!addr || addr.includes('\n')) return addr || ''
@@ -84,9 +84,27 @@ export default function DeveloperDashboardPage() {
   function formatTimeToHHmm(t: string): string {
     if (!t || typeof t !== 'string') return ''
     const s = t.trim()
-    const match = s.match(/^(\d{1,2}):(\d{2})/)
-    if (match) return `${match[1].padStart(2, '0')}:${match[2]}`
+    const match24 = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?(\s|$|:)/)
+    if (match24) {
+      const h = parseInt(match24[1], 10)
+      const m = match24[2]
+      if (h >= 0 && h <= 23 && m.length === 2) return `${String(h).padStart(2, '0')}:${m}`
+    }
+    const match12 = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)/i)
+    if (match12) {
+      let h = parseInt(match12[1], 10)
+      const m = match12[2]
+      const pm = match12[3].toUpperCase() === 'PM'
+      if (pm && h !== 12) h += 12
+      if (!pm && h === 12) h = 0
+      return `${String(h).padStart(2, '0')}:${m}`
+    }
     return s.slice(0, 5)
+  }
+
+  function toTitleCaseStore(name: string): string {
+    if (!name || typeof name !== 'string') return name
+    return name.trim().split(/\s+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
   }
 
   /** 匹配 "City, ST ZIP" 或 "City, ST ZIP-4" 格式，避免把城市/州/邮编误填到 Address line 2 */
@@ -103,9 +121,11 @@ export default function DeveloperDashboardPage() {
     if (lines.length === 1) return { line1: lines[0], line2: '', cityStateZip: '', country: '' }
     if (isCountryOnly && lines.length >= 2) {
       const cityStateZip = lines[lines.length - 2]
+      const possibleLine2 = lines.length >= 3 ? lines[1] : ''
+      const line2 = lines.length >= 3 && !looksLikeCityStateZip(possibleLine2) ? possibleLine2 : ''
       return {
         line1: lines[0],
-        line2: lines.length >= 3 ? lines[1] : '',
+        line2,
         cityStateZip,
         country: last,
       }
@@ -137,7 +157,8 @@ export default function DeveloperDashboardPage() {
       if (Number.isInteger(n) && n >= 100) return (n / 100).toFixed(2)
       return String(v)
     }
-    setEditStoreName(data.chain_name ?? receipt.merchant_name ?? '')
+    const rawStore = data.chain_name ?? receipt.merchant_name ?? ''
+    setEditStoreName(rawStore ? toTitleCaseStore(rawStore) : '')
     const addrFields = parseAddressToFields(receipt.merchant_address ?? '')
     setEditAddressLine1(addrFields.line1)
     setEditAddressLine2(addrFields.line2)
@@ -216,6 +237,37 @@ export default function DeveloperDashboardPage() {
   useEffect(() => {
     if (token) fetchReceiptList()
   }, [token, fetchReceiptList])
+
+  const clearCameraUploadTimers = useCallback(() => {
+    cameraUploadTimersRef.current.forEach((id) => clearTimeout(id))
+    cameraUploadTimersRef.current = []
+  }, [])
+
+  const handleCameraUploadStart = useCallback(() => {
+    setUploading(true)
+    setUploadError(null)
+    setUploadResult(null)
+    setUploadWorkingHard(false)
+    clearCameraUploadTimers()
+    cameraUploadTimersRef.current = [setTimeout(() => setUploadWorkingHard(true), 30000)]
+  }, [clearCameraUploadTimers])
+
+  const handleCameraUploadSuccess = useCallback(() => {
+    clearCameraUploadTimers()
+    setUploading(false)
+    setUploadWorkingHard(false)
+    fetchReceiptList()
+  }, [clearCameraUploadTimers, fetchReceiptList])
+
+  const handleCameraUploadError = useCallback(
+    (message: string) => {
+      clearCameraUploadTimers()
+      setUploading(false)
+      setUploadWorkingHard(false)
+      setUploadError(message)
+    },
+    [clearCameraUploadTimers]
+  )
 
   useEffect(() => {
     if (!token) return
@@ -474,8 +526,10 @@ export default function DeveloperDashboardPage() {
             <CameraCaptureButton
               token={token}
               disabled={uploading}
-              onSuccess={fetchReceiptList}
-              onError={setUploadError}
+              showAsProcessing={uploading}
+              onUploadStart={handleCameraUploadStart}
+              onSuccess={handleCameraUploadSuccess}
+              onError={handleCameraUploadError}
             />
           </div>
         </div>
@@ -601,7 +655,7 @@ export default function DeveloperDashboardPage() {
                             >
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="font-medium text-gray-900">
-                                  {r.chain_name || r.store_name || 'Unknown store'}
+                                  {r.chain_name || (r.store_name ? toTitleCaseStore(r.store_name) : '') || r.store_name || 'Unknown store'}
                                 </span>
                                 <span className="text-xs text-gray-500">
                                   {formatDisplayDate(r)}
@@ -720,7 +774,7 @@ export default function DeveloperDashboardPage() {
                                               </div>
                                               <div className="border-t border-dashed border-gray-300 my-2 pt-2" />
                                               {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
-                                              {$(rec.card_last4) && <div>Card: ****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
+                                              {$(rec.card_last4) && <div>Payment Card: {rec.payment_method ? `${rec.payment_method} ` : ''}****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
                                               {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
                                               {(editPurchaseTime?.trim() || $(rec.purchase_time)) && (
                                                 <div>Time: {formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '')}</div>
@@ -953,8 +1007,8 @@ export default function DeveloperDashboardPage() {
                                             <input type="date" className="border rounded px-2 py-1 text-sm" value={editReceiptDate} onChange={(e) => setEditReceiptDate(e.target.value)} />
                                           </label>
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">Purchase time (optional, HH:MM)</span>
-                                            <input type="time" className="border rounded px-2 py-1 text-sm" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} />
+                                            <span className="text-xs text-gray-500">Purchase time (optional, 24-hour only, e.g. 15:34)</span>
+                                            <input type="text" className="border rounded px-2 py-1 text-sm font-mono" placeholder="15:34" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} maxLength={5} />
                                           </label>
                                           <div className="grid grid-cols-3 gap-2">
                                             <label className="flex flex-col gap-0.5">
@@ -1264,7 +1318,7 @@ function ProcessingRunCard({ run }: { run: Record<string, unknown> }) {
   const [showOutput, setShowOutput] = useState(false)
   const stage = String(run.stage ?? '')
   const status = String(run.status ?? '')
-  const created = run.created_at ? new Date(String(run.created_at)).toLocaleString() : '—'
+  const created = run.created_at ? new Date(String(run.created_at)).toLocaleString('en-US') : '—'
   const provider = run.model_provider ? String(run.model_provider) : ''
   const model = run.model_name ? String(run.model_name) : ''
   const validation = run.validation_status ? String(run.validation_status) : ''
@@ -1276,7 +1330,7 @@ function ProcessingRunCard({ run }: { run: Record<string, unknown> }) {
         <span className={status === 'pass' ? 'text-green-600' : 'text-red-600'}>{status}</span>
         {validation && <span className="text-gray-500">validation: {validation}</span>}
         {provider && <span className="text-gray-500">{provider}{model ? ` / ${model}` : ''}</span>}
-        <span className="text-gray-400">{created}</span>
+        <span className="text-gray-400" suppressHydrationWarning>{created}</span>
       </div>
       {err && <p className="text-xs text-red-600 mt-1">{err}</p>}
       <div className="mt-2 flex gap-2">

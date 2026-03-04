@@ -114,6 +114,7 @@ def _run_generic_validation_pipeline(
     llm_result: Dict[str, Any],
     store_config: Optional[Dict[str, Any]],
     merchant_name: Optional[str],
+    merchant_address: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the generic (non-Costco) validation pipeline: wash → skew → rows → columns
@@ -235,6 +236,7 @@ def _run_generic_validation_pipeline(
         "method": "pipeline",
         "chain_id": store_config.get("chain_id") if store_config else None,
         "store": merchant_name or (store_config.get("identification", {}).get("primary_name") if store_config else None),
+        "merchant_address": merchant_address,
         "membership": membership,
         "error_log": error_log,
         "items": [
@@ -283,7 +285,8 @@ def process_receipt_pipeline(
     blocks: List[Dict[str, Any]],
     llm_result: Dict[str, Any],
     store_config: Optional[Dict[str, Any]] = None,
-    merchant_name: Optional[str] = None
+    merchant_name: Optional[str] = None,
+    merchant_address: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Complete receipt processing pipeline. Routes to dedicated processors for
@@ -312,9 +315,12 @@ def process_receipt_pipeline(
     if store_config and store_config.get("chain_id") in ("tnt_supermarket_us", "tnt_supermarket_ca"):
         from ..stores.tnt_supermarket.processor import process_tnt_supermarket
         logger.info("Using T&T dedicated rule-based processor (chain_id=%s)", store_config.get("chain_id"))
-        return process_tnt_supermarket(blocks, store_config=store_config, merchant_name=merchant_name)
+        out = process_tnt_supermarket(blocks, store_config=store_config, merchant_name=merchant_name)
+        if merchant_address is not None and isinstance(out, dict):
+            out["merchant_address"] = merchant_address
+        return out
 
-    return _run_generic_validation_pipeline(blocks, llm_result, store_config, merchant_name)
+    return _run_generic_validation_pipeline(blocks, llm_result, store_config, merchant_name, merchant_address)
 
 
 def _extract_membership_from_regions(
