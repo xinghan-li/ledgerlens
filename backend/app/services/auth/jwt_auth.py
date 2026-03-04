@@ -156,7 +156,18 @@ async def get_current_user(
     
     logger.debug(f"[DEBUG] Token received (length: {len(token)})")
 
-    # Try Firebase first if available
+    # Decode token header first to detect Firebase vs Supabase tokens
+    try:
+        header = jwt.get_unverified_header(token)
+        token_alg = header.get('alg', 'unknown')
+        token_kid = header.get('kid', '')
+        logger.info(f"[DEBUG] Token algorithm from header: {token_alg}, kid: {token_kid}")
+    except Exception as e:
+        logger.warning(f"[DEBUG] Failed to decode token header: {e}")
+        token_alg = 'unknown'
+        token_kid = ''
+
+    # Try Firebase first if available (Firebase ID tokens use RS256 with Google kid)
     if verify_firebase_token is not None and get_or_create_user_id is not None:
         logger.info("[Auth] Trying Firebase verification")
         fb = verify_firebase_token(token)
@@ -170,18 +181,16 @@ async def get_current_user(
             except Exception as e:
                 logger.warning("Firebase get_or_create_user_id failed: %s", e)
         else:
+            # Firebase 验证失败且 token 像是 Firebase（RS256 + 常见 Google kid 长度），直接返回明确错误，避免再用 Supabase JWKS 报错
+            if token_alg == "RS256" and len(token_kid) == 40:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Firebase 登录已过期或无效，请刷新页面或重新登录（Firebase token verification failed or expired）",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
             logger.info("[Auth] Firebase verify returned None, falling back to Supabase JWT")
     else:
         logger.debug("[Auth] Firebase auth not loaded, using Supabase JWT only")
-
-    # First, decode token header to check algorithm (without verification)
-    try:
-        header = jwt.get_unverified_header(token)
-        token_alg = header.get('alg', 'unknown')
-        logger.info(f"[DEBUG] Token algorithm from header: {token_alg}")
-    except Exception as e:
-        logger.warning(f"[DEBUG] Failed to decode token header: {e}")
-        token_alg = 'unknown'
     
     # Try to verify with both RS256 (Supabase Auth) and HS256 (custom tokens)
     payload = None

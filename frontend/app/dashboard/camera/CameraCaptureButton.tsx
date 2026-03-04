@@ -16,6 +16,9 @@ function normalizeNetworkError(msg: string): string {
 type Props = {
   token: string | null
   disabled?: boolean
+  /** 由父组件传入：整页处于「上传中」时为 true，相机按钮显示为沙漏 + Processing… 与 Upload receipt 一致 */
+  showAsProcessing?: boolean
+  onUploadStart?: () => void
   onSuccess?: () => void
   onError?: (message: string) => void
 }
@@ -24,7 +27,7 @@ type Props = {
  * Button that opens a camera modal, captures a photo, shows preview (freeze), then user can Upload or Retake.
  * Intended for mobile (camera permission) but works on desktop with webcam.
  */
-export default function CameraCaptureButton({ token, disabled, onSuccess, onError }: Props) {
+export default function CameraCaptureButton({ token, disabled, showAsProcessing, onUploadStart, onSuccess, onError }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const { stream, error: streamError, status, start, stop } = useCameraStream()
@@ -126,11 +129,26 @@ export default function CameraCaptureButton({ token, disabled, onSuccess, onErro
   }, [previewUrl])
 
   const handleUpload = useCallback(async () => {
-    if (!capturedBlob || !token) return
+    if (!capturedBlob) {
+      onError?.('No photo to upload. Tap Retake to capture again.')
+      return
+    }
+    if (!token) {
+      onError?.('Not logged in. Please refresh the page and try again.')
+      return
+    }
     setUploading(true)
+    const formData = new FormData()
+    formData.append('file', capturedBlob, 'capture.jpg')
+    setOpen(false)
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl)
+      setPreviewUrl(null)
+    }
+    setCapturedBlob(null)
+    stop()
+    onUploadStart?.()
     try {
-      const formData = new FormData()
-      formData.append('file', capturedBlob, 'capture.jpg')
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 180000)
       const res = await fetch(`${apiUrl()}/api/receipt/workflow`, {
@@ -147,7 +165,6 @@ export default function CameraCaptureButton({ token, disabled, onSuccess, onErro
           return
         }
         onSuccess?.()
-        handleClose()
       } else {
         const err = await res.json().catch(() => ({}))
         const msg = typeof err.detail === 'string' ? err.detail : err.detail?.detail ?? res.statusText
@@ -162,7 +179,20 @@ export default function CameraCaptureButton({ token, disabled, onSuccess, onErro
     } finally {
       setUploading(false)
     }
-  }, [capturedBlob, token, onSuccess, onError, handleClose])
+  }, [capturedBlob, token, onUploadStart, onSuccess, onError, stop, previewUrl])
+
+  if (showAsProcessing) {
+    return (
+      <div
+        className="inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-500 cursor-wait select-none min-h-[44px] sm:min-h-0"
+        aria-busy="true"
+        aria-label="Processing receipt"
+      >
+        <span className="inline-block animate-spin text-lg" aria-hidden>⏳</span>
+        <span>Processing…</span>
+      </div>
+    )
+  }
 
   return (
     <>
@@ -178,7 +208,7 @@ export default function CameraCaptureButton({ token, disabled, onSuccess, onErro
       </button>
 
       {open && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-black">
+        <div className="fixed inset-0 z-[99999] flex flex-col bg-black" style={{ touchAction: 'manipulation' }}>
           <div className="flex items-center justify-between p-3 sm:p-4 bg-black/80 text-white shrink-0">
             <span className="text-sm font-medium">Point camera at receipt</span>
             <button
@@ -226,9 +256,11 @@ export default function CameraCaptureButton({ token, disabled, onSuccess, onErro
               <>
                 <button
                   type="button"
-                  onClick={handleUpload}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleUpload() }}
+                  onPointerDown={(e) => e.stopPropagation()}
                   disabled={uploading}
-                  className="px-6 py-3 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[48px]"
+                  className="px-6 py-3 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[48px] active:bg-green-800 select-none"
+                  aria-label="Upload photo"
                 >
                   {uploading ? 'Uploading…' : 'Upload'}
                 </button>

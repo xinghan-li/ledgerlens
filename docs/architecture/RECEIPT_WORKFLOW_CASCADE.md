@@ -24,7 +24,7 @@ flowchart TD
     LikeReceipt -->|是| GeminiVisionFirst[Gemini Vision 看图一轮]
     GeminiVisionFirst --> VisionOk{成功且 Sum Check 过?}
     VisionOk -->|是| Success([成功])
-    VisionOk -->|否| TxtOpenAI[Amazon Textract + OpenAI]
+    VisionOk -->|否| Escalation[Escalation: 原图 → GPT-5.1 & Gemini 3]
 
     AddrMatch --> UpdateMerchant[校正通过则更新<br/>店名/地址]
     UpdateMerchant --> InChain{商店在 store_chain?}
@@ -47,11 +47,11 @@ flowchart TD
     FirstEx -->|是| GeminiVision[Gemini Vision: OCR + 原图 debug]
     GeminiVision --> RetryOk{成功且 Sum Check 过?}
     RetryOk -->|是| Success([成功])
-    RetryOk -->|否| TxtOpenAI
+    RetryOk -->|否| Escalation
 
-    TxtOpenAI --> TxtSum{Sum Check 过?}
-    TxtSum -->|是| Success
-    TxtSum -->|否| NeedsReview([needs_review])
+    Escalation --> EscalationSum{双模型共识 + Sum Check 过?}
+    EscalationSum -->|是| Success
+    EscalationSum -->|否| NeedsReview([needs_review])
 
     Clean --> SaveRun[(存 stage: llm, categorize)]
     SaveRun --> SumCheck[Sum Check]
@@ -65,14 +65,16 @@ flowchart TD
     DebugOCRSum -->|否| DebugVision[2. Gemini Vision: 看图 + 上下文]
     DebugVision --> DebugVSum{Sum Check 过?}
     DebugVSum -->|是| Success
-    DebugVSum -->|否| TxtOpenAI
+    DebugVSum -->|否| Escalation
 ```
+
+说明：当「足够多的否且 Sum Check 仍不过」时，不再走 Amazon Textract + OpenAI，而是**合并为 Escalation**：原图直接送入 **OPENAI_ESCALATION_MODEL**（如 gpt-5.1）与 **GEMINI_ESCALATION_MODEL**（如 gemini-3），用同一段 bookkeeper 提示词要求输出结构化 JSON 并自检 sum check；两模型结果做**双模型共识**（item 数量一致、sum check 均过、total 一致则采纳，否则 escalate 给客户）。若未配置上述两个环境变量，则回退到原 Textract + OpenAI 流程。
 
 ---
 
 ## 1.1 流程审阅（潜在问题与实现注意）
 
-- **小票校验不通过**：图中已补 **Valid 否 → RejectPopup**（与「OCR 失败且不像小票」共用同一用户弹窗）。用户确认「是清楚小票」后 → **Gemini Vision 看图一轮** → 不行 → TxtOpenAI；不再经「OpenAI 再认 / 一振」节点（一振逻辑可放在 Vision + TxtOpenAI 仍失败时再记）。
+- **小票校验不通过**：图中已补 **Valid 否 → RejectPopup**（与「OCR 失败且不像小票」共用同一用户弹窗）。用户确认「是清楚小票」后 → **Gemini Vision 看图一轮** → 不行 → **Escalation**（原图 → GPT-5.1 & Gemini 3 双模型共识）；若未配置 escalation 模型则回退 Textract+OpenAI。
 - **所有成功路径落库**：任一分支走到 Success 之前，都应确保**落库**：写 `receipt_processing_runs`（对应 stage）、更新 receipt 状态等。特别是：**OCR 失败分支**上 Gemini Vision 成功（VisionOk 是 → Success）时，也应做数据清洗、存 stage: llm / categorize、再返回成功，避免「图上成功但库中无记录」。
 - **General 规则清洗**：你说的「小票分四段：头、items、total、尾」就是 **general** 规则。代码里已支持：`store_config=None` 时，`process_receipt_pipeline` 走 `_run_generic_validation_pipeline`，`region_splitter` 使用 **DEFAULT_SUBTOTAL_MARKERS / DEFAULT_PAYMENT_KEYWORDS** 做四段划分（header / items / totals / payment），即通用四段逻辑，无需单独 `general.json`。若希望可配置化，可后续加 `config/store_receipts/general.json` 覆写默认 markers。
 - **Gemini Vision 两处输入差异**：OCR 失败且像小票（或用户确认）时的「Gemini Vision 看图一轮」是**纯图**（无 OCR 文本）；首轮异常后的「Gemini Vision: OCR + 原图 debug」是 **OCR + 原图**。两处调用要区分输入，避免混用。

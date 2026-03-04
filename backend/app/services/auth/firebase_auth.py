@@ -53,7 +53,8 @@ def verify_firebase_token(id_token: str) -> Optional[Tuple[str, str]]:
         return None
     try:
         _get_firebase_app()
-        decoded = firebase_auth.verify_id_token(id_token)
+        # 允许 60 秒时钟偏差，减少客户端与服务器时间不同步导致的误判
+        decoded = firebase_auth.verify_id_token(id_token, clock_skew_seconds=60)
         # Python SDK may return dict or object (DecodedToken); support both
         _keys = list(decoded.keys()) if isinstance(decoded, dict) else [k for k in dir(decoded) if not k.startswith("_")]
         logger.info("[Firebase] verify_id_token OK, decoded type=%s keys=%s", type(decoded).__name__, _keys[:20])

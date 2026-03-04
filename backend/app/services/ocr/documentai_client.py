@@ -213,7 +213,10 @@ def _extract_receipt_data(document) -> Dict[str, Any]:
     # If no tax, set to 0
     if data["tax"] is None:
         data["tax"] = 0.0
-    
+    # Document AI sometimes labels the Total line as Tax when receipt has no tax; correct when tax ≈ total
+    if data.get("tax") and data.get("total") and abs(float(data["tax"]) - float(data["total"])) < 0.02:
+        data["tax"] = 0.0
+
     # Validate and correct data
     data = _validate_and_correct_receipt_data(data, document.text if hasattr(document, 'text') else data.get("raw_text", ""))
     

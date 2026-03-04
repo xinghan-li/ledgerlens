@@ -21,9 +21,10 @@ curl -X POST "http://127.0.0.1:8000/api/receipts/ocr" \
   -F "file=@/path/to/receipt.jpg"
 """
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Security, Body
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from .services.ocr.vision_client import ocr_document_bytes
@@ -54,6 +55,7 @@ from .processors.validation.receipt_body_detector import filter_blocks_by_receip
 from .processors.validation.receipt_partitioner import partition_receipt
 from .processors.validation.coordinate_sum_checker import coordinate_based_sum_check
 from .processors.validation.pipeline import process_receipt_pipeline
+from .config import settings
 import logging
 
 # Configure logging
@@ -63,7 +65,9 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Receipt OCR MVP",
     description="Minimal FastAPI backend for receipt OCR using Google Cloud Vision",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url=None,  # 使用下方自定义 /docs，以支持 ngrok 下用 ngrok-skip-browser-warning 拉取 openapi.json
+    redoc_url=None,
 )
 
 # Configure Swagger UI to show Authorize button
@@ -119,24 +123,99 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
-# CORS configuration - allow common development ports
-# In production, should restrict to specific domains
+# CORS configuration - allow common development ports + CORS_ORIGINS (comma-separated) for mobile/ngrok
+_default_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:8000",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    "http://127.0.0.1:8000",
+    "http://127.0.0.1:8080",
+]
+_extra = (settings.cors_origins_extra or "").strip()
+if _extra:
+    _default_origins = _default_origins + [o.strip() for o in _extra.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:8000",
-        "http://localhost:8080",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://127.0.0.1:8000",
-        "http://127.0.0.1:8080",
-    ],
+    allow_origins=_default_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _cors_headers_for_origin(origin: str) -> dict:
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Max-Age": "86400",
+        "Access-Control-Allow-Credentials": "true",
+    }
+
+
+class DevCORSOptionsMiddleware(BaseHTTPMiddleware):
+    """ENV=local 时：对带 Origin 的请求（OPTIONS 预检及后续请求）一律回显该 Origin，避免未配 CORS_ORIGINS 或 origin 不一致时 400/无 CORS 头。"""
+
+    async def dispatch(self, request, call_next):
+        origin = request.headers.get("origin")
+        is_local = getattr(settings, "env", "") == "local"
+        if not origin or not is_local:
+            return await call_next(request)
+        if request.method == "OPTIONS":
+            return Response(status_code=200, headers=_cors_headers_for_origin(origin))
+        response = await call_next(request)
+        for k, v in _cors_headers_for_origin(origin).items():
+            response.headers[k] = v
+        return response
+
+
+app.add_middleware(DevCORSOptionsMiddleware)
+
+
+# 自定义 /docs：在页面内用 ngrok-skip-browser-warning 拉取 openapi.json，避免 ngrok 免费版拦截页导致 doc 打不开
+SWAGGER_UI_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <title>Receipt OCR MVP - Swagger UI</title>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+  <script>
+    window.onload = function() {
+      fetch('/openapi.json', { headers: { 'ngrok-skip-browser-warning': '1' } })
+        .then(r => r.json())
+        .then(spec => {
+          window.ui = SwaggerUIBundle({
+            spec: spec,
+            dom_id: '#swagger-ui',
+            presets: [
+              SwaggerUIBundle.presets.apis,
+              SwaggerUIStandalonePreset
+            ],
+            layout: "StandaloneLayout"
+          });
+        })
+        .catch(e => {
+          document.getElementById('swagger-ui').innerHTML =
+            '<p style="padding:2em;color:#c00;">Failed to load OpenAPI spec. If using ngrok, try opening <a href="/openapi.json">/openapi.json</a> first and click through the warning, then refresh this page.</p><pre>' + e + '</pre>';
+        });
+    };
+  </script>
+</body>
+</html>
+"""
+
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return HTMLResponse(content=SWAGGER_UI_HTML)
 
 
 @app.get("/health", tags=["System"])

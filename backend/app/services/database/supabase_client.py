@@ -20,6 +20,44 @@ from ...processors.enrichment.payment_types import normalize_payment_type
 logger = logging.getLogger(__name__)
 
 
+def _store_name_to_title_case(name: Optional[str]) -> Optional[str]:
+    """Normalize store name: ALL CAPS -> Title Case (e.g. GOLD VALLEY SUPERMARKET -> Gold Valley Supermarket)."""
+    if not name or not isinstance(name, str):
+        return name
+    s = name.strip()
+    if not s:
+        return name
+    return " ".join(
+        w[0].upper() + w[1:].lower() if len(w) > 0 else w
+        for w in s.split()
+    )
+
+
+def _purchase_time_to_24h(value: Optional[str]) -> Optional[str]:
+    """Normalize purchase_time to 24-hour HH:MM (e.g. '03:34 PM' -> '15:34', '15:34:00' -> '15:34')."""
+    if not value or not isinstance(value, str):
+        return value
+    s = value.strip()
+    if not s:
+        return value
+    # Already HH:MM or HH:MM:SS (24h)
+    m = re.match(r"^(\d{1,2}):(\d{2})(?::\d{2})?\s*$", s)
+    if m:
+        h, min_ = int(m.group(1)), m.group(2)
+        if 0 <= h <= 23 and len(min_) == 2:
+            return f"{h:02d}:{min_}"
+    # 12h with AM/PM
+    m = re.match(r"^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)\s*$", s, re.I)
+    if m:
+        h, min_, ampm = int(m.group(1)), m.group(2), m.group(3).upper()
+        if ampm == "PM" and h != 12:
+            h += 12
+        elif ampm == "AM" and h == 12:
+            h = 0
+        return f"{h:02d}:{min_}"
+    return value
+
+
 def _normalize_card_last4(raw: Optional[str]) -> Optional[str]:
     """Extract up to 4 digits from card_last4 (e.g. '****9463' or '9463' -> '9463'). Returns None if < 4 digits."""
     if not raw:
@@ -727,18 +765,20 @@ def save_receipt_summary(
         _store_addr_preview,
     )
 
-    # When we have a matched chain, use chain canonical name (title case) for display instead of raw OCR (e.g. TRADER JOE'S -> Trader Joe's)
-    store_name_for_summary: Optional[str] = merchant_name
+    # When we have a matched chain, use chain canonical name; otherwise normalize raw merchant name to title case (e.g. GOLD VALLEY -> Gold Valley)
+    store_name_for_summary: Optional[str] = _store_name_to_title_case(merchant_name)
     if store_chain_id:
         try:
             sc = supabase.table("store_chains").select("name").eq("id", store_chain_id).limit(1).execute()
             if sc.data and sc.data[0].get("name"):
-                store_name_for_summary = sc.data[0]["name"]
+                # 链名称可能存成全大写，持久化时统一为首字母大写
+                store_name_for_summary = _store_name_to_title_case(sc.data[0]["name"]) or sc.data[0]["name"]
         except Exception as e:
             logger.warning(f"Failed to get store_chain name for store_name: {e}")
     
     # Prefer store_locations.phone for other_info.merchant_phone when set (reduces OCR error)
     receipt_for_info = dict(receipt_data)
+    receipt_for_info["merchant_name"] = store_name_for_summary  # 用已规范的首字母大写店名写回，保证 information 一致
     if location_phone and not receipt_for_info.get("merchant_phone"):
         receipt_for_info["merchant_phone"] = location_phone
     information = _build_information_json(receipt_for_info, items_data or [], supabase, store_chain_id)
@@ -845,7 +885,7 @@ def update_receipt_summary(
         "information": information,
     }
     if merchant_name is not None and not store_chain_id:
-        update_payload["store_name"] = merchant_name
+        update_payload["store_name"] = _store_name_to_title_case(merchant_name)
     if store_address is not None:
         update_payload["store_address"] = store_address
     if receipt_data.get("purchase_date") is not None:
@@ -867,12 +907,12 @@ def update_receipt_summary(
     if store_location_id is not None:
         update_payload["store_location_id"] = store_location_id
 
-    # When we have store_chain_id, always use chain canonical name for store_name (do not persist user-typed "Lynnwood Store" etc.)
+    # When we have store_chain_id, use chain canonical name in title case for store_name
     if store_chain_id:
         try:
             sc = supabase.table("store_chains").select("name").eq("id", store_chain_id).limit(1).execute()
             if sc.data and sc.data[0].get("name"):
-                update_payload["store_name"] = sc.data[0]["name"]
+                update_payload["store_name"] = _store_name_to_title_case(sc.data[0]["name"]) or sc.data[0]["name"]
         except Exception as e:
             logger.warning(f"Failed to get store_chain name for store_name: {e}")
 
@@ -1767,15 +1807,63 @@ def list_receipts_by_user(
     if chain_ids:
         ch = supabase.table("store_chains").select("id, name").in_("id", list(chain_ids)).execute()
         if ch.data:
-            chain_name_by_id = {c["id"]: c.get("name", "") for c in ch.data}
+            # 统一用 str(id) 做 key，避免 UUID 与字符串比较取不到
+            chain_name_by_id = {str(c["id"]): c.get("name", "") for c in ch.data}
     for r in rows:
         s = summary_by_id.get(r["id"]) or {}
         r["store_chain_id"] = s.get("store_chain_id")
-        r["chain_name"] = chain_name_by_id.get(s["store_chain_id"]) if s.get("store_chain_id") else None
-        # When we have a matched chain, prefer chain name for display so user sees "Trader Joe's" not "TRADER JOE'S"
-        r["store_name"] = r["chain_name"] if r["chain_name"] else s.get("store_name")
+        sid = s.get("store_chain_id")
+        raw_chain = chain_name_by_id.get(str(sid)) if sid else None
+        r["chain_name"] = _store_name_to_title_case(raw_chain) if raw_chain else None
+        # When we have a matched chain, use chain name (title case); otherwise show store_name in title case
+        r["store_name"] = r["chain_name"] if r["chain_name"] else (_store_name_to_title_case(s.get("store_name")) or s.get("store_name"))
         r["receipt_date"] = s.get("receipt_date")
+
+    # Fallback: 列表摘要无店名时（如 record_summaries 尚未写入或 store_name 为空），从最近一次 LLM run 的 output 取 merchant_name，避免显示 Unknown store
+    need_fallback = [str(r["id"]) for r in rows if not (r.get("store_name") or "").strip()]
+    if need_fallback:
+        fallback_names = _merchant_name_from_latest_llm_run(supabase, need_fallback)
+        for r in rows:
+            rk = str(r["id"])
+            if not (r.get("store_name") or "").strip() and rk in fallback_names:
+                r["store_name"] = _store_name_to_title_case(fallback_names[rk]) or fallback_names[rk]
     return rows
+
+
+def _merchant_name_from_latest_llm_run(supabase: Client, receipt_ids: List[str]) -> Dict[str, str]:
+    """For each receipt_id, get merchant_name from the latest LLM run's output_payload (receipt.merchant_name or _metadata.merchant_name)."""
+    if not receipt_ids:
+        return {}
+    try:
+        runs = (
+            supabase.table("receipt_processing_runs")
+            .select("receipt_id, output_payload, created_at")
+            .in_("receipt_id", receipt_ids)
+            .eq("stage", "llm")
+            .eq("status", "pass")
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except Exception as e:
+        logger.debug("Fallback merchant_name from runs failed: %s", e)
+        return {}
+    out: Dict[str, str] = {}
+    for row in (runs.data or []):
+        rid = row.get("receipt_id")
+        if rid is not None:
+            rid = str(rid)
+        if not rid or rid in out:
+            continue
+        payload = row.get("output_payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                continue
+        name = (payload.get("receipt") or {}).get("merchant_name") or (payload.get("_metadata") or {}).get("merchant_name")
+        if name and isinstance(name, str) and name.strip():
+            out[rid] = name.strip()
+    return out
 
 
 def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[str, Any]]:
@@ -1817,8 +1905,14 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
             sc = supabase.table("store_chains").select("name").eq("id", s["store_chain_id"]).limit(1).execute()
             if sc.data:
                 chain_name = sc.data[0].get("name")
-        # When we have a matched chain, use chain name for merchant_name so list/detail and Edit receipt show "Trader Joe's" not OCR "TRADER JOE'S"
-        display_store_name = chain_name if chain_name else s.get("store_name")
+        # When we have a matched chain, use chain name in title case; otherwise show store_name in title case
+        raw_from_db = s.get("store_name")
+        title_cased = _store_name_to_title_case(raw_from_db) if raw_from_db else None
+        display_store_name = (_store_name_to_title_case(chain_name) if chain_name else None) or (title_cased or raw_from_db)
+        logger.info(
+            "[STORE_NAME_DEBUG] get_receipt_detail receipt_id=%s chain_name=%r display_store_name=%r",
+            receipt_id, chain_name, display_store_name,
+        )
         # When we have a linked store_location, use its canonical multi-line address so city/state/zip display on separate lines
         display_address = s.get("store_address")
         if s.get("store_location_id"):
@@ -1849,7 +1943,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
         if other.get("merchant_phone"):
             receipt_data["merchant_phone"] = other["merchant_phone"]
         if other.get("purchase_time"):
-            receipt_data["purchase_time"] = other["purchase_time"]
+            receipt_data["purchase_time"] = _purchase_time_to_24h(other["purchase_time"]) or other["purchase_time"]
     def _norm_cat_key(val: Any) -> str:
         if val is None:
             return ""
@@ -1889,7 +1983,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
         "data": {
             "receipt": receipt_data,
             "items": items_data,
-            "chain_name": chain_name,
+            "chain_name": _store_name_to_title_case(chain_name) if chain_name else None,
         },
     }
 
