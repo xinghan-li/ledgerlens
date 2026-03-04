@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { getFirebaseAuth } from '@/lib/firebase'
+import { formatTimeToHHmm, toTitleCaseStore } from '@/lib/utils'
 import { onAuthStateChanged } from 'firebase/auth'
 import DataAnalysisSection from '../DataAnalysisSection'
 import { CameraCaptureButton } from '../camera'
@@ -79,32 +80,6 @@ export default function DeveloperDashboardPage() {
     s = s.replace(/(\d+)([A-Z][a-z]+,\s*[A-Z]{2}\s*)/g, '$1\n$2')
     s = s.replace(/\s+([A-Z][a-z]+,\s*[A-Z]{2}\s*\d{5}(?:\s+[A-Z]{2})?)/g, '\n$1')
     return s.trim()
-  }
-
-  function formatTimeToHHmm(t: string): string {
-    if (!t || typeof t !== 'string') return ''
-    const s = t.trim()
-    const match24 = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?(\s|$|:)/)
-    if (match24) {
-      const h = parseInt(match24[1], 10)
-      const m = match24[2]
-      if (h >= 0 && h <= 23 && m.length === 2) return `${String(h).padStart(2, '0')}:${m}`
-    }
-    const match12 = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)/i)
-    if (match12) {
-      let h = parseInt(match12[1], 10)
-      const m = match12[2]
-      const pm = match12[3].toUpperCase() === 'PM'
-      if (pm && h !== 12) h += 12
-      if (!pm && h === 12) h = 0
-      return `${String(h).padStart(2, '0')}:${m}`
-    }
-    return s.slice(0, 5)
-  }
-
-  function toTitleCaseStore(name: string): string {
-    if (!name || typeof name !== 'string') return name
-    return name.trim().split(/\s+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
   }
 
   /** 匹配 "City, ST ZIP" 或 "City, ST ZIP-4" 格式，避免把城市/州/邮编误填到 Address line 2 */
@@ -1008,7 +983,7 @@ export default function DeveloperDashboardPage() {
                                           </label>
                                           <label className="flex flex-col gap-0.5">
                                             <span className="text-xs text-gray-500">Purchase time (optional, 24-hour only, e.g. 15:34)</span>
-                                            <input type="text" className="border rounded px-2 py-1 text-sm font-mono" placeholder="15:34" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} maxLength={5} />
+                                            <input type="text" className="border rounded px-2 py-1 text-sm font-mono" placeholder="15:34" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} maxLength={5} pattern="([01]?[0-9]|2[0-3]):[0-5][0-9]" title="Please enter time in 24-hour HH:MM format" />
                                           </label>
                                           <div className="grid grid-cols-3 gap-2">
                                             <label className="flex flex-col gap-0.5">

@@ -22,7 +22,7 @@ from ..services.ocr.documentai_client import parse_receipt_documentai
 from ..services.ocr.textract_client import parse_receipt_textract
 from ..services.llm.gemini_rate_limiter import check_gemini_available, record_gemini_request
 from ..services.llm.receipt_llm_processor import process_receipt_with_llm_from_ocr
-from ..processors.core.sum_checker import check_receipt_sums, apply_field_conflicts_resolution
+from ..processors.core.sum_checker import check_receipt_sums, apply_field_conflicts_resolution, _effective_tolerance
 from ..services.llm.llm_client import parse_receipt_with_llm
 from ..prompts.prompt_manager import format_prompt, get_default_prompt
 from ..prompts.prompt_loader import get_debug_prompt_system
@@ -1392,7 +1392,8 @@ async def _escalation_to_strongest_models(
     total_o = rec_o.get("total")
     if total_g is not None and total_o is not None:
         try:
-            if abs(float(total_g) - float(total_o)) > max(3, abs(float(total_g)) * 0.01):
+            tolerance = _effective_tolerance(None, total_g, 0.0)
+            if abs(float(total_g) - float(total_o)) > tolerance:
                 logger.info("Escalation: total mismatch between models, escalating")
                 return await _escalation_mark_needs_review(
                     receipt_id, timeline, db_receipt_id, user_id,
