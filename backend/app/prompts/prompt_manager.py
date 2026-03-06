@@ -4,6 +4,7 @@ Prompt Manager: Manage prompts for receipt parsing.
 Uses prompt_library + prompt_binding (replaces legacy tag-based RAG).
 Resolves prompts by scope: default + chain + location.
 """
+from datetime import datetime, timezone
 from supabase import create_client, Client
 from ..config import settings
 from typing import Optional, Dict, Any
@@ -108,8 +109,10 @@ def _get_default_prompt_template() -> str:
 {output_schema}
 
 ## Instructions:
+REFERENCE DATE (today): {reference_date}. Any receipt date on or before this date is valid; use the date exactly as printed on the receipt.
+
 1. Extract receipt-level fields (merchant, date, time, amounts, payment method)
-   - **Date format**: Must be YYYY-MM-DD (e.g., "2026-01-25")
+   - **Date format**: Must be YYYY-MM-DD (e.g., "2026-01-25"). Use the date EXACTLY as printed on the receipt; do NOT substitute or correct the year (e.g. if the receipt shows 2026, output 2026; never change it to the current year).
    - **Time format**: Must be HH:MM:SS or HH:MM (e.g., "13:00:00" or "13:00")
    - Do NOT include newlines or extra text in date/time fields
    - **Payment**: Use full card brand name for payment_method (e.g. "Discover" not "DCVR", "Visa" not "VISA"). card_last4 = last 4 digits only (e.g. "3713" from "DCVR ************3713").
@@ -358,11 +361,13 @@ We have already run a rule-based parser on the OCR data. Please use this as a re
     else:
         rag_metadata["initial_parse_provided"] = False
     
-    # Format user message (default template has {costco_usa_totals_instructions}; library template may not)
+    # Format user message (default template has {costco_usa_totals_instructions}, {reference_date}; library template may not)
+    reference_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     format_kwargs = {
         "raw_text": raw_text,
         "trusted_hints": trusted_hints_str,
         "output_schema": output_schema_str,
+        "reference_date": reference_date,
     }
     if "{costco_usa_totals_instructions}" in (prompt_template or ""):
         format_kwargs["costco_usa_totals_instructions"] = costco_usa_totals_instructions

@@ -4,6 +4,7 @@ Admin Failed Receipts service.
 List failed/needs_review receipts with failure reason; get one for manual correct; submit corrected data.
 """
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.database.supabase_client import (
@@ -36,16 +37,27 @@ def delete_receipt_hard(receipt_id: str) -> None:
 
 
 def _clear_receipt_refs_and_delete(receipt_id: str) -> None:
-    """Clear api_calls/store_candidates.receipt_id then delete receipt_status (CASCADE removes runs, summaries, items)."""
+    """Clear api_calls/store_candidates.receipt_id in parallel, then delete receipt_status (CASCADE removes runs, summaries, items)."""
     supabase = _get_client()
-    try:
-        supabase.table("api_calls").update({"receipt_id": None}).eq("receipt_id", receipt_id).execute()
-    except Exception as e:
-        logger.warning(f"Clear api_calls.receipt_id: {e}")
-    try:
-        supabase.table("store_candidates").update({"receipt_id": None}).eq("receipt_id", receipt_id).execute()
-    except Exception as e:
-        logger.warning(f"Clear store_candidates.receipt_id: {e}")
+
+    def _clear_api_calls():
+        try:
+            supabase.table("api_calls").update({"receipt_id": None}).eq("receipt_id", receipt_id).execute()
+        except Exception as e:
+            logger.warning(f"Clear api_calls.receipt_id: {e}")
+
+    def _clear_store_candidates():
+        try:
+            supabase.table("store_candidates").update({"receipt_id": None}).eq("receipt_id", receipt_id).execute()
+        except Exception as e:
+            logger.warning(f"Clear store_candidates.receipt_id: {e}")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(_clear_api_calls)
+        f2 = pool.submit(_clear_store_candidates)
+        f1.result()
+        f2.result()
+
     supabase.table("receipt_status").delete().eq("id", receipt_id).execute()
 
 

@@ -168,10 +168,11 @@ _rate_limiter_per_min = RateLimiter(max_requests=5, window_seconds=60)
 _rate_limiter_per_hour = RateLimiter(max_requests=20, window_seconds=3600)
 
 # 用户等级缓存（避免频繁查询数据库）
-# 格式: {user_id: (user_class, expire_time)}
-_user_class_cache: Dict[str, Tuple[str, float]] = {}
+# 格式: {user_id: (user_class_int, expire_time)}
+_user_class_cache: Dict[str, Tuple[int, float]] = {}
 _user_class_cache_lock = Lock()
 _USER_CLASS_CACHE_TTL = 300  # 5 分钟 TTL
+_USER_CLASS_ADMIN = 7  # admin or super_admin bypass rate limit
 
 
 def get_rate_limiter_per_min() -> RateLimiter:
@@ -195,57 +196,23 @@ def reset_workflow_rate_limit(user_id: str):
     _rate_limiter_per_hour.reset_user(user_id)
 
 
-def _get_user_class_cached(user_id: str) -> str:
+def _get_user_class_cached(user_id: str) -> int:
     """
-    获取用户等级（带缓存）
-    
-    缓存 TTL: 5 分钟
-    好处：减少数据库查询，提高性能
-    权衡：用户等级变更最多延迟 5 分钟生效
-    
-    Args:
-        user_id: 用户 ID
-        
-    Returns:
-        user_class: "super_admin", "admin", "premium", "free"
+    获取用户等级（带缓存）。user_class 为整数：0=free, 2=premium, 7=admin, 9=super_admin。
     """
     now = time.time()
-    
-    # 检查缓存
     with _user_class_cache_lock:
         if user_id in _user_class_cache:
             user_class, expire_time = _user_class_cache[user_id]
             if now < expire_time:
                 logger.debug(f"User class cache hit for {user_id}: {user_class}")
                 return user_class
-            else:
-                # 缓存过期，删除
-                del _user_class_cache[user_id]
-    
-    # 缓存未命中，查询数据库
-    from ..services.database.supabase_client import _get_client
-    
-    try:
-        supabase = _get_client()
-        res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
-        
-        if not res.data:
-            logger.warning(f"User {user_id} not found in database")
-            user_class = "free"  # 默认为 free
-        else:
-            user_class = res.data[0].get("user_class", "free")
-        
-        # 更新缓存
-        with _user_class_cache_lock:
-            _user_class_cache[user_id] = (user_class, now + _USER_CLASS_CACHE_TTL)
-            logger.debug(f"User class cached for {user_id}: {user_class}")
-        
-        return user_class
-        
-    except Exception as e:
-        logger.error(f"Failed to fetch user class for {user_id}: {e}")
-        # 发生错误时，假设为 free（安全起见）
-        return "free"
+            del _user_class_cache[user_id]
+    from ..services.database.supabase_client import get_user_class
+    user_class = get_user_class(user_id)
+    with _user_class_cache_lock:
+        _user_class_cache[user_id] = (user_class, now + _USER_CLASS_CACHE_TTL)
+    return user_class
 
 
 async def check_workflow_rate_limit(user_id: str = Depends(get_current_user)) -> str:
@@ -278,9 +245,9 @@ async def check_workflow_rate_limit(user_id: str = Depends(get_current_user)) ->
         # 1. 获取用户等级（使用缓存）
         user_class = _get_user_class_cached(user_id)
         
-        # 2. super_admin 和 admin 不限制
-        if user_class in ("super_admin", "admin"):
-            logger.debug(f"Rate limit bypassed for {user_class} user {user_id}")
+        # 2. admin (7) and super_admin (9) 不限制
+        if user_class >= _USER_CLASS_ADMIN:
+            logger.debug(f"Rate limit bypassed for user_class={user_class} user {user_id}")
             return user_id
         
         # 3. 其他所有等级应用限流：每分钟 5 次 + 每小时 20 次

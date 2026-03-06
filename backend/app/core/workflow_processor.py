@@ -42,6 +42,7 @@ from ..services.database.supabase_client import (
     get_test_user_id,
     update_receipt_file_url,
     check_duplicate_by_hash,
+    USER_CLASS_ADMIN,
     get_user_class,
     get_store_chain,
     create_store_candidate,
@@ -387,7 +388,7 @@ async def process_receipt_workflow(
     # 12h lock check (non-admin): 3 strikes in 1h -> locked
     if user_id:
         user_class = get_user_class(user_id)
-        if user_class not in ("super_admin", "admin"):
+        if user_class < USER_CLASS_ADMIN:
             locked, locked_until = check_user_locked(user_id)
             if locked:
                 return {
@@ -405,7 +406,7 @@ async def process_receipt_workflow(
         existing_receipt_id = check_duplicate_by_hash(file_hash, user_id)
         if existing_receipt_id:
             user_class = get_user_class(user_id)
-            allow_duplicate = user_class in ("super_admin", "admin") or settings.allow_duplicate_for_debug
+            allow_duplicate = user_class >= USER_CLASS_ADMIN or settings.allow_duplicate_for_debug
             if allow_duplicate:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 file_hash = f"{original_file_hash}_debug_{timestamp}"
@@ -444,7 +445,7 @@ async def process_receipt_workflow(
             # Check if it's a duplicate error (unique constraint on file_hash)
             if "duplicate" in error_msg.lower() or "Duplicate receipt" in error_msg:
                 user_class = get_user_class(user_id)
-                allow_duplicate = user_class in ("super_admin", "admin") or settings.allow_duplicate_for_debug
+                allow_duplicate = user_class >= USER_CLASS_ADMIN or settings.allow_duplicate_for_debug
                 if allow_duplicate:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                     file_hash = f"{original_file_hash}_debug_{timestamp}"

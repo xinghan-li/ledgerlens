@@ -6,6 +6,7 @@ Note: The database schema is defined in database/001_schema_v2.sql
 from supabase import create_client, Client
 from ...config import settings
 from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from datetime import datetime
 import logging
@@ -417,21 +418,30 @@ def _parse_rpc_count(res: Any, rpc_name: str, default: int = 0) -> int:
     return default
 
 
-def get_user_class(user_id: str) -> str:
+# User tier constants (integer in DB: higher = more privilege)
+USER_CLASS_FREE = 0
+USER_CLASS_PREMIUM = 2
+USER_CLASS_ADMIN = 7
+USER_CLASS_SUPER_ADMIN = 9
+
+
+def get_user_class(user_id: str) -> int:
     """
-    Get user_class for a user (super_admin, admin, premium, free).
+    Get user_class for a user (integer tier: 0=free, 2=premium, 7=admin, 9=super_admin).
     Used for rate limit bypass and duplicate-upload allowance.
     """
     if not user_id:
-        return "free"
+        return USER_CLASS_FREE
     supabase = _get_client()
     try:
         res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
         if res.data and len(res.data) > 0:
-            return (res.data[0].get("user_class") or "free").strip()
+            val = res.data[0].get("user_class")
+            if val is not None:
+                return int(val)
     except Exception as e:
         logger.warning(f"Failed to get user_class for {user_id}: {e}")
-    return "free"
+    return USER_CLASS_FREE
 
 
 def check_duplicate_by_hash(
@@ -2241,7 +2251,8 @@ def list_receipts_by_user(
 ) -> List[Dict[str, Any]]:
     """
     List receipt_status rows for a user, most recent first.
-    Optionally attach store_name from record_summaries for card display.
+    Attaches store_name from record_summaries for card display.
+    record_summaries and fallback LLM-run queries are issued in parallel.
     """
     supabase = _get_client()
     res = (
@@ -2255,14 +2266,29 @@ def list_receipts_by_user(
     rows = res.data or []
     if not rows:
         return []
+
     receipt_ids = [r["id"] for r in rows]
-    # Batch fetch store_name, store_chain_id, receipt_date from record_summaries
-    sum_res = (
-        supabase.table("record_summaries")
-        .select("receipt_id, store_name, store_chain_id, receipt_date")
-        .in_("receipt_id", receipt_ids)
-        .execute()
-    )
+
+    def _fetch_summaries():
+        return (
+            supabase.table("record_summaries")
+            .select("receipt_id, store_name, store_chain_id, receipt_date")
+            .in_("receipt_id", receipt_ids)
+            .execute()
+        )
+
+    def _fetch_fallback_names():
+        return _merchant_name_from_latest_llm_run(supabase, receipt_ids)
+
+    # Parallel: record_summaries + fallback LLM merchant names
+    sum_res = None
+    fallback_names: Dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_summaries = pool.submit(_fetch_summaries)
+        f_fallback = pool.submit(_fetch_fallback_names)
+        sum_res = f_summaries.result()
+        fallback_names = f_fallback.result()
+
     summary_by_id = {s["receipt_id"]: s for s in (sum_res.data or [])}
     chain_ids = {s.get("store_chain_id") for s in (sum_res.data or []) if s.get("store_chain_id")}
     chain_name_by_id: Dict[str, str] = {}
@@ -2271,24 +2297,21 @@ def list_receipts_by_user(
         if ch.data:
             # 统一用 str(id) 做 key，避免 UUID 与字符串比较取不到
             chain_name_by_id = {str(c["id"]): c.get("name", "") for c in ch.data}
+
     for r in rows:
         s = summary_by_id.get(r["id"]) or {}
         r["store_chain_id"] = s.get("store_chain_id")
         sid = s.get("store_chain_id")
         raw_chain = chain_name_by_id.get(str(sid)) if sid else None
         r["chain_name"] = _store_name_to_title_case(raw_chain) if raw_chain else None
-        # When we have a matched chain, use chain name (title case); otherwise show store_name in title case
         r["store_name"] = r["chain_name"] if r["chain_name"] else (_store_name_to_title_case(s.get("store_name")) or s.get("store_name"))
         r["receipt_date"] = s.get("receipt_date")
+        # Apply pre-fetched fallback merchant name for receipts still without a store_name
+        if not (r.get("store_name") or "").strip():
+            name = fallback_names.get(str(r["id"]))
+            if name:
+                r["store_name"] = _store_name_to_title_case(name) or name
 
-    # Fallback: 列表摘要无店名时（如 record_summaries 尚未写入或 store_name 为空），从最近一次 LLM run 的 output 取 merchant_name，避免显示 Unknown store
-    need_fallback = [str(r["id"]) for r in rows if not (r.get("store_name") or "").strip()]
-    if need_fallback:
-        fallback_names = _merchant_name_from_latest_llm_run(supabase, need_fallback)
-        for r in rows:
-            rk = str(r["id"])
-            if not (r.get("store_name") or "").strip() and rk in fallback_names:
-                r["store_name"] = _store_name_to_title_case(fallback_names[rk]) or fallback_names[rk]
     return rows
 
 

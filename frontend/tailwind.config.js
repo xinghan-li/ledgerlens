@@ -53,6 +53,21 @@ module.exports = {
         body: ['var(--font-lora)', 'Georgia', 'serif'],
         heading: ['var(--font-poppins)', 'Arial', 'sans-serif'],
       },
+      keyframes: {
+        'processing-pulse': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.75' },
+        },
+        'sandglass-tilt': {
+          '0%, 100%': { transform: 'rotate(0deg)' },
+          '25%': { transform: 'rotate(-8deg)' },
+          '75%': { transform: 'rotate(8deg)' },
+        },
+      },
+      animation: {
+        'processing-pulse': 'processing-pulse 2s ease-in-out infinite',
+        'sandglass-tilt': 'sandglass-tilt 2.5s ease-in-out infinite',
+      },
     },
   },
   plugins: [],

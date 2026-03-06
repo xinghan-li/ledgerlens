@@ -62,8 +62,9 @@ def fix_ocr_address(s: Optional[str]) -> Optional[str]:
 
 def _street_number_typo_match(addr_norm: str, db_addr: str) -> bool:
     """
-    True if the two addresses differ only in the first token (street number) by at most one character.
-    Handles common OCR errors (e.g. 13109 vs 18109, 1 vs 8).
+    True if the two addresses differ only in the first token (street number) by at most 1–2 characters.
+    Handles common OCR errors (e.g. 13109 vs 18109: 1↔8, 0↔9; or single digit 1 vs 8).
+    For 5-digit street numbers allow up to 2 char diffs; otherwise 1.
     """
     if not addr_norm or not db_addr:
         return False
@@ -77,7 +78,8 @@ def _street_number_typo_match(addr_norm: str, db_addr: str) -> bool:
     if len(first_a) != len(first_b) or len(first_a) < 2:
         return False
     diffs = sum(1 for x, y in zip(first_a, first_b) if x != y)
-    return diffs <= 1
+    max_diffs = 2 if len(first_a) >= 4 else 1
+    return diffs <= max_diffs
 
 
 def _populate_store_cache():
@@ -189,7 +191,17 @@ def match_store(
             if score > best_score:
                 best_score = score
                 best_location = loc
-        if best_location and best_score >= address_match_threshold:
+        # Accept match if above threshold, OR if just below threshold but only street number typo (e.g. 13109 vs 18109)
+        db_addr_best = _normalize_address_for_compare(best_location.get("address_string")) if best_location else ""
+        street_number_typo_ok = bool(
+            best_location and db_addr_best and _street_number_typo_match(addr_norm, db_addr_best)
+        )
+        if best_location and (best_score >= address_match_threshold or street_number_typo_ok):
+            if street_number_typo_ok and best_score < address_match_threshold:
+                logger.info(
+                    "[STORE_DEBUG] Near-miss (score %.2f) accepted via street number typo match: addr_norm=%r vs db=%r",
+                    best_score, addr_norm[:60], db_addr_best[:60],
+                )
             chain_lower = (best_location.get("chain_name") or "").lower()
             loc_name_lower = (best_location.get("store_name") or "").lower()
             name_ok = (
@@ -206,7 +218,7 @@ def match_store(
                     "matched": True,
                     "chain_id": best_location.get("chain_id"),
                     "location_id": best_location.get("id"),
-                    "confidence_score": best_score,
+                    "confidence_score": best_score if best_score >= address_match_threshold else address_match_threshold,
                     "location_data": best_location,
                 })
                 logger.info("[STORE_DEBUG] match_store OUT (address match): matched=True, location_id=%s", result.get("location_id"))
@@ -215,7 +227,6 @@ def match_store(
         # Had address but no DB location matched => no match (do not fall back to name; send to store_candidates)
         logger.info(f"Receipt has address but no store_location matched (best score: {best_score:.2f}). Will not assign any location.")
         if best_location and best_score >= 0.80:
-            db_addr_best = _normalize_address_for_compare(best_location.get("address_string")) or ""
             logger.info(
                 "[STORE_DEBUG] near-miss: addr_norm=%r | db_addr=%r (compare lengths/tokens to see why score < 0.90)",
                 addr_norm[:80], db_addr_best[:80],
