@@ -77,7 +77,12 @@ class Settings(BaseSettings):
     firebase_service_account_path: Optional[str] = Field(
         default=None,
         alias="FIREBASE_SERVICE_ACCOUNT_PATH",
-        description="Path to Firebase service account JSON (or set GOOGLE_APPLICATION_CREDENTIALS to same file)"
+        description="Path to Firebase service account JSON (local dev). In production use FIREBASE_SERVICE_ACCOUNT_JSON instead."
+    )
+    firebase_service_account_json: Optional[str] = Field(
+        default=None,
+        alias="FIREBASE_SERVICE_ACCOUNT_JSON",
+        description="Firebase service account JSON as a string (for Cloud Run / Secret Manager). Takes priority over FIREBASE_SERVICE_ACCOUNT_PATH."
     )
 
     # Application settings
