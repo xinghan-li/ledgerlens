@@ -545,6 +545,8 @@ export default function DataAnalysisSection({ token }: { token: string | null })
 
           <CategorySection
             summary={summary}
+            unclassifiedBannerDismissed={unclassifiedBannerDismissed}
+            setUnclassifiedBannerDismissed={setUnclassifiedBannerDismissed}
             selectedL1={selectedL1}
             setSelectedL1={setSelectedL1}
             selectedL2={selectedL2}
@@ -566,6 +568,8 @@ export default function DataAnalysisSection({ token }: { token: string | null })
 
 function CategorySection({
   summary,
+  unclassifiedBannerDismissed,
+  setUnclassifiedBannerDismissed,
   selectedL1,
   setSelectedL1,
   selectedL2,
@@ -580,6 +584,8 @@ function CategorySection({
   setPctModeL3,
 }: {
   summary: Summary
+  unclassifiedBannerDismissed: boolean
+  setUnclassifiedBannerDismissed: (v: boolean) => void
   selectedL1: string | null
   setSelectedL1: (v: string | null) => void
   selectedL2: string | null

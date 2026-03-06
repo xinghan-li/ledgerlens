@@ -8,6 +8,15 @@ import {
   ZoomableGroup,
 } from 'react-simple-maps'
 
+/** Type for Geographies children callback (react-simple-maps has no types) */
+type GeographiesChildArg = {
+  geographies: Array<{
+    id?: string | number
+    rsmKey: string
+    properties?: { name?: string }
+  }>
+}
+
 /** US Census FIPS state id (string in topojson) -> 2-letter state code */
 const US_FIPS_TO_CODE: Record<string, string> = {
   '01': 'AL', '02': 'AK', '04': 'AZ', '05': 'AR', '06': 'CA', '08': 'CO', '09': 'CT', '10': 'DE',
@@ -243,7 +252,7 @@ export default function LocationsMap({ locations }: Props) {
           >
             <ZoomableGroup center={[-96, 39]} zoom={1}>
               <Geographies geography={US_TOPOLOGY}>
-                {({ geographies }) =>
+                {({ geographies }: GeographiesChildArg) =>
                   geographies.map((geo) => {
                     const fips = geo.id != null ? String(geo.id) : ''
                     const code = US_FIPS_TO_CODE[fips] || null
@@ -298,7 +307,7 @@ export default function LocationsMap({ locations }: Props) {
           >
             <ZoomableGroup center={[-96, 62]} zoom={1}>
             <Geographies geography={CA_TOPOLOGY}>
-              {({ geographies }) =>
+              {({ geographies }: GeographiesChildArg) =>
                 geographies.map((geo) => {
                   const name = geo.properties?.name ?? ''
                   const code = CA_NAME_TO_CODE[name] ?? ''
