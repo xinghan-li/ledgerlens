@@ -7,8 +7,9 @@ import { formatTimeToHHmm, toTitleCaseStore } from '@/lib/utils'
 import { onAuthStateChanged } from 'firebase/auth'
 import DataAnalysisSection from './DataAnalysisSection'
 import { CameraCaptureButton } from './camera'
-
-const apiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { useApiUrl } from '@/lib/api-url-context'
+import { useAuth, authFetch } from '@/lib/auth-context'
+import { useDashboardActions } from './dashboard-actions-context'
 
 type ReceiptListItem = {
   id: string
@@ -21,11 +22,15 @@ type ReceiptListItem = {
 }
 
 export default function DashboardPage() {
-  const [token, setToken] = useState<string | null>(null)
+  const apiBaseUrl = useApiUrl()
+  const auth = useAuth()
+  const token = auth?.token ?? null
   const [userEmail, setUserEmail] = useState<string | null>(null)
   const [userName, setUserName] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [sessionRefreshedHint, setSessionRefreshedHint] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploadSource, setUploadSource] = useState<'file' | 'camera' | null>(null)
   const [uploadWorkingHard, setUploadWorkingHard] = useState(false)
   const [uploadBannerStep, setUploadBannerStep] = useState(0) // 0: writing, 1: escalated, 2: final check
   const [uploadResult, setUploadResult] = useState<any>(null)
@@ -37,10 +42,10 @@ export default function DashboardPage() {
   const cameraUploadTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const [receiptList, setReceiptList] = useState<ReceiptListItem[]>([])
   const [receiptListLoading, setReceiptListLoading] = useState(false)
-  const [expandedReceiptId, setExpandedReceiptId] = useState<string | null>(null)
-  const [expandedReceiptJson, setExpandedReceiptJson] = useState<any>(null)
+  const [expandedReceiptIds, setExpandedReceiptIds] = useState<Set<string>>(new Set())
+  const [expandedReceiptData, setExpandedReceiptData] = useState<Record<string, any>>({})
   const [showRawJson, setShowRawJson] = useState(false)
-  const [correctionOpen, setCorrectionOpen] = useState(false)
+  const [correctionOpenReceiptId, setCorrectionOpenReceiptId] = useState<string | null>(null)
   const [editStoreName, setEditStoreName] = useState('')
   const [editAddressLine1, setEditAddressLine1] = useState('')
   const [editAddressLine2, setEditAddressLine2] = useState('')
@@ -54,6 +59,7 @@ export default function DashboardPage() {
   const [editCurrency, setEditCurrency] = useState('USD')
   const [editPaymentMethod, setEditPaymentMethod] = useState('')
   const [editPaymentLast4, setEditPaymentLast4] = useState('')
+  const [editMerchantPhone, setEditMerchantPhone] = useState('')
   const [editItems, setEditItems] = useState<Array<{ id?: string; product_name: string; quantity: string; unit: string; unit_price: string; line_total: string; on_sale: boolean; original_price: string; discount_amount: string }>>([])
   const [correctSubmitting, setCorrectSubmitting] = useState(false)
   const [correctMessage, setCorrectMessage] = useState<string | null>(null)
@@ -65,16 +71,27 @@ export default function DashboardPage() {
   const [categoryUpdateMessage, setCategoryUpdateMessage] = useState<string | null>(null)
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
-  const [smartCategorizeSelectedIds, setSmartCategorizeSelectedIds] = useState<Set<string>>(new Set())
+  const [smartCategorizeSelectedIds, setSmartCategorizeSelectedIds] = useState<Record<string, Set<string>>>({})
   const [userClass, setUserClass] = useState<string | null>(null)
   const [processingRunsModalReceiptId, setProcessingRunsModalReceiptId] = useState<string | null>(null)
-  const [processingRunsData, setProcessingRunsData] = useState<{ track: string; track_method: string | null; runs: Array<Record<string, unknown>>; workflow_steps: Array<Record<string, unknown>> } | null>(null)
+  const [processingRunsData, setProcessingRunsData] = useState<{ track: string; track_method: string | null; runs: Array<Record<string, unknown>>; workflow_steps: Array<Record<string, unknown>>; pipeline_version?: string | null } | null>(null)
   const [processingRunsLoading, setProcessingRunsLoading] = useState(false)
+  const [deleteConfirmReceiptId, setDeleteConfirmReceiptId] = useState<string | null>(null)
+  const [deleteConfirmLoading, setDeleteConfirmLoading] = useState(false)
+  const [dismissedReviewFeedbackReceiptIds, setDismissedReviewFeedbackReceiptIds] = useState<Set<string>>(new Set())
+  const [reviewCompleteLoading, setReviewCompleteLoading] = useState<string | null>(null)
+  const [mobileReceiptViewMode, setMobileReceiptViewMode] = useState<'receipt' | 'classification'>('receipt')
+  const [mobileReceiptVisibleCount, setMobileReceiptVisibleCount] = useState(5)
   const router = useRouter()
+  const { setActions, setBannerInView } = useDashboardActions()
+  const cameraTriggerRef = useRef<HTMLButtonElement>(null)
+  // Use state-based ref so the IntersectionObserver effect re-runs when the element actually mounts
+  const [welcomeBannerEl, setWelcomeBannerEl] = useState<HTMLDivElement | null>(null)
 
-  useEffect(() => {
-    setSmartCategorizeSelectedIds(new Set())
-  }, [expandedReceiptId])
+  const selectedIdsForReceipt = (receiptId: string) => smartCategorizeSelectedIds[receiptId] ?? new Set<string>()
+  const setSelectedIdsForReceipt = useCallback((receiptId: string, setter: (prev: Set<string>) => Set<string>) => {
+    setSmartCategorizeSelectedIds((prev) => ({ ...prev, [receiptId]: setter(prev[receiptId] ?? new Set()) }))
+  }, [])
 
   useEffect(() => {
     if (!token) {
@@ -83,7 +100,7 @@ export default function DashboardPage() {
       return
     }
     let cancelled = false
-    fetch(`${apiUrl()}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`${apiBaseUrl}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!cancelled && data) {
@@ -94,6 +111,28 @@ export default function DashboardPage() {
       .catch(() => { if (!cancelled) setUserClass(null); if (!cancelled) setUserName(null) })
     return () => { cancelled = true }
   }, [token])
+
+  useEffect(() => {
+    setActions({
+      onReceiptHistory: () => document.getElementById('receipt-history-section')?.scrollIntoView({ behavior: 'smooth' }),
+      onUpload: () => document.getElementById('receipt-upload')?.click() ?? undefined,
+      onCamera: () => cameraTriggerRef.current?.click(),
+    })
+    return () => setActions(null)
+  }, [setActions])
+
+  useEffect(() => {
+    if (!welcomeBannerEl) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        const e = entries[0]
+        if (e) setBannerInView(e.isIntersecting)
+      },
+      { threshold: 0, rootMargin: '0px' }
+    )
+    io.observe(welcomeBannerEl)
+    return () => io.disconnect()
+  }, [welcomeBannerEl, setBannerInView])
 
   function formatAddressMultiLine(addr: string): string {
     if (!addr || addr.includes('\n')) return addr || ''
@@ -109,6 +148,29 @@ export default function DashboardPage() {
   /** 匹配 "City, ST ZIP" 或 "City, ST ZIP-4" 格式，避免把城市/州/邮编误填到 Address line 2 */
   function looksLikeCityStateZip(s: string): boolean {
     return /^[A-Za-z\s\-'.]+,\s*[A-Z]{2}\s+\d{5}(-\d{4})?$/i.test((s || '').trim())
+  }
+
+  /** 根据邮编推断国家：加拿大 N0N 0N0 格式 / 美国 5 位或 9 位邮编 */
+  function inferCountryFromPostal(cityStateZip: string): string {
+    if (!(cityStateZip || '').trim()) return ''
+    const s = cityStateZip.trim()
+    if (/\b[A-Za-z][0-9][A-Za-z]\s*[0-9][A-Za-z][0-9]\b/i.test(s)) return 'Canada'
+    if (/\b\d{5}(-\d{4})?\b/.test(s)) return 'US'
+    return ''
+  }
+
+  /** 展示用地址：永远为 "address2 - address1"（门牌/单元 - 街道），再 cityStateZip，再 country；无 country 时按邮编推断 */
+  function formatAddressForDisplay(addr: string): string {
+    const fields = parseAddressToFields(addr || '')
+    let country = (fields.country || '').trim()
+    if (!country && fields.cityStateZip) country = inferCountryFromPostal(fields.cityStateZip)
+    const parts: string[] = []
+    if (fields.line2 && fields.line1) parts.push(`${fields.line2} - ${fields.line1}`)
+    else if (fields.line1) parts.push(fields.line1)
+    else if (fields.line2) parts.push(fields.line2)
+    if (fields.cityStateZip) parts.push(fields.cityStateZip)
+    if (country) parts.push(country)
+    return parts.join('\n')
   }
 
   function parseAddressToFields(addr: string): { line1: string; line2: string; cityStateZip: string; country: string } {
@@ -172,6 +234,7 @@ export default function DashboardPage() {
     setEditCurrency(receipt.currency ?? 'USD')
     setEditPaymentMethod(receipt.payment_method ?? '')
     setEditPaymentLast4(receipt.card_last4 ?? '')
+    setEditMerchantPhone(receipt.merchant_phone ?? '')
     const toDollarItem = (v: any) => {
       if (v == null || v === '') return ''
       const n = Number(v)
@@ -193,34 +256,38 @@ export default function DashboardPage() {
           }))
         : [{ product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }]
     )
-    setCorrectionOpen(false)
     setShowRawJson(false)
     setCorrectMessage(null)
   }
 
   const fetchReceiptList = useCallback(async () => {
-    if (!token) return
+    if (!auth?.token) return
     setReceiptListLoading(true)
     try {
-      const res = await fetch(`${apiUrl()}/api/receipt/list?limit=50&offset=0`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      const res = await authFetch(
+        apiBaseUrl,
+        '/api/receipt/list?limit=50&offset=0',
+        { headers: {} },
+        auth
+      )
       if (res.ok) {
         const data = await res.json()
         setReceiptList(data.data || [])
+      } else if (res.status === 401) {
+        setSessionRefreshedHint(true)
+        setTimeout(() => setSessionRefreshedHint(false), 5000)
       }
     } catch (e) {
       console.error('Failed to fetch receipt list:', e)
     } finally {
       setReceiptListLoading(false)
     }
-  }, [token])
+  }, [apiBaseUrl, auth])
 
   useEffect(() => {
     const auth = getFirebaseAuth()
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!user) {
-        setToken(null)
         setUserEmail(null)
         setUserName(null)
         setLoading(false)
@@ -228,15 +295,7 @@ export default function DashboardPage() {
         return
       }
       setUserEmail(user.email ?? null)
-      try {
-        const t = await user.getIdToken()
-        setToken(t)
-      } catch (e) {
-        console.error('getIdToken failed:', e)
-        setToken(null)
-      } finally {
-        setLoading(false)
-      }
+      setLoading(false)
     })
     return () => unsubscribe()
   }, [router])
@@ -252,6 +311,7 @@ export default function DashboardPage() {
 
   const handleCameraUploadStart = useCallback(() => {
     setUploading(true)
+    setUploadSource('camera')
     setUploadError(null)
     setUploadResult(null)
     setUploadBannerStep(0)
@@ -267,6 +327,7 @@ export default function DashboardPage() {
   const handleCameraUploadSuccess = useCallback(() => {
     clearCameraUploadTimers()
     setUploading(false)
+    setUploadSource(null)
     setUploadWorkingHard(false)
     fetchReceiptList()
   }, [clearCameraUploadTimers, fetchReceiptList])
@@ -275,39 +336,48 @@ export default function DashboardPage() {
     (message: string) => {
       clearCameraUploadTimers()
       setUploading(false)
+      setUploadSource(null)
       setUploadWorkingHard(false)
       setUploadError(message)
+      if (message.includes('Session updated')) {
+        setSessionRefreshedHint(true)
+        setTimeout(() => setSessionRefreshedHint(false), 5000)
+      }
     },
     [clearCameraUploadTimers]
   )
 
   const fetchCategories = useCallback(async () => {
-    if (!token) return
+    if (!auth?.token) return
     try {
-      const res = await fetch(`${apiUrl()}/api/categories`, { headers: { Authorization: `Bearer ${token}` } })
+      const res = await authFetch(apiBaseUrl, '/api/categories', { headers: {} }, auth)
       if (res.ok) {
         const json = await res.json()
         setCategoriesList(json?.data ?? [])
       }
     } catch (_) {}
-  }, [token])
+  }, [apiBaseUrl, auth])
 
   useEffect(() => {
     fetchCategories()
   }, [fetchCategories])
 
-  const refetchReceiptDetail = useCallback(async () => {
-    if (!expandedReceiptId || !token) return
-    try {
-      const res = await fetch(`${apiUrl()}/api/receipt/${expandedReceiptId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      if (res.ok) {
-        const json = await res.json()
-        setExpandedReceiptJson(json)
-      }
-    } catch (_) {}
-  }, [expandedReceiptId, token])
+  const refetchReceiptDetail = useCallback(
+    async (receiptId: string) => {
+      if (!receiptId || !auth?.token) return
+      try {
+        const res = await authFetch(apiBaseUrl, `/api/receipt/${receiptId}`, { headers: {} }, auth)
+        if (res.ok) {
+          const json = await res.json()
+          setExpandedReceiptData((prev) => ({ ...prev, [receiptId]: json }))
+        } else if (res.status === 401) {
+          setSessionRefreshedHint(true)
+          setTimeout(() => setSessionRefreshedHint(false), 5000)
+        }
+      } catch (_) {}
+    },
+    [apiBaseUrl, auth]
+  )
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -315,10 +385,9 @@ export default function DashboardPage() {
       e.target.value = ''
       return
     }
-    // 每次上传时获取新 token，避免 Firebase ID token 过期（约 1 小时）导致 401
-    const requestToken = await getAuthToken()
+    const requestToken = auth ? (await getAuthToken(true)) ?? auth.token : await getAuthToken()
     if (!requestToken) {
-      setUploadError('登录已过期，请刷新页面重新登录')
+      setUploadError('Session expired. Please refresh the page and sign in again.')
       e.target.value = ''
       return
     }
@@ -326,6 +395,7 @@ export default function DashboardPage() {
     // 重置状态
     uploadCancelledByUserRef.current = false
     setUploading(true)
+    setUploadSource('file')
     setUploadResult(null)
     setUploadError(null)
     setUploadBannerStep(0)
@@ -340,9 +410,8 @@ export default function DashboardPage() {
     formData.append('file', file)
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      console.log('上传到:', `${apiUrl}/api/receipt/workflow`)
-      console.log('文件:', file.name, file.type, file.size)
+      console.log('Upload to:', `${apiBaseUrl}/api/receipt/workflow-vision`)
+      console.log('File:', file.name, file.type, file.size)
       
       // 3 分钟超时（多步 LLM 可能需 2–3 分钟）；30s 后仅显示 “working hard” 提示，不报错
       const controller = new AbortController()
@@ -352,12 +421,27 @@ export default function DashboardPage() {
       uploadCleanupRef.current = { clearBanner: clearBannerTimers, timeoutId }
 
       try {
-        const response = await fetch(`${apiUrl}/api/receipt/workflow`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${requestToken}` },
-          body: formData,
-          signal: controller.signal,
-        })
+        let response: Response
+        if (auth) {
+          response = await authFetch(
+            apiBaseUrl,
+            '/api/receipt/workflow-vision',
+            {
+              method: 'POST',
+              headers: {},
+              body: formData,
+              signal: controller.signal,
+            },
+            auth
+          )
+        } else {
+          response = await fetch(`${apiBaseUrl}/api/receipt/workflow-vision`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${requestToken}` },
+            body: formData,
+            signal: controller.signal,
+          })
+        }
 
         clearTimeout(timeoutId)
         clearBannerTimers()
@@ -365,18 +449,20 @@ export default function DashboardPage() {
           clearTimeout(workingHardTimerRef.current)
           workingHardTimerRef.current = null
         }
-        console.log('响应状态:', response.status, response.statusText)
+        console.log('Response status:', response.status, response.statusText)
 
         if (response.ok) {
         const data = await response.json()
-        console.log('✅ 上传成功:', data)
+        console.log('✅ Upload success:', data)
         setUploadResult(data)
         setUploadError(null)
         fetchReceiptList()
       } else {
         let errorMessage: string
         if (response.status === 401) {
-          errorMessage = '登录已过期，请刷新页面或重新登录'
+          errorMessage = 'Session expired. Please try again or refresh and sign in again.'
+          setSessionRefreshedHint(true)
+          setTimeout(() => setSessionRefreshedHint(false), 5000)
         } else {
           errorMessage = `HTTP ${response.status}: ${response.statusText}`
           try {
@@ -405,7 +491,7 @@ export default function DashboardPage() {
         throw fetchError
       }
     } catch (error) {
-      console.error('❌ 上传错误:', error)
+      console.error('❌ Upload error:', error)
       clearBannerTimers()
       if (workingHardTimerRef.current) {
         clearTimeout(workingHardTimerRef.current)
@@ -422,8 +508,7 @@ export default function DashboardPage() {
         if (error.name === 'AbortError') {
           setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
         } else if (error.message.includes('Failed to fetch') || error.message === 'Load failed' || error.message === 'Load failed.') {
-          const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-          setUploadError('Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current API: ' + base)
+          setUploadError('Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current API: ' + apiBaseUrl)
         } else {
           setUploadError(error.message)
         }
@@ -432,6 +517,7 @@ export default function DashboardPage() {
       }
     } finally {
       setUploading(false)
+      setUploadSource(null)
       setUploadWorkingHard(false)
       clearBannerTimers()
       if (workingHardTimerRef.current) {
@@ -458,10 +544,10 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="min-h-screen flex items-center justify-center bg-theme-cream">
         <div className="text-center">
           <div className="animate-spin text-6xl">⏳</div>
-          <p className="mt-4 text-gray-600">Loading…</p>
+          <p className="mt-4 text-theme-dark/90">Loading…</p>
         </div>
       </div>
     )
@@ -475,22 +561,27 @@ export default function DashboardPage() {
     <>
       <main className="max-w-7xl mx-auto px-4 py-6 sm:py-8 sm:px-6 lg:px-8">
         {/* Customer welcome: email only + upload & camera */}
-        <div className="bg-white rounded-xl shadow p-4 sm:p-6 mb-6 sm:mb-8 flex flex-col sm:flex-row sm:flex-wrap sm:items-start sm:justify-between gap-4">
+        <div
+          ref={setWelcomeBannerEl}
+          className="bg-white rounded-xl shadow p-4 sm:p-6 mb-6 sm:mb-8 flex flex-col sm:flex-row sm:flex-wrap sm:items-start sm:justify-between gap-4"
+        >
           <div className="flex-1 min-w-0">
-            <h2 className="text-lg sm:text-xl font-semibold mb-1 sm:mb-2">Welcome back, {userName || userEmail}</h2>
+            <h2 className="font-heading text-lg sm:text-xl font-semibold mb-1 sm:mb-2 text-theme-dark">Welcome back, {userName || userEmail}</h2>
           </div>
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <input
-              type="file"
-              accept="image/*,.pdf"
-              onChange={handleUpload}
-              className="hidden"
-              id="receipt-upload"
-              disabled={uploading}
-            />
-            {uploading ? (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 items-stretch w-full sm:w-auto">
+            <div className="min-w-0 order-1 sm:order-2">
+              <input
+                type="file"
+                accept="image/*,.pdf"
+                onChange={handleUpload}
+                className="hidden"
+                id="receipt-upload"
+                disabled={uploading}
+              />
+              {uploading && uploadSource === 'file' ? (
               <div
-                className="group inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-500 cursor-wait select-none min-h-[44px] sm:min-h-0"
+                className="group relative flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium cursor-wait select-none min-h-[44px] sm:min-h-0"
+                style={{ backgroundColor: '#CC785C', color: '#FAFAF7' }}
                 title="Hover to show Stop"
               >
                 <span className="inline-block animate-spin text-lg">⏳</span>
@@ -498,50 +589,76 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); handleCancelUpload() }}
-                  className="ml-2 px-2.5 py-1 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 focus:outline-none"
+                  className="absolute right-2 px-2.5 py-1 rounded bg-theme-red hover:bg-theme-red/90 text-white text-sm font-medium opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 focus:outline-none"
                   aria-label="Stop and cancel upload"
                 >
                   Stop
                 </button>
               </div>
+            ) : uploading && uploadSource === 'camera' ? (
+              <div
+                className="flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium cursor-not-allowed select-none min-h-[44px] sm:min-h-0"
+                style={{ backgroundColor: '#e8e6dc', color: '#b0aea5' }}
+                aria-hidden
+              >
+                <span aria-hidden>🧾</span>
+                <span className="hidden sm:inline">Upload Receipt</span>
+              </div>
             ) : (
               <label
                 htmlFor="receipt-upload"
-                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 cursor-pointer transition select-none min-h-[44px] sm:min-h-0"
+                className="flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium cursor-pointer transition-opacity hover:opacity-90 select-none min-h-[44px] sm:min-h-0"
+                style={{ backgroundColor: '#CC785C', color: '#FAFAF7' }}
               >
-                Upload receipt
+                <span aria-hidden>🧾</span>
+                <span>Upload Receipt</span>
               </label>
             )}
-            <CameraCaptureButton
-              token={token}
-              disabled={uploading}
-              showAsProcessing={uploading}
-              onUploadStart={handleCameraUploadStart}
-              onSuccess={handleCameraUploadSuccess}
-              onError={handleCameraUploadError}
-            />
+            </div>
+            <div className="min-w-0 order-2 sm:order-3">
+              <CameraCaptureButton
+                token={token}
+                auth={auth ?? undefined}
+                disabled={uploading}
+                showAsProcessing={uploading && uploadSource === 'camera'}
+                onUploadStart={handleCameraUploadStart}
+                onSuccess={handleCameraUploadSuccess}
+                onError={handleCameraUploadError}
+                triggerRef={cameraTriggerRef}
+              />
+            </div>
+            <div className="min-w-0 order-3 sm:order-1">
+              <button
+                type="button"
+                onClick={() => document.getElementById('receipt-history-section')?.scrollIntoView({ behavior: 'smooth' })}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium cursor-pointer transition-opacity hover:opacity-90 select-none min-h-[44px] sm:min-h-0 border-2 border-theme-mid/40 bg-white text-theme-dark hover:bg-theme-light-gray/50"
+              >
+                <span aria-hidden>🔍</span>
+                <span>Receipt History</span>
+              </button>
+            </div>
           </div>
         </div>
 
         {/* 上传中：bookkeeper 状态横幅（随等待时间切换） */}
         {uploading && (
-          <div className="mb-4 p-4 sm:p-5 bg-blue-50 border border-blue-200 rounded-lg text-center animate-pulse">
+          <div className="mb-4 p-4 sm:p-5 bg-theme-light-gray/50 border border-theme-orange/30 rounded-lg text-center animate-pulse">
             {uploadBannerStep === 0 && (
               <>
-                <p className="text-blue-900 font-medium text-base sm:text-lg mb-1">Your bookkeeper is writing busily…</p>
-                <p className="text-blue-700 text-sm">Reading your receipt — this may take a minute.</p>
+                <p className="text-theme-dark font-medium text-base sm:text-lg mb-1">Your smart assistant is working hard on bookkeeping</p>
+                <p className="text-theme-orange text-sm">No need to stay here. The task may take a minute.</p>
               </>
             )}
             {uploadBannerStep === 1 && (
               <>
-                <p className="text-blue-900 font-medium text-base sm:text-lg mb-1">The bookkeeper has questions and is escalating.</p>
-                <p className="text-blue-700 text-sm">You can close this page and come back later — we’ll have it ready when they’re done.</p>
+                <p className="text-theme-dark font-medium text-base sm:text-lg mb-1">The bookkeeper has questions on the receipt. Escalating it to senior bookkeeper.</p>
+                <p className="text-theme-orange text-sm">You can close this page and come back later — we’ll have it ready when they’re done.</p>
               </>
             )}
             {uploadBannerStep === 2 && (
               <>
-                <p className="text-blue-900 font-medium text-base sm:text-lg mb-1">Doing final check.</p>
-                <p className="text-blue-700 text-sm">Almost there — thank you for your patience.</p>
+                <p className="text-theme-dark font-medium text-base sm:text-lg mb-1">Doing final check.</p>
+                <p className="text-theme-orange text-sm">Almost there — thank you for your patience.</p>
               </>
             )}
           </div>
@@ -565,13 +682,13 @@ export default function DashboardPage() {
         )}
         {/* 重复上传：明确提示 */}
         {uploadResult && uploadResult.success === false && uploadResult.error === 'duplicate_receipt' && (
-          <div className="mb-4 p-3 sm:p-4 bg-red-50 border border-red-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <span className="text-red-800 text-sm sm:text-base min-w-0">
+          <div className="mb-4 p-3 sm:p-4 bg-theme-red/10 border border-theme-red/30 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <span className="text-theme-red text-sm sm:text-base min-w-0">
               This receipt was already uploaded. If something is wrong, delete the existing receipt and upload a new photo.
             </span>
             <button
               onClick={() => { setUploadResult(null); setUploadError(null) }}
-              className="text-sm text-red-700 hover:underline self-start sm:self-center min-h-[44px] sm:min-h-0"
+              className="text-sm text-theme-red hover:underline self-start sm:self-center min-h-[44px] sm:min-h-0"
             >
               Dismiss
             </button>
@@ -595,27 +712,43 @@ export default function DashboardPage() {
           </div>
         )}
         {uploadError && (
-          <div className="mb-4 p-3 sm:p-4 bg-red-50 border border-red-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <span className="text-red-800 text-sm whitespace-pre-wrap min-w-0 break-words">{uploadError}</span>
+          <div className="mb-4 p-3 sm:p-4 bg-theme-red/10 border border-theme-red/30 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <span className="text-theme-red text-sm whitespace-pre-wrap min-w-0 break-words">{uploadError}</span>
             <button
               onClick={() => { setUploadResult(null); setUploadError(null) }}
-              className="text-sm text-red-700 hover:underline self-start sm:self-center min-h-[44px] sm:min-h-0"
+              className="text-sm text-theme-red hover:underline self-start sm:self-center min-h-[44px] sm:min-h-0"
             >
               Dismiss
             </button>
           </div>
         )}
+        {/* 401 后已自动刷新 token，提示用户再试一次 */}
+        {sessionRefreshedHint && (
+          <div className="mb-4 p-3 sm:p-4 bg-theme-light-gray/50 border border-theme-orange/30 rounded-lg flex items-center justify-between gap-2">
+            <span className="text-theme-blue text-sm">Session updated. Please try again.</span>
+            <button
+              type="button"
+              onClick={() => setSessionRefreshedHint(false)}
+              className="text-theme-orange hover:underline text-sm shrink-0"
+            >
+              Got it
+            </button>
+          </div>
+        )}
+
+        {/* Spending Analysis */}
+        <DataAnalysisSection token={token} />
 
         {/* Receipt history */}
-        <div className="bg-white rounded-xl shadow p-4 sm:p-6 mb-6 sm:mb-8 overflow-hidden">
-          <h2 className="text-lg sm:text-xl font-semibold mb-4">My Receipts</h2>
+        <div id="receipt-history-section" className="bg-white rounded-xl shadow p-4 sm:p-6 mb-6 sm:mb-8 overflow-hidden scroll-mt-4 w-full">
+          <h2 className="font-heading text-lg sm:text-xl font-semibold mb-4 text-theme-dark">My Receipts</h2>
           {receiptListLoading ? (
-            <div className="py-8 text-center text-gray-500">
+            <div className="py-8 text-center text-theme-mid">
               <span className="inline-block animate-spin text-2xl mr-2">⏳</span>
               Loading…
             </div>
           ) : receiptList.length === 0 ? (
-            <p className="py-6 text-gray-500 text-center">No receipts yet. Upload one using the button above.</p>
+            <p className="py-6 text-theme-mid text-center">No receipts yet. Upload one using the button above.</p>
           ) : (
             (() => {
               const getDateKey = (r: ReceiptListItem) => {
@@ -643,75 +776,329 @@ export default function DashboardPage() {
                 return acc
               }, {})
               const orderedMonths = Object.keys(byMonth).sort((a, b) => (a === 'Unknown' ? 1 : b === 'Unknown' ? -1 : b.localeCompare(a)))
+              const flattenedByDate = receiptList.slice().sort((a, b) => {
+                const da = new Date(a.receipt_date || a.uploaded_at || 0).getTime()
+                const db = new Date(b.receipt_date || b.uploaded_at || 0).getTime()
+                return db - da
+              })
+              const visibleOnMobile = flattenedByDate.slice(0, mobileReceiptVisibleCount)
+              const hasMoreOnMobile = flattenedByDate.length > mobileReceiptVisibleCount
+              const byMonthVisible: Record<string, typeof receiptList> = {}
+              visibleOnMobile.forEach((r) => {
+                const key = getDateKey(r)
+                if (!byMonthVisible[key]) byMonthVisible[key] = []
+                byMonthVisible[key].push(r)
+              })
+              const visibleMonths = orderedMonths.filter((m) => (byMonthVisible[m]?.length ?? 0) > 0)
               return (
                 <div className="space-y-6">
+                  {/* 手机端：按月份分组，带分割线，仅展示最近 N 条，每次展开 5 个 */}
+                  <div className="block md:hidden space-y-6">
+                    {visibleMonths.map((monthKey) => (
+                      <div key={monthKey} className="space-y-3">
+                        <div className="flex items-center gap-3 mb-2">
+                          <span className="text-sm font-semibold text-theme-dark/90">{monthLabels[monthKey]}</span>
+                          <div className="flex-1 h-px bg-theme-light-gray" />
+                        </div>
+                        {byMonthVisible[monthKey].map((r) => (
+                      <div key={r.id} className="border border-theme-light-gray rounded-lg overflow-hidden">
+                        <button
+                          type="button"
+                          className="w-full px-4 py-3 flex items-center justify-between text-left hover:opacity-90 transition"
+                              style={{ backgroundColor: '#F0F0EB' }}
+                          onClick={async () => {
+                            if (expandedReceiptIds.has(r.id)) {
+                              setExpandedReceiptIds((prev) => { const next = new Set(prev); next.delete(r.id); return next })
+                              setExpandedReceiptData((prev) => { const next = { ...prev }; delete next[r.id]; return next })
+                              if (correctionOpenReceiptId === r.id) setCorrectionOpenReceiptId(null)
+                              return
+                            }
+                            setExpandedReceiptIds((prev) => new Set(prev).add(r.id))
+                            if (!token) return
+                            try {
+                              const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}`, {
+                                headers: { Authorization: `Bearer ${token}` },
+                              })
+                              if (res.ok) {
+                                const json = await res.json()
+                                setExpandedReceiptData((prev) => ({ ...prev, [r.id]: json }))
+                              } else {
+                                setExpandedReceiptData((prev) => ({ ...prev, [r.id]: { error: 'Failed to load' } }))
+                              }
+                            } catch (e) {
+                              setExpandedReceiptData((prev) => ({ ...prev, [r.id]: { error: String(e) } }))
+                            }
+                          }}
+                        >
+                          <div className="flex flex-col gap-0.5 text-left">
+                            <span className="font-medium text-theme-dark">
+                              {(() => { const raw = (r.chain_name || r.store_name || '').trim(); return raw ? toTitleCaseStore(raw) : 'Unknown store'; })()}
+                            </span>
+                            <span className="text-xs text-theme-mid">
+                              {formatDisplayDate(r)}
+                              <span className={`ml-1.5 px-1.5 py-0.5 rounded ${r.current_status === 'success' ? 'bg-green-100 text-green-800' : r.current_status === 'failed' || r.current_status === 'needs_review' ? 'bg-amber-100 text-amber-800' : 'bg-theme-light-gray/50 text-theme-dark/90'}`}>
+                                {r.current_status}
+                              </span>
+                            </span>
+                          </div>
+                            <span className="text-theme-mid shrink-0">{expandedReceiptIds.has(r.id) ? '▼' : '▶'}</span>
+                        </button>
+                        {expandedReceiptIds.has(r.id) && expandedReceiptData[r.id] && expandedReceiptData[r.id].error && (
+                          <div className="border-t border-theme-ivory-dark bg-theme-red/10 p-4 text-sm text-theme-red">
+                            {String(expandedReceiptData[r.id].error)}
+                          </div>
+                        )}
+                        {expandedReceiptIds.has(r.id) && expandedReceiptData[r.id] && !expandedReceiptData[r.id].error && (
+                          <div className="relative">
+                                  {(() => {
+                                    const json = expandedReceiptData[r.id]
+                                    const rec = json?.data?.receipt
+                                    const items = json?.data?.items || []
+                                    const chainName = json?.data?.chain_name
+                                    const $ = (v: any) => (v == null || v === '' ? null : String(v))
+                                    const money = (v: any) => {
+                                      if (v == null || v === '') return null
+                                      const n = Number(v)
+                                      if (Number.isInteger(n) && n >= 100) return (n / 100).toFixed(2)
+                                      return Number.isFinite(n) ? n.toFixed(2) : String(v)
+                                    }
+                                    if (!rec && items.length === 0) return <span>(No data)</span>
+                                    const rawFromApi = rec?.merchant_name ?? ''
+                                    const displayName = chainName || (rawFromApi ? toTitleCaseStore(rawFromApi) : '') || rawFromApi || ''
+                                    const rawAddress = $(rec?.merchant_address)
+                                    const address = formatAddressForDisplay(rawAddress || '')
+                                    return (
+                                      <React.Fragment>
+                                      <div className="p-4">
+                                        <div className="bg-white rounded-lg text-sm text-theme-dark overflow-hidden p-4 space-y-4" style={{ fontFamily: "'Space Mono', 'Courier New', monospace" }}>
+                                          <div className="flex items-start gap-2">
+                                            <div className="flex-1 min-w-0 text-theme-dark/90 text-sm whitespace-pre-line leading-5">
+                                              {address && <span>{address}</span>}
+                                              {(address && (rec?.merchant_phone)) && '\n'}
+                                              {rec?.merchant_phone && <span>Tel: {rec.merchant_phone}</span>}
+                                              {!address && !rec?.merchant_phone && <span className="text-theme-mid">No address or phone</span>}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              className="shrink-0 relative z-10 min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 text-theme-dark/90 hover:bg-theme-light-gray rounded touch-manipulation"
+                                              onClick={(e) => {
+                                                e.preventDefault()
+                                                e.stopPropagation()
+                                                if (correctionOpenReceiptId === r.id) setCorrectionOpenReceiptId(null)
+                                                else { setCorrectionOpenReceiptId(r.id); initEditFormFromJson(expandedReceiptData[r.id]) }
+                                              }}
+                                              aria-label={mobileReceiptViewMode === 'classification' ? 'Edit I/II/III category' : 'Edit fields'}
+                                              title={mobileReceiptViewMode === 'classification' ? 'Edit category (I/II/III)' : 'Edit receipt fields'}
+                                            >
+                                              ✏️
+                                            </button>
+                                          </div>
+                                          <div className="flex flex-col gap-1">
+                                            <div className="flex rounded-lg border border-theme-mid p-0.5 bg-theme-light-gray/50">
+                                              <button type="button" className={`flex-1 py-1.5 text-sm font-medium rounded-md transition ${mobileReceiptViewMode === 'receipt' ? 'bg-white shadow text-theme-dark' : 'text-theme-dark/90'}`} onClick={() => setMobileReceiptViewMode('receipt')}>Receipt</button>
+                                              <button type="button" className={`flex-1 py-1.5 text-sm font-medium rounded-md transition ${mobileReceiptViewMode === 'classification' ? 'bg-white shadow text-theme-dark' : 'text-theme-dark/90'}`} onClick={() => setMobileReceiptViewMode('classification')}>Classification</button>
+                                            </div>
+                                          </div>
+                                          <div className="space-y-2">
+                                            {items.length === 0 && <p className="text-theme-mid text-sm">No items</p>}
+                                            {items.map((it: any, i: number) => {
+                                              const name = it.product_name ?? it.original_product_name ?? ''
+                                              const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
+                                              const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
+                                              const unit = (it.unit ?? '').trim() || 'each'
+                                              const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
+                                              const path = (it.category_path ?? '').trim()
+                                              const parts = path ? path.split(/\s*[\/>]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
+                                              const catLine = parts.length ? parts.join(' / ') : '—'
+                                              const catL1L2 = parts.length >= 2 ? parts.slice(0, 2).join(' / ') : catLine
+                                              const catL3 = parts.length >= 3 ? parts[2] : ''
+                                              const showQtyUnit = Number.isFinite(qty) && qty > 1 && (u && u !== '');
+                                              return (
+                                                <div key={it.id ?? i} className="border-b border-theme-light-gray/50 pb-2 last:border-0">
+                                                  {mobileReceiptViewMode === 'receipt' ? (
+                                                    <>
+                                                      <div className="flex justify-between items-baseline gap-2">
+                                                        <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
+                                                        {!showQtyUnit && <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>}
+                                                      </div>
+                                                      {showQtyUnit && (
+                                                        <div className="flex justify-between items-baseline gap-2 mt-0.5 text-sm text-theme-dark/90">
+                                                          <span>{qty} @ ${u} / {unit}</span>
+                                                          <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>
+                                                        </div>
+                                                      )}
+                                                    </>
+                                                  ) : (
+                                                    <>
+                                                      <div className="flex justify-between items-baseline gap-2">
+                                                        <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
+                                                        <span className="shrink-0 flex items-center gap-1">
+                                                          {it.category_source === 'llm' && (
+                                                            <span className="inline-flex items-center justify-center rounded bg-black text-white text-[10px] font-bold px-1 py-0.5" title="AI guessed">AI</span>
+                                                          )}
+                                                          <span className="tabular-nums">{p ? `$${p}` : ''}</span>
+                                                        </span>
+                                                      </div>
+                                                      <div className="mt-0.5 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-0.5 text-xs text-theme-mid">
+                                                        <span className="sm:flex-1">{catL1L2}</span>
+                                                        <span className="sm:shrink-0">{catL3}</span>
+                                                      </div>
+                                                    </>
+                                                  )}
+                                                </div>
+                                              )
+                                            })}
+                                          </div>
+                                          {rec && (
+                                            <>
+                                              <div className="border-t border-dashed border-theme-mid pt-2 space-y-0.5">
+                                                <div className="flex justify-between"><span>Subtotal</span><span className="tabular-nums">{rec.subtotal != null ? `$${money(rec.subtotal)}` : ''}</span></div>
+                                                <div className="flex justify-between"><span>Tax</span><span className="tabular-nums">{rec.tax != null ? `$${money(rec.tax)}` : ''}</span></div>
+                                                <div className="flex justify-between font-medium"><span>Total</span><span className="tabular-nums">{rec.total != null ? `$${money(rec.total)}` : ''}</span></div>
+                                              </div>
+                                            </>
+                                          )}
+                                          <div className="border-t border-theme-ivory-dark pt-3 flex flex-col gap-2">
+                                            <p className="text-xs font-medium text-theme-mid uppercase tracking-wide">Smart Categorization</p>
+                                            <div className="flex flex-col gap-1.5 w-full">
+                                              <button type="button" disabled={smartCategorizeLoading} onClick={async () => { if (!r.id || !token) return; setSmartCategorizeLoading(true); setSmartCategorizeMessage(null); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({}) }); const data = await res.json().catch(() => ({})); if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); await refetchReceiptDetail(r.id) } else setSmartCategorizeMessage(data.detail || 'Failed'); } catch { setSmartCategorizeMessage('Network error'); } finally { setSmartCategorizeLoading(false); } }} className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed">{smartCategorizeLoading ? 'Running…' : 'All'}</button>
+                                              <button type="button" disabled={smartCategorizeLoading || selectedIdsForReceipt(r.id).size === 0} onClick={async () => { if (!r.id || !token || selectedIdsForReceipt(r.id).size === 0) return; setSmartCategorizeLoading(true); setSmartCategorizeMessage(null); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ item_ids: Array.from(selectedIdsForReceipt(r.id)) }) }); const data = await res.json().catch(() => ({})); if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); setSmartCategorizeSelectedIds((prev) => ({ ...prev, [r.id]: new Set() })); await refetchReceiptDetail(r.id) } else setSmartCategorizeMessage(data.detail || 'Failed'); } catch { setSmartCategorizeMessage('Network error'); } finally { setSmartCategorizeLoading(false); } }} className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed">{smartCategorizeLoading ? 'Running…' : 'Selected Only'}</button>
+                                            </div>
+                                            {(categoryUpdateMessage || smartCategorizeMessage) && (
+                                              <p className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage?.startsWith?.('Updated')) ? 'text-green-600' : 'text-theme-red'}`}>{categoryUpdateMessage || smartCategorizeMessage}</p>
+                                            )}
+                                          </div>
+                                          {r.current_status === 'needs_review' && !dismissedReviewFeedbackReceiptIds.has(r.id) && (
+                                            <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 flex flex-col gap-3">
+                                              <p className="text-sm font-medium text-amber-800">Review Feedback</p>
+                                              {expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0 && (
+                                                <div className="text-sm text-amber-900 space-y-1.5">
+                                                  {expandedReceiptData[r.id].review_metadata.reasoning && <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>}
+                                                  {expandedReceiptData[r.id].review_metadata.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>}
+                                                  {(expandedReceiptData[r.id].review_metadata.item_count_on_receipt != null || expandedReceiptData[r.id].review_metadata.item_count_extracted != null) && <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>}
+                                                </div>
+                                              )}
+                                              {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && <p className="text-sm text-amber-900 whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>}
+                                              <div className="flex flex-wrap gap-2 justify-end">
+                                                <button type="button" onClick={(e) => { e.stopPropagation(); setDismissedReviewFeedbackReceiptIds((prev) => new Set(prev).add(r.id)) }} className="text-xs text-amber-700 hover:text-amber-900 underline">Dismiss</button>
+                                                <button type="button" disabled={reviewCompleteLoading === r.id} onClick={async (e) => { e.stopPropagation(); if (!r.id || !token || reviewCompleteLoading) return; setReviewCompleteLoading(r.id); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { setDismissedReviewFeedbackReceiptIds((prev) => { const s = new Set(prev); s.add(r.id); return s }); await refetchReceiptDetail(r.id); fetchReceiptList() } else alert(data.detail || data.message || 'Failed to complete review'); } catch { alert('Network error'); } finally { setReviewCompleteLoading(null); } }} className="text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1 rounded border border-amber-300 disabled:opacity-50">{reviewCompleteLoading === r.id ? '…' : 'Review complete'}</button>
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                      {/* 手机列表展开时也渲染 Edit 面板与底部操作，与桌面共用同一 state */}
+                                      <div
+                                        className={`absolute left-0 right-0 top-0 bottom-0 z-10 flex flex-col bg-white border-l border-theme-ivory-dark shadow-lg transition-transform duration-200 ease-out ${correctionOpenReceiptId === r.id ? 'translate-x-0' : 'translate-x-full'}`}
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <div className="flex items-center justify-between px-3 py-2 border-b border-theme-ivory-dark bg-theme-cream shrink-0">
+                                          <span className="text-sm font-medium text-theme-dark/90">Edit receipt</span>
+                                          <button type="button" className="p-1.5 text-theme-mid hover:text-theme-dark hover:bg-theme-light-gray rounded" onClick={(e) => { e.stopPropagation(); setCorrectionOpenReceiptId(null) }} title="Close">▶</button>
+                                        </div>
+                                        <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
+                                          <p className="text-sm text-theme-mid">Edit form matches desktop. Use desktop for full editing; you can close this panel on mobile.</p>
+                                        </div>
+                                      </div>
+                                      <div className="mt-4 flex flex-wrap items-center gap-2 px-4 pb-2">
+                                        {(userClass === 'admin' || userClass === 'super_admin') && (
+                                          <>
+                                            <button type="button" className="text-sm text-theme-dark/90 hover:text-theme-dark underline" onClick={(e) => { e.stopPropagation(); setShowRawJson((v) => !v) }}>{showRawJson ? 'Hide' : 'Show'} raw JSON</button>
+                                            <button type="button" className="text-sm text-theme-dark/90 hover:text-theme-dark underline" onClick={(e) => { e.stopPropagation(); if (expandedReceiptData[r.id]) navigator.clipboard.writeText(JSON.stringify(expandedReceiptData[r.id], null, 2)); alert('Copied'); }}>Copy</button>
+                                          </>
+                                        )}
+                                        <button type="button" className="text-sm text-theme-red hover:text-theme-red hover:underline" onClick={(e) => { e.stopPropagation(); if (token && r.id) setDeleteConfirmReceiptId(r.id) }}>Delete this receipt</button>
+                                      </div>
+                                </React.Fragment>
+                                );
+                                  })()}
+                              </div>
+                        )}
+                      </div>
+                        ))}
+                      </div>
+                    ))}
+                    {hasMoreOnMobile && (
+                      <button
+                        type="button"
+                        onClick={() => setMobileReceiptVisibleCount((c) => c + 5)}
+                        className="w-full py-3 text-sm font-medium text-theme-dark/90 bg-theme-light-gray/50 hover:bg-theme-light-gray rounded-lg border border-theme-light-gray transition"
+                      >
+                        Expand 5
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 桌面端：按月份分组 */}
+                  <div className="hidden md:block space-y-6">
                   {orderedMonths.map((monthKey) => (
                     <div key={monthKey}>
                       <div className="flex items-center gap-3 mb-3">
-                        <span className="text-sm font-semibold text-gray-600">{monthLabels[monthKey]}</span>
-                        <div className="flex-1 h-px bg-gray-200" />
+                        <span className="text-sm font-semibold text-theme-dark/90">{monthLabels[monthKey]}</span>
+                        <div className="flex-1 h-px bg-theme-light-gray" />
                       </div>
                       <div className="space-y-3">
                         {byMonth[monthKey].map((r) => (
                           <div
                             key={r.id}
-                            className="border border-gray-200 rounded-lg overflow-hidden"
+                            className="border border-theme-light-gray rounded-lg overflow-hidden"
                           >
                             <button
                               type="button"
-                              className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-gray-50 transition"
+                              className="w-full px-4 py-3 flex items-center justify-between text-left hover:opacity-90 transition"
+                              style={{ backgroundColor: '#FAFAF7' }}
                               onClick={async () => {
-                                if (expandedReceiptId === r.id) {
-                                  setExpandedReceiptId(null)
-                                  setExpandedReceiptJson(null)
+                                if (expandedReceiptIds.has(r.id)) {
+                                  setExpandedReceiptIds((prev) => { const next = new Set(prev); next.delete(r.id); return next })
+                                  setExpandedReceiptData((prev) => { const next = { ...prev }; delete next[r.id]; return next })
+                                  if (correctionOpenReceiptId === r.id) setCorrectionOpenReceiptId(null)
                                   return
                                 }
-                                setExpandedReceiptId(r.id)
+                                setExpandedReceiptIds((prev) => new Set(prev).add(r.id))
                                 if (!token) return
                                 try {
-                                  const res = await fetch(`${apiUrl()}/api/receipt/${r.id}`, {
+                                  const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}`, {
                                     headers: { Authorization: `Bearer ${token}` },
                                   })
                                   if (res.ok) {
                                     const json = await res.json()
-                                    setExpandedReceiptJson(json)
-                                    initEditFormFromJson(json)
+                                    setExpandedReceiptData((prev) => ({ ...prev, [r.id]: json }))
                                   } else {
-                                    setExpandedReceiptJson({ error: 'Failed to load' })
+                                    setExpandedReceiptData((prev) => ({ ...prev, [r.id]: { error: 'Failed to load' } }))
                                   }
                                 } catch (e) {
-                                  setExpandedReceiptJson({ error: String(e) })
+                                  setExpandedReceiptData((prev) => ({ ...prev, [r.id]: { error: String(e) } }))
                                 }
                               }}
                             >
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-medium text-gray-900">
-                                  {r.chain_name || (r.store_name ? toTitleCaseStore(r.store_name) : '') || r.store_name || 'Unknown store'}
+                                <span className="font-medium text-theme-dark">
+                                  {(() => { const raw = (r.chain_name || r.store_name || '').trim(); return raw ? toTitleCaseStore(raw) : 'Unknown store'; })()}
                                 </span>
-                                <span className="text-xs text-gray-500">
+                                <span className="text-xs text-theme-mid">
                                   {formatDisplayDate(r)}
                                 </span>
                                 <span className={`text-xs px-2 py-0.5 rounded ${
                                   r.current_status === 'success' ? 'bg-green-100 text-green-800' :
-                                  r.current_status === 'failed' || r.current_status === 'needs_review' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-600'
+                                  r.current_status === 'failed' || r.current_status === 'needs_review' ? 'bg-amber-100 text-amber-800' : 'bg-theme-light-gray/50 text-theme-dark/90'
                                 }`}>
                                   {r.current_status}
                                 </span>
                               </div>
-                              <span className="text-gray-400">{expandedReceiptId === r.id ? '▼' : '▶'}</span>
+                              <span className="text-theme-mid">{expandedReceiptIds.has(r.id) ? '▼' : '▶'}</span>
                             </button>
-                            {expandedReceiptId === r.id && expandedReceiptJson && expandedReceiptJson.error && (
-                              <div className="border-t border-gray-200 bg-red-50 p-4 text-sm text-red-700">
-                                {expandedReceiptJson.error}
+                            {expandedReceiptIds.has(r.id) && expandedReceiptData[r.id] && expandedReceiptData[r.id].error && (
+                              <div className="border-t border-theme-ivory-dark bg-theme-red/10 p-4 text-sm text-theme-red">
+                                {String(expandedReceiptData[r.id].error)}
                               </div>
                             )}
-                            {expandedReceiptId === r.id && expandedReceiptJson && !expandedReceiptJson.error && (
-                              <div className="border-t border-gray-200 bg-gray-50 p-4">
-                                <div className="relative bg-white border border-gray-200 rounded-lg overflow-hidden flex flex-col min-h-0">
+                            {expandedReceiptIds.has(r.id) && expandedReceiptData[r.id] && !expandedReceiptData[r.id].error && (
+                              <div className="relative">
                                   {(() => {
-                                    const rec = expandedReceiptJson?.data?.receipt
-                                    const items = expandedReceiptJson?.data?.items || []
-                                    const chainName = expandedReceiptJson?.data?.chain_name
+                                    const json = expandedReceiptData[r.id]
+                                    const rec = json?.data?.receipt
+                                    const items = json?.data?.items || []
+                                    const chainName = json?.data?.chain_name
                                     const $ = (v: any) => (v == null || v === '' ? null : String(v))
                                     const money = (v: any) => {
                                       if (v == null || v === '') return null
@@ -724,71 +1111,318 @@ export default function DashboardPage() {
                                     const rawFromApi = rec?.merchant_name ?? ''
                                     const displayName = chainName || (rawFromApi ? toTitleCaseStore(rawFromApi) : '') || rawFromApi || ''
                                     const rawAddress = $(rec?.merchant_address)
-                                    const addressLines = rawAddress ? rawAddress.split(/\r?\n/).map((l: string) => l.trim()).filter(Boolean) : []
-                                    const lastLine = addressLines[addressLines.length - 1]
-                                    const isCountryOnly = lastLine && /^[A-Z]{2}$/i.test(lastLine)
-                                    const address = addressLines.length
-                                      ? isCountryOnly && addressLines.length >= 2
-                                        ? [...addressLines.slice(0, -2), addressLines[addressLines.length - 2] + ' ' + lastLine].join('\n')
-                                        : addressLines.join('\n')
-                                      : ''
+                                    const address = formatAddressForDisplay(rawAddress || '')
                                     return (
-                                      <>
-                                      {/*
-                                        视觉两栏，结构5块：
-                                          [左上: 店铺信息] [右上: 分类头]
-                                          [中间: 全宽8列表，第4-5列之间有空列做分隔线]
-                                          [左下: 小计/支付] [右下: 消息/空]
-                                        Edit 面板覆盖右半（absolute left-1/2 ... right-0）
-                                      */}
-                                      <div className="relative bg-white border border-gray-200 rounded-lg overflow-hidden font-mono text-sm text-gray-800">
-                                        {/*
-                                          统一 CSS Grid：10 列 = [product(2fr) | qty(3rem) | unit$(4rem) | $amt(5.5rem) | sep(8px) | lvlI(1fr) | lvlII(1fr) | lvlIII(1fr) | checkbox(2rem) | edit(2.5rem)]
-                                          所有行（header/col-labels/items/footer）共用同一个 grid container，分隔线位置数学上完全一致。
-                                          头行和尾行：左侧 col-span-4，sep 1列，右侧 col-span-5。
-                                        */}
-                                        <div
-                                          className="grid overflow-x-auto"
-                                          style={{ gridTemplateColumns: 'minmax(0,2fr) 3rem 4rem 5.5rem 8px minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 2rem 2.5rem' }}
-                                        >
-                                          {/* ① 左上：店铺信息 + Edit Fields | sep | 右上：Classification + Smart */}
-                                          <div className="col-span-4 p-4 border-b border-gray-200 flex items-start justify-between gap-2">
-                                            <div className="text-gray-800 whitespace-pre-line leading-5 min-w-0">
-                                              {displayName && <span className="font-semibold">{displayName}</span>}
-                                              {address && <>{'\n'}<span className="text-gray-600">{address}</span></>}
-                                              {rec?.merchant_phone && <>{'\n'}<span className="text-gray-600">Tel: {rec.merchant_phone}</span></>}
+                                      <React.Fragment>
+                                      {/* 手机端：无灰色层，外层之后直接白底 receipt */}
+                                      <div className="block md:hidden p-4">
+                                        <div className="bg-white rounded-lg text-sm text-theme-dark overflow-hidden p-4 space-y-4" style={{ fontFamily: "'Space Mono', 'Courier New', monospace" }}>
+                                          <div className="flex items-start gap-2">
+                                            <div className="flex-1 min-w-0 text-theme-dark/90 text-sm whitespace-pre-line leading-5">
+                                              {address && <span>{address}</span>}
+                                              {(address && (rec?.merchant_phone)) && '\n'}
+                                              {rec?.merchant_phone && <span>Tel: {rec.merchant_phone}</span>}
+                                              {!address && !rec?.merchant_phone && <span className="text-theme-mid">No address or phone</span>}
                                             </div>
                                             <button
                                               type="button"
-                                              className="shrink-0 text-sm text-gray-700 bg-gray-200 hover:bg-gray-300 px-2.5 py-1 rounded border border-gray-300 whitespace-nowrap ml-2"
-                                              onClick={(e) => { e.stopPropagation(); setCorrectionOpen((o) => !o) }}
+                                              className="shrink-0 relative z-10 min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 text-theme-dark/90 hover:bg-theme-light-gray rounded touch-manipulation"
+                                              onClick={(e) => {
+                                                e.preventDefault()
+                                                e.stopPropagation()
+                                                if (correctionOpenReceiptId === r.id) setCorrectionOpenReceiptId(null)
+                                                else { setCorrectionOpenReceiptId(r.id); initEditFormFromJson(expandedReceiptData[r.id]) }
+                                              }}
+                                              aria-label={mobileReceiptViewMode === 'classification' ? 'Edit I/II/III category' : 'Edit fields'}
+                                              title={mobileReceiptViewMode === 'classification' ? 'Edit category (I/II/III)' : 'Edit receipt fields'}
                                             >
-                                              {correctionOpen ? 'Hide Edits' : 'Edit Fields'}
+                                              ✏️
                                             </button>
                                           </div>
-                                          <div className="border-b border-l border-r border-gray-200 bg-gray-100" />
-                                          <div className="col-span-5 p-4 border-b border-gray-200 bg-gray-50/50 flex items-center">
-                                            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Classification</p>
+                                          <div className="flex flex-col gap-1">
+                                            <div className="flex rounded-lg border border-theme-mid p-0.5 bg-theme-light-gray/50">
+                                              <button
+                                                type="button"
+                                                className={`flex-1 py-1.5 text-sm font-medium rounded-md transition ${mobileReceiptViewMode === 'receipt' ? 'bg-white shadow text-theme-dark' : 'text-theme-dark/90'}`}
+                                                onClick={() => setMobileReceiptViewMode('receipt')}
+                                              >
+                                                Receipt
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className={`flex-1 py-1.5 text-sm font-medium rounded-md transition ${mobileReceiptViewMode === 'classification' ? 'bg-white shadow text-theme-dark' : 'text-theme-dark/90'}`}
+                                                onClick={() => setMobileReceiptViewMode('classification')}
+                                              >
+                                                Classification
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <div className="space-y-2">
+                                            {items.length === 0 && <p className="text-theme-mid text-sm">No items</p>}
+                                            {items.map((it: any, i: number) => {
+                                              const name = it.product_name ?? it.original_product_name ?? ''
+                                              const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
+                                              const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
+                                              const unit = (it.unit ?? '').trim() || 'each'
+                                              const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
+                                              const path = (it.category_path ?? '').trim()
+                                              const parts = path ? path.split(/\s*[\/>]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
+                                              const catLine = parts.length ? parts.join(' / ') : '—'
+                                              const catL1L2 = parts.length >= 2 ? parts.slice(0, 2).join(' / ') : catLine
+                                              const catL3 = parts.length >= 3 ? parts[2] : ''
+                                              const showQtyUnit = Number.isFinite(qty) && qty > 1 && (u && u !== '');
+                                              return (
+                                                <div key={it.id ?? i} className="border-b border-theme-light-gray/50 pb-2 last:border-0">
+                                                  {mobileReceiptViewMode === 'receipt' ? (
+                                                    <>
+                                                      <div className="flex justify-between items-baseline gap-2">
+                                                        <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
+                                                        {!showQtyUnit && <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>}
+                                                      </div>
+                                                      {showQtyUnit && (
+                                                        <div className="flex justify-between items-baseline gap-2 mt-0.5 text-sm text-theme-dark/90">
+                                                          <span>{qty} @ ${u} / {unit}</span>
+                                                          <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>
+                                                        </div>
+                                                      )}
+                                                    </>
+                                                  ) : (
+                                                    <>
+                                                      <div className="flex justify-between items-baseline gap-2">
+                                                        <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
+                                                        <span className="shrink-0 flex items-center gap-1">
+                                                          {it.category_source === 'llm' && (
+                                                            <span className="inline-flex items-center justify-center rounded bg-black text-white text-[10px] font-bold px-1 py-0.5" title="AI guessed">AI</span>
+                                                          )}
+                                                          <span className="tabular-nums">{p ? `$${p}` : ''}</span>
+                                                        </span>
+                                                      </div>
+                                                      <div className="mt-0.5 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-0.5 text-xs text-theme-mid">
+                                                        <span className="sm:flex-1">{catL1L2}</span>
+                                                        <span className="sm:shrink-0">{catL3}</span>
+                                                      </div>
+                                                    </>
+                                                  )}
+                                                </div>
+                                              )
+                                            })}
+                                          </div>
+                                          {rec && (
+                                            <>
+                                              <div className="border-t border-dashed border-theme-mid pt-2 space-y-0.5">
+                                                <div className="flex justify-between"><span>Subtotal</span><span className="tabular-nums">{rec.subtotal != null ? `$${money(rec.subtotal)}` : ''}</span></div>
+                                                <div className="flex justify-between"><span>Tax</span><span className="tabular-nums">{rec.tax != null ? `$${money(rec.tax)}` : ''}</span></div>
+                                                <div className="flex justify-between font-medium"><span>Total</span><span className="tabular-nums">{rec.total != null ? `$${money(rec.total)}` : ''}</span></div>
+                                              </div>
+                                            </>
+                                          )}
+                                          <div className="border-t border-theme-ivory-dark pt-3 flex flex-col gap-2">
+                                            <p className="text-xs font-medium text-theme-mid uppercase tracking-wide">Smart Categorization</p>
+                                            <div className="flex flex-col gap-1.5 w-full">
+                                              <button
+                                                type="button"
+                                                disabled={smartCategorizeLoading}
+                                                onClick={async () => {
+                                                  if (!r.id || !token) return
+                                                  setSmartCategorizeLoading(true); setSmartCategorizeMessage(null)
+                                                  try {
+                                                    const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, {
+                                                      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                      body: JSON.stringify({}),
+                                                    })
+                                                    const data = await res.json().catch(() => ({}))
+                                                    if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); await refetchReceiptDetail(r.id) }
+                                                    else setSmartCategorizeMessage(data.detail || 'Failed')
+                                                  } catch { setSmartCategorizeMessage('Network error') }
+                                                  finally { setSmartCategorizeLoading(false) }
+                                                }}
+                                                className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed"
+                                              >
+                                                {smartCategorizeLoading ? 'Running…' : 'All'}
+                                              </button>
+                                              <button
+                                                type="button"
+                                                disabled={smartCategorizeLoading || selectedIdsForReceipt(r.id).size === 0}
+                                                onClick={async () => {
+                                                  if (!r.id || !token || selectedIdsForReceipt(r.id).size === 0) return
+                                                  setSmartCategorizeLoading(true); setSmartCategorizeMessage(null)
+                                                  try {
+                                                    const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, {
+                                                      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                      body: JSON.stringify({ item_ids: Array.from(selectedIdsForReceipt(r.id)) }),
+                                                    })
+                                                    const data = await res.json().catch(() => ({}))
+                                                    if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); setSmartCategorizeSelectedIds((prev) => ({ ...prev, [r.id]: new Set() })); await refetchReceiptDetail(r.id) }
+                                                    else setSmartCategorizeMessage(data.detail || 'Failed')
+                                                  } catch { setSmartCategorizeMessage('Network error') }
+                                                  finally { setSmartCategorizeLoading(false) }
+                                                }}
+                                                className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed"
+                                              >
+                                                {smartCategorizeLoading ? 'Running…' : 'Selected Only'}
+                                              </button>
+                                            </div>
+                                            {(categoryUpdateMessage || smartCategorizeMessage) && (
+                                              <p className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage?.startsWith?.('Updated')) ? 'text-green-600' : 'text-theme-red'}`}>
+                                                {categoryUpdateMessage || smartCategorizeMessage}
+                                              </p>
+                                            )}
+                                          </div>
+                                          {r.current_status === 'needs_review' && !dismissedReviewFeedbackReceiptIds.has(r.id) && (
+                                            <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 flex flex-col gap-3">
+                                              <p className="text-sm font-medium text-amber-800">Review Feedback</p>
+                                              {expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0 && (
+                                                <div className="text-sm text-amber-900 space-y-1.5">
+                                                  {expandedReceiptData[r.id].review_metadata.reasoning && (
+                                                    <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>
+                                                  )}
+                                                  {expandedReceiptData[r.id].review_metadata.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && (
+                                                    <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>
+                                                  )}
+                                                  {(expandedReceiptData[r.id].review_metadata.item_count_on_receipt != null || expandedReceiptData[r.id].review_metadata.item_count_extracted != null) && (
+                                                    <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>
+                                                  )}
+                                                </div>
+                                              )}
+                                              {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && (
+                                                <p className="text-sm text-amber-900 whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>
+                                              )}
+                                              <div className="flex flex-wrap gap-2 justify-end">
+                                                <button type="button" onClick={(e) => { e.stopPropagation(); setDismissedReviewFeedbackReceiptIds((prev) => new Set(prev).add(r.id)) }} className="text-xs text-amber-700 hover:text-amber-900 underline">Dismiss</button>
+                                                <button
+                                                  type="button"
+                                                  disabled={reviewCompleteLoading === r.id}
+                                                  onClick={async (e) => {
+                                                    e.stopPropagation()
+                                                    if (!r.id || !token || reviewCompleteLoading) return
+                                                    setReviewCompleteLoading(r.id)
+                                                    try {
+                                                      const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+                                                      const data = await res.json().catch(() => ({}))
+                                                      if (res.ok && data.success) {
+                                                        setDismissedReviewFeedbackReceiptIds((prev) => { const s = new Set(prev); s.add(r.id); return s })
+                                                        await refetchReceiptDetail(r.id)
+                                                        fetchReceiptList()
+                                                      } else alert(data.detail || data.message || 'Failed to complete review')
+                                                    } catch { alert('Network error') }
+                                                    finally { setReviewCompleteLoading(null) }
+                                                  }}
+                                                  className="text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1 rounded border border-amber-300 disabled:opacity-50"
+                                                >
+                                                  {reviewCompleteLoading === r.id ? '…' : 'Review complete'}
+                                                </button>
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+
+                                      {/* 桌面端：灰色层 + 白底双栏 */}
+                                      <div className="hidden md:block border-t border-theme-ivory-dark bg-theme-cream p-4">
+                                        <div className="relative bg-white border border-theme-light-gray rounded-lg overflow-hidden flex flex-col min-h-0">
+                                        {/*
+                                          桌面：视觉两栏 grid
+                                          [左上: 店铺信息] [右上: 分类头] | [中间: 表] | [左下: 小计] [右下: Smart]
+                                        */}
+                                        <div className="hidden md:block">
+                                        <div
+                                          className="grid overflow-x-auto"
+                                          style={{ gridTemplateColumns: 'minmax(0,1.5fr) 5.5rem 5.5rem 5.5rem 8px minmax(0,0.9fr) minmax(0,0.9fr) minmax(0,0.9fr) 1.75rem 2rem 2.5rem' }}
+                                        >
+                                          {/* ① 左上：店铺信息 + Edit Fields | sep | 右上：Classification + Smart */}
+                                          <div className="col-span-4 p-4 border-b border-theme-light-gray flex items-start justify-between gap-2">
+                                            <div className="text-theme-dark whitespace-pre-line leading-5 min-w-0">
+                                              {displayName && <span className="font-semibold">{displayName}</span>}
+                                              {address && <>{'\n'}<span className="text-theme-dark/90">{address}</span></>}
+                                              {rec?.merchant_phone && <>{'\n'}<span className="text-theme-dark/90">Tel: {rec.merchant_phone}</span></>}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              className="shrink-0 text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 px-2.5 py-1 rounded border border-theme-mid whitespace-nowrap ml-2"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                if (correctionOpenReceiptId === r.id) {
+                                                  setCorrectionOpenReceiptId(null)
+                                                } else {
+                                                  setCorrectionOpenReceiptId(r.id)
+                                                  initEditFormFromJson(expandedReceiptData[r.id])
+                                                }
+                                              }}
+                                            >
+                                              {correctionOpenReceiptId === r.id ? 'Hide Edits' : 'Edit Fields'}
+                                            </button>
+                                          </div>
+                                          <div className="border-b border-l border-r border-theme-cream bg-theme-cream" />
+                                          <div className="col-span-6 p-4 border-b border-theme-light-gray bg-theme-cream/50 flex flex-row justify-between items-start gap-4">
+                                            <div className="flex flex-col gap-1">
+                                              <p className="text-xs font-medium text-theme-mid uppercase tracking-wide">Classification</p>
+                                              <span className="text-sm text-theme-black font-medium">Run Smart Categorization on</span>
+                                            </div>
+                                            <div className="flex flex-col gap-1.5 items-end shrink-0 min-w-[7.5rem]">
+                                                <button
+                                                  type="button"
+                                                  disabled={smartCategorizeLoading}
+                                                  onClick={async () => {
+                                                    if (!r.id || !token) return
+                                                    setSmartCategorizeLoading(true); setSmartCategorizeMessage(null)
+                                                    try {
+                                                      const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, {
+                                                        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                        body: JSON.stringify({}),
+                                                      })
+                                                      const data = await res.json().catch(() => ({}))
+                                                      if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); await refetchReceiptDetail(r.id) }
+                                                      else setSmartCategorizeMessage(data.detail || 'Failed')
+                                                    } catch { setSmartCategorizeMessage('Network error') }
+                                                    finally { setSmartCategorizeLoading(false) }
+                                                  }}
+                                                  className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 px-3 py-1 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed text-center"
+                                                >
+                                                  {smartCategorizeLoading ? 'Running…' : 'All'}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  disabled={smartCategorizeLoading || selectedIdsForReceipt(r.id).size === 0}
+                                                  onClick={async () => {
+                                                    if (!r.id || !token || selectedIdsForReceipt(r.id).size === 0) return
+                                                    setSmartCategorizeLoading(true); setSmartCategorizeMessage(null)
+                                                    try {
+                                                      const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, {
+                                                        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                        body: JSON.stringify({ item_ids: Array.from(selectedIdsForReceipt(r.id)) }),
+                                                      })
+                                                      const data = await res.json().catch(() => ({}))
+                                                      if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); setSmartCategorizeSelectedIds((prev) => ({ ...prev, [r.id]: new Set() })); await refetchReceiptDetail(r.id) }
+                                                      else setSmartCategorizeMessage(data.detail || 'Failed')
+                                                    } catch { setSmartCategorizeMessage('Network error') }
+                                                    finally { setSmartCategorizeLoading(false) }
+                                                  }}
+                                                  className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 px-3 py-1 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed text-center"
+                                                >
+                                                  {smartCategorizeLoading ? 'Running…' : 'Selected Only'}
+                                                </button>
+                                            </div>
                                           </div>
 
                                           {/* ② 列标签行：大写加粗，无分割线 */}
-                                          <div className="py-1.5 px-3 text-xs text-gray-700 font-semibold uppercase">Product</div>
-                                          <div className="py-1.5 pl-3 pr-2 text-xs text-gray-700 font-semibold uppercase text-center">Qty</div>
-                                          <div className="py-1.5 pl-3 pr-2 text-xs text-gray-700 font-semibold uppercase text-right">Unit $</div>
-                                          <div className="py-1.5 pl-3 pr-2 text-xs text-gray-700 font-semibold uppercase text-right">$ Amount</div>
-                                          <div className="bg-gray-100" />
-                                          <div className="py-1.5 px-3 text-xs text-gray-700 font-semibold uppercase">Level I</div>
-                                          <div className="py-1.5 px-2 text-xs text-gray-700 font-semibold uppercase">Level II</div>
-                                          <div className="py-1.5 px-2 text-xs text-gray-700 font-semibold uppercase">Level III</div>
+                                          <div className="py-1.5 px-3 text-xs text-theme-dark/90 font-semibold uppercase">Product</div>
+                                          <div className="py-1.5 pl-3 pr-2 text-xs text-theme-dark/90 font-semibold uppercase text-center">Qty</div>
+                                          <div className="py-1.5 pl-3 pr-2 text-xs text-theme-dark/90 font-semibold uppercase text-right">Unit $</div>
+                                          <div className="py-1.5 pl-3 pr-2 text-xs text-theme-dark/90 font-semibold uppercase text-right">$ Amount</div>
+                                          <div className="bg-theme-cream" />
+                                          <div className="py-1.5 px-3 text-xs text-theme-dark/90 font-semibold uppercase">Level I</div>
+                                          <div className="py-1.5 px-2 text-xs text-theme-dark/90 font-semibold uppercase">Level II</div>
+                                          <div className="py-1.5 px-2 text-xs text-theme-dark/90 font-semibold uppercase">Level III</div>
+                                          <div className="py-1.5 px-0.5 flex items-center justify-center" title="AI guessed category" />
                                           <div className="py-1.5 px-1 flex items-center justify-center" title="Select for Smart Categorization" />
                                           <div />
 
                                           {/* ③ item 行：每个 React.Fragment 贡献 9 个 grid 子元素 */}
                                           {items.length === 0 && (
                                             <React.Fragment>
-                                              <div className="col-span-4 px-3 py-3 text-gray-400 text-sm">No items</div>
-                                              <div className="bg-gray-100" />
-                                              <div className="col-span-5" />
+                                              <div className="col-span-4 px-3 py-3 text-theme-mid text-sm">No items</div>
+                                              <div className="bg-theme-cream" />
+                                              <div className="col-span-6" />
                                             </React.Fragment>
                                           )}
                                           {items.map((it: any, i: number) => {
@@ -825,18 +1459,18 @@ export default function DashboardPage() {
                                             }
                                             const cancelEdit = () => { setEditingItemId(null); setCategoryUpdateMessage(null) }
                                             const confirmEdit = async () => {
-                                              if (!expandedReceiptId || !token) return
+                                              if (!r.id || !token) return
                                               setCategoryUpdateMessage(null)
                                               const toSend = editCatL3 || editCatL2 || editCatL1 || null
                                               try {
-                                                const res = await fetch(`${apiUrl()}/api/receipt/${expandedReceiptId}/item/${itemId}/category`, {
+                                                const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`, {
                                                   method: 'PATCH',
                                                   headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                                                   body: JSON.stringify({ category_id: toSend }),
                                                 })
                                                 if (res.ok) {
                                                   setCategoryUpdateMessage('Saved')
-                                                  await refetchReceiptDetail()
+                                                  await refetchReceiptDetail(r.id)
                                                   setEditingItemId(null)
                                                 } else {
                                                   const err = await res.json().catch(() => ({}))
@@ -848,58 +1482,64 @@ export default function DashboardPage() {
                                             }
                                             return (
                                               <React.Fragment key={itemId ?? i}>
-                                                <div className="py-1.5 px-3 truncate min-w-0 text-gray-800" title={name}>{name}</div>
+                                                <div className="py-1.5 px-3 truncate min-w-0 text-theme-dark" title={name}>{name}</div>
                                                 <div className="py-1.5 pl-3 pr-2 text-center tabular-nums">{Number.isFinite(qty) ? qty : ''}</div>
                                                 <div className="py-1.5 pl-3 pr-2 text-right tabular-nums">{u}</div>
                                                 <div className="py-1.5 pl-3 pr-2 text-right tabular-nums">{p}</div>
-                                                <div className="bg-gray-100" />
+                                                <div className="bg-theme-cream" />
                                                 <div className="py-1.5 px-3">
                                                   {isEditing ? (
                                                     <select className="border rounded px-1 py-0.5 text-xs w-full" value={editCatL1} onChange={(e) => { setEditCatL1(e.target.value); setEditCatL2(''); setEditCatL3('') }}><option value="">—</option>{L1List.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
                                                   ) : (
-                                                    <span className="truncate block text-gray-800" title={c1}>{c1}</span>
+                                                    <span className="truncate block text-theme-dark" title={c1}>{c1}</span>
                                                   )}
                                                 </div>
                                                 <div className="py-1.5 px-2">
                                                   {isEditing ? (
                                                     <select className="border rounded px-1 py-0.5 text-xs w-full" value={editCatL2} onChange={(e) => { setEditCatL2(e.target.value); setEditCatL3('') }}><option value="">—</option>{L2List.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
                                                   ) : (
-                                                    <span className="truncate block text-gray-800" title={c2}>{c2}</span>
+                                                    <span className="truncate block text-theme-dark" title={c2}>{c2}</span>
                                                   )}
                                                 </div>
                                                 <div className="py-1.5 px-2">
                                                   {isEditing ? (
                                                     <select className="border rounded px-1 py-0.5 text-xs w-full" value={editCatL3} onChange={(e) => setEditCatL3(e.target.value)}><option value="">—</option>{L3List.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
                                                   ) : (
-                                                    <span className="truncate block text-gray-800" title={c3}>{c3}</span>
+                                                    <span className="truncate block text-theme-dark" title={c3}>{c3}</span>
                                                   )}
                                                 </div>
+                                                <div className="py-1.5 px-0.5 flex items-center justify-center">
+                                                  {(it.category_source === 'llm') ? (
+                                                    <span className="inline-flex items-center justify-center w-6 h-5 rounded bg-black text-white text-[10px] font-bold" title="AI guessed">AI</span>
+                                                  ) : null}
+                                                </div>
                                                 <div className="py-1.5 px-1 flex items-center justify-center">
-                                                  <label className="relative cursor-pointer flex items-center justify-center w-5 h-5 rounded border border-gray-300 bg-white has-[:checked]:bg-green-600 has-[:checked]:border-green-600">
-                                                    <input
-                                                      type="checkbox"
-                                                      checked={smartCategorizeSelectedIds.has(itemId)}
-                                                      onChange={(e) => {
-                                                        setSmartCategorizeSelectedIds((prev) => {
-                                                          const next = new Set(prev)
-                                                          if (e.target.checked) next.add(itemId)
-                                                          else next.delete(itemId)
-                                                          return next
-                                                        })
-                                                      }}
-                                                      className="sr-only peer"
-                                                    />
-                                                    <span className="absolute inset-0 flex items-center justify-center pointer-events-none select-none text-white text-xs font-bold opacity-0 peer-checked:opacity-100">✓</span>
-                                                  </label>
+                                                  {isEditing ? (
+                                                    <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200 w-5 h-5 flex items-center justify-center" onClick={confirmEdit} title="Confirm">✓</button>
+                                                  ) : (
+                                                    <label className="relative cursor-pointer flex items-center justify-center w-5 h-5 rounded border border-theme-mid bg-white has-[:checked]:bg-theme-orange has-[:checked]:border-theme-orange">
+                                                      <input
+                                                        type="checkbox"
+                                                        checked={selectedIdsForReceipt(r.id).has(itemId)}
+                                                        onChange={(e) => {
+                                                          setSelectedIdsForReceipt(r.id, (prev) => {
+                                                            const next = new Set(prev)
+                                                            if (e.target.checked) next.add(itemId)
+                                                            else next.delete(itemId)
+                                                            return next
+                                                          })
+                                                        }}
+                                                        className="sr-only peer"
+                                                      />
+                                                      <span className="absolute inset-0 flex items-center justify-center pointer-events-none select-none text-white text-xs font-bold opacity-0 peer-checked:opacity-100">✓</span>
+                                                    </label>
+                                                  )}
                                                 </div>
                                                 <div className="py-1.5 px-2 flex items-center">
                                                   {isEditing ? (
-                                                    <div className="flex items-center gap-0.5">
-                                                      <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200" onClick={confirmEdit} title="Confirm">✓</button>
-                                                      <button type="button" className="p-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300" onClick={cancelEdit} title="Cancel">✕</button>
-                                                    </div>
+                                                    <button type="button" className="p-1 bg-theme-light-gray text-theme-dark/90 rounded hover:bg-theme-mid/30 w-5 h-5 flex items-center justify-center" onClick={cancelEdit} title="Cancel">✕</button>
                                                   ) : (
-                                                    <button type="button" className="p-1 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded" onClick={startEdit} title="Edit">✏️</button>
+                                                    <button type="button" className="p-1 text-theme-dark/90 hover:text-theme-dark hover:bg-theme-light-gray rounded w-5 h-5 flex items-center justify-center" onClick={startEdit} title="Edit">✏️</button>
                                                   )}
                                                 </div>
                                               </React.Fragment>
@@ -907,11 +1547,11 @@ export default function DashboardPage() {
                                           })}
 
                                           {/* ④ 左下：小计/支付 | sep | ⑤ 右下：消息/空 */}
-                                          <div className="col-span-4 p-4 border-t border-gray-200">
+                                          <div className="col-span-4 p-4 border-t border-theme-ivory-dark">
                                             {rec && (
                                               <>
                                                 {/* 用与左侧4列相同的列宽做子网格，让数字对齐 $ Amount 列 */}
-                                                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) 3rem 4rem 5.5rem' }}>
+                                                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.5fr) 3rem 4rem 5.5rem' }}>
                                                   <div>Subtotal</div><div /><div />
                                                   <div className="text-right tabular-nums">{rec.subtotal != null ? `$${money(rec.subtotal) ?? rec.subtotal}` : ''}</div>
                                                   <div>Tax</div><div /><div />
@@ -919,90 +1559,105 @@ export default function DashboardPage() {
                                                   <div className="font-medium">Total</div><div /><div />
                                                   <div className="text-right tabular-nums font-medium">{rec.total != null ? `$${money(rec.total) ?? rec.total}` : ''}</div>
                                                 </div>
-                                                <div className="border-t border-dashed border-gray-300 my-2 pt-2" />
+                                                <div className="border-t border-dashed border-theme-mid my-2 pt-2" />
                                                 {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
                                                 {$(rec.card_last4) && <div>Payment Card: {rec.payment_method ? `${rec.payment_method} ` : ''}****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
                                                 {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
-                                                {(editPurchaseTime?.trim() || $(rec.purchase_time)) && <div>Time: {formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '')}</div>}
+                                                <div className="flex items-center justify-between gap-2">
+                                                  <span>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => { e.stopPropagation(); if (token && r.id) setDeleteConfirmReceiptId(r.id) }}
+                                                    className="text-sm text-theme-red hover:text-theme-red hover:underline shrink-0"
+                                                  >
+                                                    Delete this receipt
+                                                  </button>
+                                                </div>
                                               </>
                                             )}
                                           </div>
-                                          <div className="border-t border-gray-200 bg-gray-100" />
-                                          <div className="col-span-5 p-4 border-t border-gray-200 flex flex-col gap-2">
-                                            <div className="flex items-start gap-3">
-                                              <span className="text-sm text-gray-900 whitespace-nowrap font-medium pt-0.5">Run Smart Categorization on</span>
-                                              <div className="flex flex-col gap-1 w-36 shrink-0 ml-auto">
-                                                <button
-                                                  type="button"
-                                                  disabled={smartCategorizeLoading || smartCategorizeSelectedIds.size === 0}
-                                                  onClick={async () => {
-                                                    if (!expandedReceiptId || !token || smartCategorizeSelectedIds.size === 0) return
-                                                    setSmartCategorizeLoading(true)
-                                                    setSmartCategorizeMessage(null)
-                                                    try {
-                                                      const res = await fetch(`${apiUrl()}/api/receipt/${expandedReceiptId}/smart-categorize`, {
-                                                        method: 'POST',
-                                                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                        body: JSON.stringify({ item_ids: Array.from(smartCategorizeSelectedIds) }),
-                                                      })
-                                                      const data = await res.json().catch(() => ({}))
-                                                      if (res.ok) {
-                                                        setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done'))
-                                                        setSmartCategorizeSelectedIds(new Set())
-                                                        await refetchReceiptDetail()
-                                                      } else setSmartCategorizeMessage(data.detail || 'Failed')
-                                                    } catch (e) { setSmartCategorizeMessage('Network error') }
-                                                    finally { setSmartCategorizeLoading(false) }
-                                                  }}
-                                                  className="w-full text-sm text-gray-700 bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-center"
-                                                >
-                                                  {smartCategorizeLoading ? 'Running…' : 'Selected Only'}
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  disabled={smartCategorizeLoading}
-                                                  onClick={async () => {
-                                                    if (!expandedReceiptId || !token) return
-                                                    setSmartCategorizeLoading(true)
-                                                    setSmartCategorizeMessage(null)
-                                                    try {
-                                                      const res = await fetch(`${apiUrl()}/api/receipt/${expandedReceiptId}/smart-categorize`, {
-                                                        method: 'POST',
-                                                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                        body: JSON.stringify({}),
-                                                      })
-                                                      const data = await res.json().catch(() => ({}))
-                                                      if (res.ok) {
-                                                        setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done'))
-                                                        await refetchReceiptDetail()
-                                                      } else setSmartCategorizeMessage(data.detail || 'Failed')
-                                                    } catch (e) { setSmartCategorizeMessage('Network error') }
-                                                    finally { setSmartCategorizeLoading(false) }
-                                                  }}
-                                                  className="w-full text-sm text-gray-700 bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-center"
-                                                >
-                                                  {smartCategorizeLoading ? 'Running…' : 'All'}
-                                                </button>
-                                              </div>
-                                            </div>
+                                          <div className="border-t border-theme-cream bg-theme-cream" />
+                                          <div className="col-span-6 p-4 border-t border-theme-ivory-dark flex flex-col gap-2">
                                             {(categoryUpdateMessage || smartCategorizeMessage) && (
-                                              <div className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage && smartCategorizeMessage.startsWith('Updated')) ? 'text-green-600' : 'text-red-600'}`}>
+                                              <div className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage && smartCategorizeMessage.startsWith('Updated')) ? 'text-green-600' : 'text-theme-red'}`}>
                                                 {categoryUpdateMessage || smartCategorizeMessage}
+                                              </div>
+                                            )}
+                                            {r.current_status === 'needs_review' && !dismissedReviewFeedbackReceiptIds.has(r.id) && (
+                                              <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 flex flex-col gap-3">
+                                                <p className="text-sm font-medium text-amber-800">Review Feedback</p>
+                                                {expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0 && (
+                                                  <div className="text-sm text-amber-900 space-y-1.5">
+                                                    {expandedReceiptData[r.id].review_metadata.reasoning && (
+                                                      <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>
+                                                    )}
+                                                    {expandedReceiptData[r.id].review_metadata.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && (
+                                                      <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>
+                                                    )}
+                                                    {(expandedReceiptData[r.id].review_metadata.item_count_on_receipt != null || expandedReceiptData[r.id].review_metadata.item_count_extracted != null) && (
+                                                      <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>
+                                                    )}
+                                                  </div>
+                                                )}
+                                                {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && (
+                                                  <p className="text-sm text-amber-900 whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>
+                                                )}
+                                                <div className="flex flex-wrap gap-2 justify-end">
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => { e.stopPropagation(); setDismissedReviewFeedbackReceiptIds((prev) => new Set(prev).add(r.id)) }}
+                                                    className="text-xs text-amber-700 hover:text-amber-900 underline"
+                                                  >
+                                                    Dismiss
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    disabled={reviewCompleteLoading === r.id}
+                                                    onClick={async (e) => {
+                                                      e.stopPropagation()
+                                                      if (!r.id || !token || reviewCompleteLoading) return
+                                                      setReviewCompleteLoading(r.id)
+                                                      try {
+                                                        const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, {
+                                                          method: 'POST',
+                                                          headers: { Authorization: `Bearer ${token}` },
+                                                        })
+                                                        const data = await res.json().catch(() => ({}))
+                                                        if (res.ok && data.success) {
+                                                          setDismissedReviewFeedbackReceiptIds((prev) => { const s = new Set(prev); s.add(r.id); return s })
+                                                          await refetchReceiptDetail(r.id)
+                                                          fetchReceiptList()
+                                                        } else {
+                                                          alert(data.detail || data.message || 'Failed to complete review')
+                                                        }
+                                                      } catch {
+                                                        alert('Network error')
+                                                      } finally {
+                                                        setReviewCompleteLoading(null)
+                                                      }
+                                                    }}
+                                                    className="text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1 rounded border border-amber-300 disabled:opacity-50"
+                                                  >
+                                                    {reviewCompleteLoading === r.id ? '…' : 'Review complete'}
+                                                  </button>
+                                                </div>
                                               </div>
                                             )}
                                           </div>
                                         </div>
-                                        {/* Edit panel: 覆盖右侧半块 */}
+                                        </div>
+                                        </div>
+                                        {/* Edit panel: 桌面覆盖右半，手机全宽 */}
                                         <div
-                                          className={`absolute left-1/2 top-0 right-0 bottom-0 z-10 flex flex-col bg-white border-l border-gray-200 shadow-lg transition-transform duration-200 ease-out ${correctionOpen ? 'translate-x-0' : 'translate-x-full'}`}
+                                          className={`absolute left-0 ${'md:left-1/2'} top-0 right-0 bottom-0 z-10 flex flex-col bg-white border-l border-theme-ivory-dark shadow-lg transition-transform duration-200 ease-out ${correctionOpenReceiptId === r.id ? 'translate-x-0' : 'translate-x-full'}`}
                                           onClick={(e) => e.stopPropagation()}
                                         >
-                                      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-gray-50 shrink-0">
-                                        <span className="text-sm font-medium text-gray-700">Edit receipt</span>
+                                      <div className="flex items-center justify-between px-3 py-2 border-b border-theme-ivory-dark bg-theme-cream shrink-0">
+                                        <span className="text-sm font-medium text-theme-dark/90">Edit receipt</span>
                                         <button
                                           type="button"
-                                          className="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-200 rounded"
-                                          onClick={(e) => { e.stopPropagation(); setCorrectionOpen(false) }}
+                                          className="p-1.5 text-theme-mid hover:text-theme-dark hover:bg-theme-light-gray rounded"
+                                          onClick={(e) => { e.stopPropagation(); setCorrectionOpenReceiptId(null) }}
                                           title="Close"
                                         >
                                           ▶
@@ -1010,74 +1665,104 @@ export default function DashboardPage() {
                                       </div>
                                       <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
                                         {correctMessage && (
-                                          <div className={`p-2 rounded text-sm ${correctMessage.startsWith('Saved') ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                                          <div className={`p-2 rounded text-sm ${correctMessage.startsWith('Saved') ? 'bg-green-100 text-green-800' : 'bg-theme-red/15 text-theme-red'}`}>
                                             {correctMessage}
                                           </div>
                                         )}
                                         <div className="grid grid-cols-1 gap-2">
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">Store name</span>
+                                            <span className="text-xs text-theme-mid">Store name</span>
                                             <input className="border rounded px-2 py-1 text-sm" value={editStoreName} onChange={(e) => setEditStoreName(e.target.value)} placeholder="Store name" />
                                           </label>
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">Address line 1</span>
+                                            <span className="text-xs text-theme-mid">Address line 1</span>
                                             <input className="border rounded px-2 py-1 text-sm" value={editAddressLine1} onChange={(e) => setEditAddressLine1(e.target.value)} placeholder="Street address" />
                                           </label>
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">Address line 2</span>
+                                            <span className="text-xs text-theme-mid">Address line 2</span>
                                             <input className="border rounded px-2 py-1 text-sm" value={editAddressLine2} onChange={(e) => setEditAddressLine2(e.target.value)} placeholder="Unit / Suite" />
                                           </label>
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">City, State ZIP</span>
+                                            <span className="text-xs text-theme-mid">City, State ZIP</span>
                                             <input className="border rounded px-2 py-1 text-sm" value={editAddressCityStateZip} onChange={(e) => setEditAddressCityStateZip(e.target.value)} placeholder="Lynnwood, WA 98036" />
                                           </label>
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">Country</span>
+                                            <span className="text-xs text-theme-mid">Country</span>
                                             <input className="border rounded px-2 py-1 text-sm" value={editAddressCountry} onChange={(e) => setEditAddressCountry(e.target.value)} placeholder="US" />
                                           </label>
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">Purchase date</span>
+                                            <span className="text-xs text-theme-mid">Phone</span>
+                                            <input className="border rounded px-2 py-1 text-sm" value={editMerchantPhone} onChange={(e) => setEditMerchantPhone(e.target.value)} placeholder="425-640-2648" />
+                                          </label>
+                                          <label className="flex flex-col gap-0.5">
+                                            <span className="text-xs text-theme-mid">Purchase date</span>
                                             <input type="date" className="border rounded px-2 py-1 text-sm" value={editReceiptDate} onChange={(e) => setEditReceiptDate(e.target.value)} />
                                           </label>
                                           <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-gray-500">Purchase time (optional, 24-hour only, e.g. 15:34)</span>
+                                            <span className="text-xs text-theme-mid">Purchase time (optional, 24-hour only, e.g. 15:34)</span>
                                             <input type="text" className="border rounded px-2 py-1 text-sm font-mono" placeholder="15:34" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} maxLength={5} pattern="([01]?[0-9]|2[0-3]):[0-5][0-9]" title="Please enter time in 24-hour HH:MM format" />
                                           </label>
                                           <div className="grid grid-cols-3 gap-2">
                                             <label className="flex flex-col gap-0.5">
-                                              <span className="text-xs text-gray-500">Subtotal</span>
+                                              <span className="text-xs text-theme-mid">Subtotal</span>
                                               <input className="border rounded px-2 py-1 text-sm" value={editSubtotal} onChange={(e) => setEditSubtotal(e.target.value)} placeholder="0.00" />
                                             </label>
                                             <label className="flex flex-col gap-0.5">
-                                              <span className="text-xs text-gray-500">Tax</span>
+                                              <span className="text-xs text-theme-mid">Tax</span>
                                               <input className="border rounded px-2 py-1 text-sm" value={editTax} onChange={(e) => setEditTax(e.target.value)} placeholder="0.00" />
                                             </label>
                                             <label className="flex flex-col gap-0.5">
-                                              <span className="text-xs text-gray-500">Total *</span>
+                                              <span className="text-xs text-theme-mid">Total *</span>
                                               <input className="border rounded px-2 py-1 text-sm" value={editTotal} onChange={(e) => setEditTotal(e.target.value)} placeholder="0.00" />
                                             </label>
                                           </div>
                                           <div className="grid grid-cols-2 gap-2">
                                             <label className="flex flex-col gap-0.5">
-                                              <span className="text-xs text-gray-500">Currency</span>
+                                              <span className="text-xs text-theme-mid">Currency</span>
                                               <input className="border rounded px-2 py-1 text-sm" value={editCurrency} onChange={(e) => setEditCurrency(e.target.value)} placeholder="USD" />
                                             </label>
                                             <label className="flex flex-col gap-0.5">
-                                              <span className="text-xs text-gray-500">Payment method</span>
+                                              <span className="text-xs text-theme-mid">Payment method</span>
                                               <input className="border rounded px-2 py-1 text-sm" value={editPaymentMethod} onChange={(e) => setEditPaymentMethod(e.target.value)} placeholder="AMEX Credit" />
                                             </label>
                                             <label className="flex flex-col gap-0.5">
-                                              <span className="text-xs text-gray-500">Card last 4</span>
+                                              <span className="text-xs text-theme-mid">Card last 4</span>
                                               <input className="border rounded px-2 py-1 text-sm" value={editPaymentLast4} onChange={(e) => setEditPaymentLast4(e.target.value)} placeholder="5030" maxLength={4} />
                                             </label>
                                           </div>
                                         </div>
                                         <div>
-                                          <p className="text-xs text-gray-600 mb-2">Item lines</p>
-                                          <div className="max-h-48 overflow-auto border border-gray-200 rounded">
+                                          <p className="text-xs text-theme-dark/90 mb-2">Item lines</p>
+                                          {/* 手机：每条两行（name 一行，Qty/Unit pr/Amount 一行），无 table */}
+                                          <div className="md:hidden max-h-48 overflow-auto border border-theme-light-gray rounded divide-y divide-theme-light-gray/50">
+                                            {editItems.map((row, idx) => (
+                                              <div key={idx} className="p-2 space-y-2">
+                                                <div>
+                                                  <label className="text-xs text-theme-mid block mb-0.5">Product name</label>
+                                                  <input className="w-full border rounded px-2 py-1.5 text-sm" placeholder="Product name" value={row.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], product_name: e.target.value }; return n })} />
+                                                </div>
+                                                <div className="grid grid-cols-3 gap-2">
+                                                  <div>
+                                                    <label className="text-xs text-theme-mid block mb-0.5">Qty</label>
+                                                    <input type="text" inputMode="numeric" className="w-full border rounded px-2 py-1.5 text-sm" value={row.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], quantity: e.target.value }; return n })} />
+                                                  </div>
+                                                  <div>
+                                                    <label className="text-xs text-theme-mid block mb-0.5">Unit pr</label>
+                                                    <input className="w-full border rounded px-2 py-1.5 text-sm" value={row.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], unit_price: e.target.value }; return n })} />
+                                                  </div>
+                                                  <div>
+                                                    <label className="text-xs text-theme-mid block mb-0.5">$ Amount</label>
+                                                    <input className="w-full border rounded px-2 py-1.5 text-sm" value={row.line_total} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], line_total: e.target.value }; return n })} />
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                          {/* 桌面：原 table */}
+                                          <div className="hidden md:block max-h-48 overflow-auto border border-theme-light-gray rounded">
                                             <table className="w-full border-collapse text-sm">
                                               <thead>
-                                                <tr className="text-xs text-gray-500 font-medium bg-gray-50 border-b border-gray-200">
+                                                <tr className="text-xs text-theme-mid font-medium bg-theme-cream border-b border-theme-ivory-dark">
                                                   <th className="text-left py-1.5 px-2 font-normal">Product name</th>
                                                   <th className="text-left py-1.5 px-2 w-16">Qty</th>
                                                   <th className="text-left py-1.5 px-2 w-20">Unit pr</th>
@@ -1086,7 +1771,7 @@ export default function DashboardPage() {
                                               </thead>
                                               <tbody>
                                                 {editItems.map((row, idx) => (
-                                                  <tr key={idx} className="border-b border-gray-100 last:border-0">
+                                                  <tr key={idx} className="border-b border-theme-light-gray/50 last:border-0">
                                                     <td className="py-1 px-2"><input className="w-full min-w-[120px] border rounded px-1.5 py-0.5" placeholder="Product name" value={row.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], product_name: e.target.value }; return n })} /></td>
                                                     <td className="py-1 px-2"><input type="text" inputMode="numeric" className="w-full border rounded px-1.5 py-0.5" value={row.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], quantity: e.target.value }; return n })} /></td>
                                                     <td className="py-1 px-2"><input className="w-full border rounded px-1.5 py-0.5" value={row.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], unit_price: e.target.value }; return n })} /></td>
@@ -1096,7 +1781,7 @@ export default function DashboardPage() {
                                               </tbody>
                                             </table>
                                           </div>
-                                          <button type="button" className="mt-2 text-sm text-blue-600 hover:underline" onClick={() => setEditItems((prev) => [...prev, { product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])}>
+                                          <button type="button" className="mt-2 text-sm text-theme-blue hover:underline" onClick={() => setEditItems((prev) => [...prev, { product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])}>
                                             + Add row
                                           </button>
                                         </div>
@@ -1115,6 +1800,7 @@ export default function DashboardPage() {
                                               const summary = {
                                                 store_name: editStoreName.trim() || undefined,
                                                 store_address: [editAddressLine1, editAddressLine2, editAddressCityStateZip, editAddressCountry].filter(Boolean).join('\n').trim() || undefined,
+                                                merchant_phone: editMerchantPhone.trim() || undefined,
                                                 receipt_date: editReceiptDate.trim() || undefined,
                                                 purchase_time: formatTimeToHHmm(editPurchaseTime).trim() || undefined,
                                                 subtotal: editSubtotal.trim() ? parseFloat(editSubtotal) : undefined,
@@ -1137,7 +1823,7 @@ export default function DashboardPage() {
                                                   original_price: it.original_price.trim() ? parseFloat(it.original_price) : undefined,
                                                   discount_amount: it.discount_amount.trim() ? parseFloat(it.discount_amount) : undefined,
                                                 }))
-                                              const res = await fetch(`${apiUrl()}/api/receipt/${r.id}/correct`, {
+                                              const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/correct`, {
                                                 method: 'POST',
                                                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                                                 body: JSON.stringify({ summary, items: itemsPayload }),
@@ -1148,12 +1834,12 @@ export default function DashboardPage() {
                                               setUploadResult(null)
                                               setUploadError(null)
                                               fetchReceiptList()
-                                              const detailRes = await fetch(`${apiUrl()}/api/receipt/${r.id}`, {
+                                              const detailRes = await fetch(`${apiBaseUrl}/api/receipt/${r.id}`, {
                                                 headers: { Authorization: `Bearer ${token}` },
                                               })
                                               if (detailRes.ok) {
                                                 const detailJson = await detailRes.json()
-                                                setExpandedReceiptJson(detailJson)
+                                                setExpandedReceiptData((prev) => ({ ...prev, [r.id]: detailJson }))
                                               }
                                             } catch (err) {
                                               setCorrectMessage(err instanceof Error ? err.message : 'Submit failed')
@@ -1167,29 +1853,26 @@ export default function DashboardPage() {
                                       </div>
                                     </div>
                                   </div>
-                                </>
-                                );
-                                  })()}
-                                <div className="mt-4 flex flex-wrap items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => { e.stopPropagation(); setShowRawJson((v) => !v) }}
-                                    className="text-sm text-gray-600 hover:text-gray-900 underline"
-                                  >
-                                    {showRawJson ? 'Hide' : 'Show'} raw JSON
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      navigator.clipboard.writeText(JSON.stringify(expandedReceiptJson, null, 2))
-                                      alert('Copied to clipboard')
-                                    }}
-                                    className="text-sm text-gray-600 hover:text-gray-900 underline"
-                                  >
-                                    Copy
-                                  </button>
-                                  {(userClass === 'admin' || userClass === 'super_admin') && (
+                                {(userClass === 'admin' || userClass === 'super_admin') && (
+                                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); setShowRawJson((v) => !v) }}
+                                      className="text-sm text-theme-dark/90 hover:text-theme-dark underline"
+                                    >
+                                      {showRawJson ? 'Hide' : 'Show'} raw JSON
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        if (expandedReceiptData[r.id]) navigator.clipboard.writeText(JSON.stringify(expandedReceiptData[r.id], null, 2))
+                                        alert('Copied to clipboard')
+                                      }}
+                                      className="text-sm text-theme-dark/90 hover:text-theme-dark underline"
+                                    >
+                                      Copy
+                                    </button>
                                     <button
                                       type="button"
                                       onClick={async (e) => {
@@ -1199,67 +1882,40 @@ export default function DashboardPage() {
                                         setProcessingRunsData(null)
                                         setProcessingRunsLoading(true)
                                         try {
-                                          const res = await fetch(`${apiUrl()}/api/receipt/${r.id}/processing-runs`, {
+                                          const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/processing-runs`, {
                                             headers: { Authorization: `Bearer ${token}` },
                                           })
                                           if (res.ok) {
                                             const data = await res.json()
-                                            setProcessingRunsData({ track: data.track ?? 'unknown', track_method: data.track_method ?? null, runs: data.runs ?? [], workflow_steps: data.workflow_steps ?? [] })
+                                            setProcessingRunsData({ track: data.track ?? 'unknown', track_method: data.track_method ?? null, runs: data.runs ?? [], workflow_steps: data.workflow_steps ?? [], pipeline_version: data.pipeline_version ?? null })
                                           } else {
-                                            setProcessingRunsData({ track: 'unknown', track_method: null, runs: [], workflow_steps: [] })
+                                            setProcessingRunsData({ track: 'unknown', track_method: null, runs: [], workflow_steps: [], pipeline_version: null })
                                           }
                                         } catch {
-                                          setProcessingRunsData({ track: 'unknown', track_method: null, runs: [], workflow_steps: [] })
+                                          setProcessingRunsData({ track: 'unknown', track_method: null, runs: [], workflow_steps: [], pipeline_version: null })
                                         } finally {
                                           setProcessingRunsLoading(false)
                                         }
                                       }}
-                                      className="text-sm text-blue-600 hover:text-blue-800 underline"
+                                      className="text-sm text-theme-blue hover:opacity-90 underline"
                                     >
                                       View workflow
                                     </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={async (e) => {
-                                      e.stopPropagation()
-                                      if (!token || !r.id) return
-                                      const msg = 'This will permanently remove this receipt. This cannot be undone. Delete anyway?'
-                                      if (!confirm(msg)) return
-                                      try {
-                                        const res = await fetch(`${apiUrl()}/api/receipt/${r.id}`, {
-                                          method: 'DELETE',
-                                          headers: { Authorization: `Bearer ${token}` },
-                                        })
-                                        if (!res.ok) {
-                                          const data = await res.json().catch(() => ({}))
-                                          throw new Error(data.detail || 'Delete failed')
-                                        }
-                                        if (expandedReceiptId === r.id) {
-                                          setExpandedReceiptId(null)
-                                          setExpandedReceiptJson(null)
-                                        }
-                                        fetchReceiptList()
-                                      } catch (err) {
-                                        alert(err instanceof Error ? err.message : 'Delete failed')
-                                      }
-                                    }}
-                                    className="text-sm text-red-600 hover:text-red-800 hover:underline"
-                                  >
-                                    Delete this receipt
-                                  </button>
-                                </div>
-                                {showRawJson && (
-                                  <div className="mt-2 rounded overflow-hidden border border-gray-200">
-                                    <div className="bg-gray-800 px-3 py-1.5 text-xs text-gray-300">Processing result JSON</div>
-                                    <div className="bg-gray-900 p-3 max-h-64 overflow-auto">
+                                  </div>
+                                )}
+                                {showRawJson && expandedReceiptData[r.id] && (
+                                  <div className="mt-2 rounded overflow-hidden border border-theme-light-gray">
+                                    <div className="bg-theme-slate px-3 py-1.5 text-xs text-theme-gray-919">Processing result JSON</div>
+                                    <div className="bg-theme-black p-3 max-h-64 overflow-auto">
                                       <pre className="text-xs text-green-400 font-mono whitespace-pre-wrap">
-                                        {JSON.stringify(expandedReceiptJson, null, 2)}
+                                        {JSON.stringify(expandedReceiptData[r.id], null, 2)}
                                       </pre>
                                     </div>
                                   </div>
                                 )}
-                              </div>
+                                </React.Fragment>
+                                );
+                                  })()}
                               </div>
                             )}
                           </div>
@@ -1268,49 +1924,119 @@ export default function DashboardPage() {
                     </div>
                   ))}
                 </div>
-              )
+                </div>
+              );
             })()
           )}
         </div>
 
-        {/* Data Analysis */}
-        <DataAnalysisSection token={token} />
+        {/* Delete receipt confirmation modal */}
+        {deleteConfirmReceiptId && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => { if (!deleteConfirmLoading) setDeleteConfirmReceiptId(null) }}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-receipt-title"
+          >
+            <div
+              className="bg-white rounded-lg shadow-xl max-w-md w-full p-5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 id="delete-receipt-title" className="font-semibold text-theme-dark text-lg mb-2">Delete receipt?</h3>
+              <p className="text-theme-dark/90 text-sm mb-5">
+                This will permanently remove this receipt. This cannot be undone.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  disabled={deleteConfirmLoading}
+                  onClick={() => setDeleteConfirmReceiptId(null)}
+                  className="px-4 py-2 text-sm font-medium text-theme-dark/90 bg-theme-light-gray/50 hover:bg-theme-light-gray rounded-lg border border-theme-mid disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={deleteConfirmLoading}
+                  onClick={async () => {
+                    if (!token || !deleteConfirmReceiptId) return
+                    setDeleteConfirmLoading(true)
+                    try {
+                      const res = await fetch(`${apiBaseUrl}/api/receipt/${deleteConfirmReceiptId}`, {
+                        method: 'DELETE',
+                        headers: { Authorization: `Bearer ${token}` },
+                      })
+                      if (!res.ok) {
+                        const data = await res.json().catch(() => ({}))
+                        throw new Error(data.detail || 'Delete failed')
+                      }
+                      if (expandedReceiptIds.has(deleteConfirmReceiptId)) {
+                        setExpandedReceiptIds((prev) => { const next = new Set(prev); next.delete(deleteConfirmReceiptId); return next })
+                        setExpandedReceiptData((prev) => { const next = { ...prev }; delete next[deleteConfirmReceiptId]; return next })
+                        if (correctionOpenReceiptId === deleteConfirmReceiptId) setCorrectionOpenReceiptId(null)
+                      }
+                      setDeleteConfirmReceiptId(null)
+                      fetchReceiptList()
+                    } catch (err) {
+                      alert(err instanceof Error ? err.message : 'Delete failed')
+                    } finally {
+                      setDeleteConfirmLoading(false)
+                    }
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-white bg-theme-red hover:bg-theme-red/90 rounded-lg disabled:opacity-50"
+                >
+                  {deleteConfirmLoading ? 'Deleting…' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Processing runs modal (admin only) */}
         {processingRunsModalReceiptId && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { setProcessingRunsModalReceiptId(null); setProcessingRunsData(null) }}>
             <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
               <div className="px-4 py-3 border-b flex justify-between items-center">
-                <h3 className="font-semibold text-gray-900">Processing workflow — Receipt {processingRunsModalReceiptId.slice(0, 8)}…</h3>
-                <button type="button" onClick={() => { setProcessingRunsModalReceiptId(null); setProcessingRunsData(null) }} className="text-gray-500 hover:text-gray-700 text-lg leading-none">×</button>
+                <h3 className="font-semibold text-theme-dark">Processing workflow — Receipt {processingRunsModalReceiptId.slice(0, 8)}…</h3>
+                <button type="button" onClick={() => { setProcessingRunsModalReceiptId(null); setProcessingRunsData(null) }} className="text-theme-mid hover:text-theme-dark/90 text-lg leading-none">×</button>
               </div>
               <div className="p-4 overflow-auto flex-1 min-h-0">
                 {processingRunsLoading ? (
-                  <p className="text-gray-500">Loading…</p>
+                  <p className="text-theme-mid">Loading…</p>
                 ) : processingRunsData ? (
                   <>
-                    <div className="mb-4 p-3 bg-gray-100 rounded">
-                      <p className="text-sm font-medium text-gray-700">Track</p>
-                      <p className="text-sm text-gray-900">
+                    <div className="mb-4 p-3 bg-theme-light-gray/50 rounded">
+                      <p className="text-sm font-medium text-theme-dark/90">Track</p>
+                      <p className="text-sm text-theme-dark">
                         {processingRunsData.track === 'specific_rule' ? (
                           <>Specific rule (method: <code className="bg-white px-1 rounded">{processingRunsData.track_method ?? '—'}</code>)</>
                         ) : processingRunsData.track === 'general' ? (
                           <>General track (no store-specific rule matched)</>
+                        ) : processingRunsData.track === 'vision_primary' ? (
+                          <>Vision primary (pipeline: <code className="bg-white px-1 rounded">{(processingRunsData as { pipeline_version?: string }).pipeline_version ?? 'vision_b'}</code>)</>
                         ) : (
-                          <>Unknown (no rule_based_cleaning run or failed)</>
+                          <>
+                            Unknown (no rule_based_cleaning or vision run recorded).
+                            {(processingRunsData as { pipeline_version?: string | null }).pipeline_version && (
+                              <span className="block mt-1 text-theme-dark/90">
+                                Pipeline: <code className="bg-white px-1 rounded">{(processingRunsData as { pipeline_version?: string }).pipeline_version}</code>
+                              </span>
+                            )}
+                          </>
                         )}
                       </p>
                     </div>
                     {Array.isArray(processingRunsData.workflow_steps) && processingRunsData.workflow_steps.length > 0 && (
                       <div className="mb-4">
-                        <p className="text-sm font-medium text-gray-700 mb-2">Workflow path ({processingRunsData.workflow_steps.length} steps)</p>
-                        <div className="rounded border border-gray-200 bg-gray-50 p-2 flex flex-wrap gap-2">
+                        <p className="text-sm font-medium text-theme-dark/90 mb-2">Workflow path ({processingRunsData.workflow_steps.length} steps)</p>
+                        <div className="rounded border border-theme-light-gray bg-theme-cream p-2 flex flex-wrap gap-2">
                           {(processingRunsData.workflow_steps as Array<Record<string, unknown>>).map((s: Record<string, unknown>, i: number) => {
                             const r = String(s.result ?? '')
-                            const resultClass = r === 'pass' || r === 'ok' || r === 'yes' ? 'text-green-600' : r === 'fail' || r === 'no' ? 'text-red-600' : 'text-gray-600'
+                            const resultClass = r === 'pass' || r === 'ok' || r === 'yes' ? 'text-green-600' : r === 'fail' || r === 'no' ? 'text-theme-red' : 'text-theme-dark/90'
                             return (
-                              <span key={String(s.id ?? i)} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-mono bg-white border border-gray-200" title={s.details ? JSON.stringify(s.details) : undefined}>
-                                <span className="text-gray-500">{Number(s.sequence) + 1}.</span>
+                              <span key={String(s.id ?? i)} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-mono bg-white border border-theme-light-gray" title={s.details ? JSON.stringify(s.details) : undefined}>
+                                <span className="text-theme-mid">{Number(s.sequence) + 1}.</span>
                                 <span className="font-medium">{String(s.step_name ?? '')}</span>
                                 <span className={resultClass}>{r}</span>
                               </span>
@@ -1319,7 +2045,17 @@ export default function DashboardPage() {
                         </div>
                       </div>
                     )}
-                    <p className="text-sm font-medium text-gray-700 mb-2">Runs ({processingRunsData.runs.length})</p>
+                    {processingRunsData.runs.length === 0 ? (
+                      <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                        <p className="font-medium mb-1">No run records (Runs = 0)</p>
+                        <p className="text-amber-700">
+                          Debug cards (input_payload / output_payload) come from <code className="bg-white/80 px-1 rounded">receipt_processing_runs</code>.
+                          This receipt has no rows there: only workflow steps (e.g. create_db) were written.
+                          Common causes: pipeline failed before the first <code className="bg-white/80 px-1 rounded">save_processing_run</code>, or DB constraint rejected the stage (e.g. Vision pipeline needs migration 049 for <code>vision_primary</code>).
+                        </p>
+                      </div>
+                    ) : null}
+                    <p className="text-sm font-medium text-theme-dark/90 mb-2 mt-2">Runs ({processingRunsData.runs.length})</p>
                     <div className="space-y-3">
                       {processingRunsData.runs.map((run: Record<string, unknown>, idx: number) => (
                         <ProcessingRunCard key={String(run.id ?? idx)} run={run} />
@@ -1327,12 +2063,22 @@ export default function DashboardPage() {
                     </div>
                   </>
                 ) : (
-                  <p className="text-gray-500">No data</p>
+                  <p className="text-theme-mid">No data</p>
                 )}
               </div>
             </div>
           </div>
         )}
+      {/* Back to top */}
+      <div className="flex justify-center pb-8 pt-2">
+        <button
+          type="button"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          className="text-xs text-theme-mid hover:text-theme-dark flex items-center gap-1 hover:underline"
+        >
+          ↑ Back to top
+        </button>
+      </div>
       </main>
     </>
   )
@@ -1349,20 +2095,20 @@ function ProcessingRunCard({ run }: { run: Record<string, unknown> }) {
   const validation = run.validation_status ? String(run.validation_status) : ''
   const err = run.error_message ? String(run.error_message) : ''
   return (
-    <div className="border rounded p-3 bg-gray-50">
+    <div className="border rounded p-3 bg-theme-cream">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="font-medium">{stage}</span>
-        <span className={status === 'pass' ? 'text-green-600' : 'text-red-600'}>{status}</span>
-        {validation && <span className="text-gray-500">validation: {validation}</span>}
-        {provider && <span className="text-gray-500">{provider}{model ? ` / ${model}` : ''}</span>}
-        <span className="text-gray-400" suppressHydrationWarning>{created}</span>
+        <span className={status === 'pass' ? 'text-green-600' : 'text-theme-red'}>{status}</span>
+        {validation && <span className="text-theme-mid">validation: {validation}</span>}
+        {provider && <span className="text-theme-mid">{provider}{model ? ` / ${model}` : ''}</span>}
+        <span className="text-theme-mid" suppressHydrationWarning>{created}</span>
       </div>
-      {err && <p className="text-xs text-red-600 mt-1">{err}</p>}
+      {err && <p className="text-xs text-theme-red mt-1">{err}</p>}
       <div className="mt-2 flex gap-2">
-        <button type="button" onClick={() => setShowInput((v) => !v)} className="text-xs text-blue-600 hover:underline">
+        <button type="button" onClick={() => setShowInput((v) => !v)} className="text-xs text-theme-blue hover:underline">
           {showInput ? 'Hide' : 'Show'} input_payload
         </button>
-        <button type="button" onClick={() => setShowOutput((v) => !v)} className="text-xs text-blue-600 hover:underline">
+        <button type="button" onClick={() => setShowOutput((v) => !v)} className="text-xs text-theme-blue hover:underline">
           {showOutput ? 'Hide' : 'Show'} output_payload
         </button>
       </div>

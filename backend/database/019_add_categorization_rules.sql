@@ -1,5 +1,12 @@
 -- ============================================
 -- Migration 019: Add product categorization rules table
+--
+-- 注意：find_categorization_rule() 函数本文件不再创建。
+-- 原因：该函数在 033 中被重写，在 037 中被 DROP——新库从一开始就不需要它，
+-- 所有匹配逻辑已移至 Python 后端。
+-- 已废弃相关文件：
+--   033_ensure_find_categorization_rule_no_prefix_match.sql → deprecated/
+--   037_drop_find_categorization_rule_rpc.sql               → deprecated/
 -- ============================================
 -- Purpose: Store learned categorization rules for automatic product classification
 --
@@ -91,71 +98,32 @@ COMMENT ON COLUMN product_categorization_rules.priority IS 'Rule priority (lower
 COMMENT ON COLUMN product_categorization_rules.times_matched IS 'Number of times this rule was successfully matched';
 
 -- ============================================
--- 5. Create helper functions
+-- 5. Helper function: update_rule_match_stats
+-- NOTE: find_categorization_rule() 不再创建——匹配逻辑由 Python 后端负责。
+--       如需参考原始 DB 函数实现，见 deprecated/033_*.sql
 -- ============================================
-
--- Function to find matching rule for a product (store-aware)
-CREATE OR REPLACE FUNCTION find_categorization_rule(
-  p_normalized_name TEXT,
-  p_store_chain_id UUID DEFAULT NULL,
-  p_threshold NUMERIC DEFAULT 0.90
-)
-RETURNS TABLE (
-  rule_id UUID,
-  category_id UUID,
-  match_type TEXT,
-  similarity_score NUMERIC,
-  is_store_specific BOOLEAN
-) AS $$
+CREATE OR REPLACE FUNCTION update_rule_match_stats(p_rule_id UUID)
+RETURNS VOID AS $$
 BEGIN
-  -- Strategy: Try store-specific rules first, then universal rules
-  
-  -- 1. Try store-specific exact match first (highest priority)
-  IF p_store_chain_id IS NOT NULL THEN
-    RETURN QUERY
-    SELECT 
-      r.id,
-      r.category_id,
-      r.match_type,
-      1.0::NUMERIC as similarity_score,
-      TRUE as is_store_specific
-    FROM product_categorization_rules r
-    WHERE r.normalized_name = p_normalized_name
-      AND r.store_chain_id = p_store_chain_id
-      AND r.match_type = 'exact'
-    ORDER BY r.priority ASC, r.times_matched DESC
-    LIMIT 1;
-    
-    IF FOUND THEN
-      RETURN;
-    END IF;
-  END IF;
-  
-  -- 2. Try universal exact match
-  RETURN QUERY
-  SELECT 
-    r.id,
-    r.category_id,
-    r.match_type,
-    1.0::NUMERIC as similarity_score,
-    FALSE as is_store_specific
-  FROM product_categorization_rules r
-  WHERE r.normalized_name = p_normalized_name
-    AND r.store_chain_id IS NULL
-    AND r.match_type = 'exact'
-  ORDER BY r.priority ASC, r.times_matched DESC
-  LIMIT 1;
-  
-  IF FOUND THEN
-    RETURN;
-  END IF;
-  
-  -- 3. Try store-specific fuzzy match (similarity() returns real, cast to NUMERIC to match return type)
-  IF p_store_chain_id IS NOT NULL THEN
-    RETURN QUERY
-    SELECT 
-      r.id,
-      r.category_id,
+  UPDATE product_categorization_rules
+  SET
+    times_matched = times_matched + 1,
+    last_matched_at = NOW()
+  WHERE id = p_rule_id;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION update_rule_match_stats IS 'Increment match count and update timestamp for a rule';
+
+-- ============================================
+-- 6. Verification
+-- ============================================
+DO $$
+BEGIN
+  RAISE NOTICE 'Migration 019 completed: product_categorization_rules + update_rule_match_stats (find_categorization_rule NOT created; backend-only matching)';
+END $$;
+
+COMMIT;
       r.match_type,
       (similarity(r.normalized_name, p_normalized_name))::NUMERIC as similarity_score,
       TRUE as is_store_specific

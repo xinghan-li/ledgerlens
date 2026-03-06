@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 015_add_categories_tree.sql
+-- Content: DROP display_order/icon/color/product_count from categories; rename normalized_name -> name
+-- New databases: do NOT run this file (already in 015 final schema).

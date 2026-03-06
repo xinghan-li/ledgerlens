@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 001_schema_v2.sql
+-- Content: store_locations.phone; store_candidates.phone
+-- New databases: do NOT run this file (already in 001 schema).

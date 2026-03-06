@@ -22,7 +22,9 @@ def _path_to_category_id(path: str, supabase) -> Optional[str]:
     """
     if not path or not isinstance(path, str):
         return None
-    path_clean = path.strip()
+    # Normalize: trim, collapse spaces, optional " / " or " > " to "/"
+    path_clean = path.strip().replace(" / ", "/").replace(" > ", "/").replace("\\", "/")
+    path_clean = "/".join(p.strip() for p in path_clean.split("/") if p.strip())
     if not path_clean:
         return None
     try:
@@ -49,6 +51,19 @@ def _path_to_category_id(path: str, supabase) -> Optional[str]:
         return None
 
 
+def _load_level3_paths(supabase) -> List[str]:
+    """Load all level-3 category paths so LLM can pick from them (e.g. Grocery/Dairy/Milk)."""
+    try:
+        res = supabase.table("categories").select("path").eq("level", 3).execute()
+        if not res.data:
+            return []
+        paths = [r.get("path") for r in res.data if r.get("path")]
+        return list(dict.fromkeys(paths))
+    except Exception as e:
+        logger.warning("Failed to load level-3 paths: %s", e)
+        return []
+
+
 async def suggest_classifications(
     raw_product_names: List[str],
     store_chain_name: Optional[str] = None,
@@ -72,12 +87,22 @@ async def suggest_classifications(
         logger.warning("Classification prompt not loaded, skipping LLM suggestion")
         return []
 
+    supabase = _get_client()
+    level3_paths = _load_level3_paths(supabase)
+
     user_msg = "Infer categories, size, and unit_type for these products.\n\n"
     user_msg += f"Store/Merchant: {store_chain_name or 'Unknown'}\n\n"
     user_msg += "Raw product names:\n"
     for name in raw_product_names:
         user_msg += f"- {name}\n"
+    if level3_paths:
+        user_msg += "\nUse ONLY these exact level-3 paths for category_i/category_ii/category_iii (format Level1/Level2/Level3):\n"
+        for p in level3_paths[:80]:
+            user_msg += f"- {p}\n"
+        if len(level3_paths) > 80:
+            user_msg += f"... and {len(level3_paths) - 80} more. Pick the closest match from the taxonomy.\n"
     user_msg += "\nOutput valid JSON with the items array."
+
 
     try:
         result = await parse_receipt_with_gemini(
@@ -90,7 +115,6 @@ async def suggest_classifications(
         return []
 
     items_in = result.get("items") or []
-    supabase = _get_client()
     results: List[Dict[str, Any]] = []
 
     def _parse_size(s: str) -> tuple:

@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 001_schema_v2.sql
+-- Content: ALTER TABLE receipt_processing_runs stage check to add 'rule_based_cleaning'
+-- New databases: do NOT run this file (001 already has final stage enum).

@@ -28,7 +28,7 @@ export default function TestLoginPage() {
     const storageKey = `sb-pqbftyvnkihpqyqfjbyz-auth-token`
     localStorage.setItem(storageKey, JSON.stringify(session))
 
-    console.log("✅ Session 已设置！正在跳转到 Dashboard...")
+    console.log("✅ Session set! Redirecting to Dashboard...")
 
     // 延迟 500ms 后跳转到 Dashboard
     setTimeout(() => {
@@ -37,13 +37,13 @@ export default function TestLoginPage() {
   }, [router])
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-blue-50 to-white">
+    <div className="min-h-screen flex items-center justify-center bg-theme-cream">
       <div className="text-center space-y-4">
         <div className="text-6xl animate-spin">⏳</div>
-        <h2 className="text-2xl font-bold text-gray-900">
+        <h2 className="font-heading text-2xl font-bold text-theme-dark">
           Setting up test login…
         </h2>
-        <p className="text-gray-600">
+        <p className="text-theme-dark/90">
           Redirecting to Dashboard
         </p>
       </div>

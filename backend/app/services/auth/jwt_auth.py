@@ -181,11 +181,11 @@ async def get_current_user(
             except Exception as e:
                 logger.warning("Firebase get_or_create_user_id failed: %s", e)
         else:
-            # Firebase 验证失败且 token 像是 Firebase（RS256 + 常见 Google kid 长度），直接返回明确错误，避免再用 Supabase JWKS 报错
+            # Firebase verification failed but token looks like Firebase (RS256 + typical Google kid length); return explicit error instead of trying Supabase JWKS
             if token_alg == "RS256" and len(token_kid) == 40:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Firebase 登录已过期或无效，请刷新页面或重新登录（Firebase token verification failed or expired）",
+                    detail="Firebase token verification failed or expired. Please refresh the page or sign in again.",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
             logger.info("[Auth] Firebase verify returned None, falling back to Supabase JWT")

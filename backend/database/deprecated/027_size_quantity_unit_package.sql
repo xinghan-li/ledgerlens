@@ -1,0 +1,5 @@
+-- DEPRECATED - Content split and merged:
+--   products columns (size -> size_quantity/size_unit/package_type) -> 016_add_products_catalog.sql
+--   classification_review columns (size -> size_quantity/size_unit/package_type) -> 025_add_classification_review.sql
+--   record_items_enriched view rebuild -> 017_link_receipt_items_to_products.sql (single final creation)
+-- New databases: do NOT run this file.

@@ -1,0 +1,5 @@
+-- DEPRECATED - find_categorization_rule() is not created on fresh databases.
+-- This migration rewrote the function to remove prefix logic.
+-- The function was subsequently dropped in 037.
+-- On fresh databases: 019 does NOT create find_categorization_rule; all matching is backend-only (Python).
+-- New databases: do NOT run this file.

@@ -10,44 +10,44 @@ const ENV_FILE = path.join(__dirname, '.env.local');
 
 function updateBackendUrl() {
   try {
-    // 读取后端端口配置
+    // Read backend port config
     if (!fs.existsSync(CONFIG_FILE)) {
-      console.log('⚠️  后端端口配置文件不存在，使用默认端口 8000');
-      console.log('   提示: 请先启动后端服务器');
+      console.log('⚠️  Backend port config file not found, using default port 8000');
+      console.log('   Tip: Start the backend server first');
       return;
     }
 
     const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     const backendUrl = config.url;
 
-    console.log(`📡 检测到后端运行在: ${backendUrl}`);
+    console.log(`📡 Backend detected at: ${backendUrl}`);
 
-    // 读取 .env.local
+    // Read .env.local
     if (!fs.existsSync(ENV_FILE)) {
-      console.log('❌ .env.local 文件不存在');
+      console.log('❌ .env.local file not found');
       return;
     }
 
     let envContent = fs.readFileSync(ENV_FILE, 'utf-8');
 
-    // 更新 NEXT_PUBLIC_API_URL
+    // Update NEXT_PUBLIC_API_URL
     const urlRegex = /^NEXT_PUBLIC_API_URL=.+$/m;
     const newLine = `NEXT_PUBLIC_API_URL=${backendUrl}`;
 
     if (urlRegex.test(envContent)) {
       envContent = envContent.replace(urlRegex, newLine);
-      console.log(`✅ 已更新 NEXT_PUBLIC_API_URL -> ${backendUrl}`);
+      console.log(`✅ Updated NEXT_PUBLIC_API_URL -> ${backendUrl}`);
     } else {
       envContent += `\n${newLine}\n`;
-      console.log(`✅ 已添加 NEXT_PUBLIC_API_URL -> ${backendUrl}`);
+      console.log(`✅ Added NEXT_PUBLIC_API_URL -> ${backendUrl}`);
     }
 
-    // 写回文件
+    // Write back
     fs.writeFileSync(ENV_FILE, envContent, 'utf-8');
-    console.log('✓ .env.local 已更新');
+    console.log('✓ .env.local updated');
 
   } catch (error) {
-    console.error('❌ 更新失败:', error.message);
+    console.error('❌ Update failed:', error.message);
   }
 }
 

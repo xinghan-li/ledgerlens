@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 016_add_products_catalog.sql
+-- Content: DROP variant_type/is_organic/aliases/search_keywords/description/image_url/barcode from products
+-- New databases: do NOT run this file (already in 016 final schema).

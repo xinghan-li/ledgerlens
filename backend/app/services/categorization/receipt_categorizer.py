@@ -27,6 +27,7 @@ from ..database.supabase_client import (
     save_receipt_items,
     enqueue_unmatched_items_to_classification_review,
     _store_name_to_title_case,
+    create_store_candidate,
 )
 from ..standardization.product_normalizer import normalize_name_for_storage
 
@@ -251,30 +252,81 @@ def _match_universal_fuzzy(
     return None
 
 
+def _match_fuzzy_same_store(
+    supabase: Any,
+    normalized_name: str,
+    store_chain_id: Optional[str],
+) -> Optional[str]:
+    """
+    Fuzzy match (1–2 letter tolerance) against product_categorization_rules for the same store.
+    Used when exact match fails. Threshold tuned so 1–2 char diff still matches.
+    """
+    if not store_chain_id or not normalized_name or len(normalized_name) < 2:
+        return None
+    try:
+        rules = (
+            supabase.table("product_categorization_rules")
+            .select("normalized_name, category_id")
+            .eq("store_chain_id", store_chain_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.debug("Fuzzy same-store rules lookup failed: %s", e)
+        return None
+    if not rules.data:
+        return None
+    try:
+        from rapidfuzz import fuzz, process
+        names = [r["normalized_name"] for r in rules.data if r.get("normalized_name")]
+        if not names:
+            return None
+        best = process.extractOne(
+            normalized_name.lower(),
+            names,
+            scorer=fuzz.ratio,
+            score_cutoff=85,
+        )
+        if best:
+            matched_name, score, _ = best
+            for r in rules.data:
+                if r.get("normalized_name") == matched_name and r.get("category_id"):
+                    return str(r["category_id"])
+    except ImportError:
+        pass
+    return None
+
+
 def get_category_id_for_product(
     normalized_name: str, store_chain_id: Optional[str]
-) -> Tuple[Optional[str], bool]:
+) -> Tuple[Optional[str], str]:
     """
     Backend-only matching: 1) exact from product_categorization_rules (store-specific first),
-    2) universal fuzzy from backend-held rules (CSV). Used by receipt categorizer and product normalizer.
-    Returns (category_id, from_universal_only). from_universal_only is True only when match came from universal (CSV) rules.
+    2) fuzzy same-store (1–2 letter diff) from product_categorization_rules,
+    3) universal fuzzy from backend-held rules (CSV).
+    Returns (category_id, source) where source is 'rule_exact', 'rule_fuzzy', or '' (no match).
     """
     supabase = _get_client()
     normalized_underscore = (normalized_name or "").strip().replace(" ", "_")
     normalized = (normalized_name or "").strip()
     if not normalized:
-        return None, False
+        return None, ""
     for name_to_try in (normalized_underscore, normalized):
         cid = _match_exact_from_db(supabase, name_to_try, store_chain_id)
         if cid:
-            return cid, False
+            return cid, "rule_exact"
+    cid = _match_fuzzy_same_store(supabase, normalized, store_chain_id)
+    if cid:
+        return cid, "rule_fuzzy"
+    cid = _match_fuzzy_same_store(supabase, normalized_underscore, store_chain_id)
+    if cid:
+        return cid, "rule_fuzzy"
     path_to_id: Dict[str, str] = {}
     cid = _match_universal_fuzzy(normalized, path_to_id, supabase)
     if cid:
-        return cid, True
+        return cid, "rule_fuzzy"
     if normalized != normalized_underscore:
         cid = _match_universal_fuzzy(normalized_underscore, path_to_id, supabase)
-    return (cid, True) if cid else (None, False)
+    return (cid, "rule_fuzzy") if cid else (None, "")
 
 
 def _enrich_items_category_from_rules(
@@ -298,12 +350,11 @@ def _enrich_items_category_from_rules(
         if not normalized:
             continue
         try:
-            cid, from_universal = get_category_id_for_product(normalized, store_chain_id)
-            if cid:
+            cid, source = get_category_id_for_product(normalized, store_chain_id)
+            if cid and source:
                 item["category_id"] = cid
-                if from_universal:
-                    item["_from_universal_only"] = True
-                logger.debug(f"Rule match for '{product_name}' -> {cid} (universal={from_universal})")
+                item["_category_source"] = source
+                logger.debug(f"Rule match for '{product_name}' -> {cid} (source={source})")
         except Exception as e:
             logger.debug(f"Rule lookup for '{product_name}': {e}")
 
@@ -340,6 +391,7 @@ async def _enrich_items_category_from_llm(
         sug = by_name.get(name)
         if sug and sug.get("category_id"):
             items_data[idx]["category_id"] = str(sug["category_id"])
+            items_data[idx]["_category_source"] = "llm"
             logger.debug(f"LLM suggested category for '%s' -> category_id %s", name, items_data[idx]["category_id"])
 
 
@@ -583,8 +635,14 @@ async def smart_categorize_receipt_items(
         cid = it.get("category_id")
         if not cid or not it.get("id"):
             continue
+        source = (it.get("_category_source") or "").strip()
+        if source not in ("rule_exact", "rule_fuzzy", "llm", "user_override", "crowd_assigned"):
+            source = ""
+        payload: Dict[str, Any] = {"category_id": str(cid)}
+        if source:
+            payload["category_source"] = source
         try:
-            supabase.table("record_items").update({"category_id": str(cid)}).eq("id", it["id"]).eq("receipt_id", receipt_id).execute()
+            supabase.table("record_items").update(payload).eq("id", it["id"]).eq("receipt_id", receipt_id).execute()
             updated += 1
         except Exception as e:
             logger.warning(f"Failed to update record_item {it.get('id')}: {e}")
@@ -600,7 +658,7 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
     条件：
     1. Receipt 必须存在
     2. Current_status 为 'success' 或 'needs_review'（needs_review 时也写入解析结果，供前端人工复核页展示/编辑）
-    3. 必须有 receipt_processing_runs 记录（stage=llm, status=pass）
+    3. 必须有 receipt_processing_runs 记录：vision_b 用 stage in (vision_primary, vision_escalation)；否则 stage=llm
     4. output_payload 必须有效
     
     Returns:
@@ -609,36 +667,60 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
     supabase = _get_client()
     
     try:
-        # 检查 receipt 状态
-        receipt = supabase.table("receipt_status")\
-            .select("id, user_id, current_status, current_stage")\
-            .eq("id", receipt_id)\
-            .single()\
-            .execute()
+        # 检查 receipt 状态（pipeline_version 来自 migration 048，若无则视为 legacy_a）
+        try:
+            receipt = supabase.table("receipt_status")\
+                .select("id, user_id, current_status, current_stage, pipeline_version")\
+                .eq("id", receipt_id)\
+                .single()\
+                .execute()
+        except Exception as sel_err:
+            logger.info(f"[CAT_DEBUG] can_categorize receipt {receipt_id}: select receipt_status failed (pipeline_version column missing?): {sel_err}")
+            receipt = supabase.table("receipt_status")\
+                .select("id, user_id, current_status, current_stage")\
+                .eq("id", receipt_id)\
+                .single()\
+                .execute()
         
         receipt_data = _single_row(receipt.data)
         if not receipt_data:
+            logger.info(f"[CAT_DEBUG] can_categorize receipt {receipt_id}: receipt not found")
             return False, f"Receipt {receipt_id} not found"
         
         # success：通过 sum check；needs_review：未通过但需把解析结果写入 DB 供前端编辑
         status = receipt_data.get("current_status")
+        pipeline = (receipt_data.get("pipeline_version") or "legacy_a")
+        logger.info(f"[CAT_DEBUG] can_categorize receipt {receipt_id}: current_status={status!r}, pipeline_version={pipeline!r}")
         if status not in ("success", "needs_review"):
             return False, f"Receipt status is '{status}', must be 'success' or 'needs_review'"
         
-        # 检查是否有 processing run
-        runs = supabase.table("receipt_processing_runs")\
-            .select("id, stage, status, output_payload")\
-            .eq("receipt_id", receipt_id)\
-            .eq("stage", "llm")\
-            .eq("status", "pass")\
-            .order("created_at", desc=True)\
-            .limit(1)\
-            .execute()
+        # 根据 pipeline 选择 run：vision_b 用 vision_primary/vision_escalation，否则用 llm
+        if pipeline == "vision_b":
+            runs = supabase.table("receipt_processing_runs")\
+                .select("id, stage, status, output_payload")\
+                .eq("receipt_id", receipt_id)\
+                .in_("stage", ["vision_primary", "vision_escalation"])\
+                .eq("status", "pass")\
+                .order("created_at", desc=True)\
+                .limit(1)\
+                .execute()
+        else:
+            runs = supabase.table("receipt_processing_runs")\
+                .select("id, stage, status, output_payload")\
+                .eq("receipt_id", receipt_id)\
+                .eq("stage", "llm")\
+                .eq("status", "pass")\
+                .order("created_at", desc=True)\
+                .limit(1)\
+                .execute()
         
         if not runs.data:
-            return False, "No successful LLM processing run found"
+            logger.info(f"[CAT_DEBUG] can_categorize receipt {receipt_id}: no run found (pipeline={pipeline}, looked for {'vision_primary/vision_escalation' if pipeline == 'vision_b' else 'llm'})")
+            return False, f"No successful {'vision' if pipeline == 'vision_b' else 'LLM'} processing run found"
         
         run_data = runs.data[0] if isinstance(runs.data, list) else runs.data
+        run_stage = run_data.get("stage") if isinstance(run_data, dict) else None
+        logger.info(f"[CAT_DEBUG] can_categorize receipt {receipt_id}: found run stage={run_stage!r}")
         output_payload = _ensure_dict(run_data.get("output_payload") if isinstance(run_data, dict) else None)
         
         if not output_payload:
@@ -651,7 +733,7 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
         return True, "OK"
         
     except Exception as e:
-        logger.error(f"Error checking receipt {receipt_id}: {e}")
+        logger.error(f"Error checking receipt {receipt_id}: {e}", exc_info=True)
         return False, f"Error: {str(e)}"
 
 
@@ -678,6 +760,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     
     # 1. 检查是否可以 categorize
     can_categorize, reason = can_categorize_receipt(receipt_id)
+    logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: can_categorize={can_categorize}, reason={reason!r}")
     if not can_categorize:
         logger.warning(f"Cannot categorize receipt {receipt_id}: {reason}")
         return {
@@ -701,32 +784,54 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
                 "message": "Already categorized (use force=true to re-categorize)"
             }
     
-    # 3. 读取 receipt 和 processing run
-    receipt = supabase.table("receipt_status")\
-        .select("id, user_id")\
-        .eq("id", receipt_id)\
-        .single()\
-        .execute()
+    # 3. 读取 receipt 和 processing run（vision_b 用 vision_primary/vision_escalation，否则用 llm）
+    try:
+        receipt = supabase.table("receipt_status")\
+            .select("id, user_id, pipeline_version")\
+            .eq("id", receipt_id)\
+            .single()\
+            .execute()
+    except Exception as sel_err:
+        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: select with pipeline_version failed: {sel_err}, retrying without")
+        receipt = supabase.table("receipt_status")\
+            .select("id, user_id")\
+            .eq("id", receipt_id)\
+            .single()\
+            .execute()
     
     receipt_row = _single_row(receipt.data)
     if not receipt_row:
         return {"success": False, "receipt_id": receipt_id, "message": "Receipt not found"}
     user_id = receipt_row.get("user_id")
-    
-    run = supabase.table("receipt_processing_runs")\
-        .select("output_payload")\
-        .eq("receipt_id", receipt_id)\
-        .eq("stage", "llm")\
-        .eq("status", "pass")\
-        .order("created_at", desc=True)\
-        .limit(1)\
-        .single()\
-        .execute()
-    
-    run_row = _single_row(run.data)
-    if not run_row:
+    pipeline = (receipt_row.get("pipeline_version") or "legacy_a")
+    logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: pipeline={pipeline!r}, querying run...")
+
+    if pipeline == "vision_b":
+        run = supabase.table("receipt_processing_runs")\
+            .select("output_payload")\
+            .eq("receipt_id", receipt_id)\
+            .in_("stage", ["vision_primary", "vision_escalation"])\
+            .eq("status", "pass")\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+    else:
+        run = supabase.table("receipt_processing_runs")\
+            .select("output_payload")\
+            .eq("receipt_id", receipt_id)\
+            .eq("stage", "llm")\
+            .eq("status", "pass")\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+
+    if not run.data:
+        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: no run data (pipeline={pipeline})")
         return {"success": False, "receipt_id": receipt_id, "message": "No processing run found"}
-    output_payload = _ensure_dict(run_row.get("output_payload"))
+    run_row = run.data[0] if isinstance(run.data, list) else run.data
+    output_payload = _ensure_dict(run_row.get("output_payload") if isinstance(run_row, dict) else None)
+    n_items = len(output_payload.get("items") or []) if output_payload else 0
+    logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: got output_payload, items={n_items}")
     transaction_info = output_payload.get("transaction_info") or {}
     receipt_data, items_data = _normalize_output_payload_to_dollars(
         output_payload.get("receipt", {}),
@@ -761,6 +866,22 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         logger.info(f"Resolved store_chain_id for rules: {chain_id!r} -> {store_chain_id_uuid}")
     
     logger.info(f"Retrieved output_payload: {len(items_data)} items (normalized to dollars)")
+
+    # Subtotal correction: if sum(items) + tax + fees ≈ total, always use sum(items) as subtotal so we never persist a wrong subtotal from the model
+    if items_data:
+        items_sum = sum((item.get("line_total") or 0) for item in items_data)
+        tax_val = receipt_data.get("tax") or 0
+        total_val = receipt_data.get("total") or 0
+        fees_val = receipt_data.get("fees") or 0
+        if items_sum > 0 and total_val and abs((items_sum + tax_val + fees_val) - total_val) <= 0.03:
+            old_subtotal = receipt_data.get("subtotal")
+            receipt_data["subtotal"] = round(items_sum, 2)
+            if old_subtotal is not None and abs(float(old_subtotal) - receipt_data["subtotal"]) > 0.01:
+                logger.info(
+                    "[CAT_DEBUG] categorize_receipt: set receipt.subtotal = sum(items) = %.2f (was %.2f) so stored summary is consistent",
+                    receipt_data["subtotal"],
+                    old_subtotal,
+                )
     
     # 4a. Enrich items with category_id from product_categorization_rules (use UUID, not string tag)
     _enrich_items_category_from_rules(items_data, store_chain_id_uuid)
@@ -779,6 +900,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     # 5. 保存 receipt_summary（用解析后的 store_chain_id_uuid 写入，确保 record_summaries.store_chain_id 为 UUID，从而存首字母大写的 chain name）
     summary_id = None
     try:
+        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: calling save_receipt_summary (items={len(items_data)})")
         summary_id = save_receipt_summary(
             receipt_id=receipt_id,
             user_id=user_id,
@@ -787,26 +909,55 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             location_id=location_id,
             items_data=items_data,
         )
-        logger.info(f"✅ Saved receipt_summary: {summary_id}")
+        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ✅ save_receipt_summary OK, summary_id={summary_id}")
     except Exception as e:
-        logger.error(f"❌ Failed to save receipt_summary: {e}")
+        logger.error(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ❌ save_receipt_summary failed: {e}", exc_info=True)
         return {
             "success": False,
             "receipt_id": receipt_id,
             "message": f"Failed to save summary: {str(e)}"
         }
-    
+
+    # 5b. When no store match or no location (new location for existing chain), create store_candidate so admin can approve.
+    #     _resolve_store_chain_id_uuid can resolve chain by name only (e.g. T&T) so we get effective_chain_id but no location_id
+    #     for a new address (e.g. T&T Surrey); we must still create a candidate so admin can add the location.
+    effective_chain_id = store_chain_id_uuid or chain_id
+    effective_location_id = location_id
+    merchant_name = (receipt_data.get("merchant_name") or "").strip()
+    need_candidate = merchant_name and (not effective_chain_id or not effective_location_id)
+    if need_candidate:
+        try:
+            existing = supabase.table("store_candidates").select("id").eq("receipt_id", receipt_id).limit(1).execute()
+            if not (existing.data and len(existing.data) > 0):
+                match_result = get_store_chain(merchant_name, receipt_data.get("merchant_address"))
+                candidate_id = create_store_candidate(
+                    chain_name=merchant_name,
+                    receipt_id=receipt_id,
+                    source="llm",
+                    llm_result={"receipt": receipt_data},
+                    suggested_chain_id=match_result.get("suggested_chain_id") or effective_chain_id,
+                    suggested_location_id=match_result.get("suggested_location_id"),
+                    confidence_score=match_result.get("confidence_score"),
+                )
+                if candidate_id:
+                    logger.info(
+                        f"[CAT_DEBUG] categorize_receipt {receipt_id}: created store_candidate {candidate_id} for {merchant_name!r} (no location or no chain)"
+                    )
+        except Exception as e:
+            logger.warning(f"[CAT_DEBUG] create_store_candidate for receipt {receipt_id} failed: {e}")
+
     # 6. 保存 receipt_items
     item_ids = []
     try:
+        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: calling save_receipt_items (items={len(items_data)})")
         item_ids = save_receipt_items(
             receipt_id=receipt_id,
             user_id=user_id,
             items_data=items_data
         )
-        logger.info(f"✅ Saved {len(item_ids)} receipt_items")
+        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ✅ save_receipt_items OK, count={len(item_ids)}")
     except Exception as e:
-        logger.error(f"❌ Failed to save receipt_items: {e}")
+        logger.error(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ❌ save_receipt_items failed: {e}", exc_info=True)
         # 如果 items 保存失败，回滚 summary
         try:
             supabase.table("record_summaries").delete().eq("id", summary_id).execute()

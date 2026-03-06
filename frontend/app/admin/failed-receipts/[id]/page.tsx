@@ -5,8 +5,7 @@ import { getFirebaseAuth } from '@/lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { useApiUrl } from '@/lib/api-url-context'
 
 type PrefillItem = {
   product_name: string
@@ -63,6 +62,7 @@ function numToStr(v: number | null | undefined): string {
 export default function FailedReceiptEditPage() {
   const params = useParams()
   const router = useRouter()
+  const apiBaseUrl = useApiUrl()
   const id = params?.id as string
   const [detail, setDetail] = useState<ReceiptDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -101,7 +101,7 @@ export default function FailedReceiptEditPage() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${apiUrl}/api/admin/failed-receipts/${id}`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/failed-receipts/${id}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error(res.status === 404 ? 'Receipt not found' : await res.text())
@@ -133,7 +133,7 @@ export default function FailedReceiptEditPage() {
       // Fetch image via API (raw_file_url may be local path; API serves or redirects)
       if (data.raw_file_url && token) {
         try {
-          const imgRes = await fetch(`${apiUrl}/api/admin/receipt-image/${id}`, {
+          const imgRes = await fetch(`${apiBaseUrl}/api/admin/receipt-image/${id}`, {
             headers: { Authorization: `Bearer ${token}` },
           })
           if (imgRes.ok) {
@@ -236,7 +236,7 @@ export default function FailedReceiptEditPage() {
           original_price: it.original_price.trim() ? parseFloat(it.original_price) : undefined,
           discount_amount: it.discount_amount.trim() ? parseFloat(it.discount_amount) : undefined,
         }))
-      const res = await fetch(`${apiUrl}/api/admin/failed-receipts/${id}/submit`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/failed-receipts/${id}/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ summary, items: itemsPayload }),
@@ -257,18 +257,18 @@ export default function FailedReceiptEditPage() {
   }
 
   if (!token) {
-    return <div className="text-center py-8 text-gray-500">Please sign in first.</div>
+    return <div className="text-center py-8 text-theme-mid">Please sign in first.</div>
   }
 
   if (loading) {
-    return <p className="text-gray-500">Loading…</p>
+    return <p className="text-theme-mid">Loading…</p>
   }
 
   if (error && !detail) {
     return (
       <div>
-        <p className="text-red-600">{error}</p>
-        <Link href="/admin/failed-receipts" className="mt-4 inline-block text-blue-600 hover:underline">Back to list</Link>
+        <p className="text-theme-red">{error}</p>
+        <Link href="/admin/failed-receipts" className="mt-4 inline-block text-theme-orange hover:underline">Back to list</Link>
       </div>
     )
   }
@@ -277,7 +277,7 @@ export default function FailedReceiptEditPage() {
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Manual receipt correction</h2>
-        <Link href="/admin/failed-receipts" className="text-sm text-blue-600 hover:underline">← Back to list</Link>
+        <Link href="/admin/failed-receipts" className="text-sm text-theme-orange hover:underline">← Back to list</Link>
       </div>
       {detail?.failure_reason && (
         <div className="p-2 bg-amber-50 text-amber-800 rounded text-sm">
@@ -285,9 +285,9 @@ export default function FailedReceiptEditPage() {
         </div>
       )}
       {error && (
-        <div className="p-2 bg-red-100 text-red-700 rounded text-sm flex items-center justify-between gap-2">
+        <div className="p-2 bg-theme-red/15 text-theme-red rounded text-sm flex items-center justify-between gap-2">
           <span>{error}</span>
-          <button type="button" className="shrink-0 text-red-700 hover:text-red-900" onClick={() => setError(null)} aria-label="Close">×</button>
+          <button type="button" className="shrink-0 text-theme-red hover:opacity-90" onClick={() => setError(null)} aria-label="Close">×</button>
         </div>
       )}
       {successMessage && (
@@ -301,15 +301,15 @@ export default function FailedReceiptEditPage() {
         {/* Left: receipt image */}
         <div className="lg:col-span-1">
           <div className="bg-white rounded-lg shadow p-4 sticky top-4">
-            <p className="text-sm font-medium text-gray-700 mb-2">Receipt image</p>
+            <p className="text-sm font-medium text-theme-dark/90 mb-2">Receipt image</p>
             {(detail?.raw_file_url && imageObjectUrl) ? (
               <img src={imageObjectUrl} alt="Receipt" className="w-full border rounded object-contain max-h-[70vh]" />
             ) : detail?.raw_file_url ? (
-              <div className="w-full aspect-[3/4] border rounded bg-gray-100 flex items-center justify-center text-gray-500 text-sm">
+              <div className="w-full aspect-[3/4] border rounded bg-theme-light-gray/50 flex items-center justify-center text-theme-mid text-sm">
                 Loading…
               </div>
             ) : (
-              <div className="w-full aspect-[3/4] border rounded bg-gray-100 flex items-center justify-center text-gray-500 text-sm">
+              <div className="w-full aspect-[3/4] border rounded bg-theme-light-gray/50 flex items-center justify-center text-theme-mid text-sm">
                 No image
               </div>
             )}
@@ -319,35 +319,35 @@ export default function FailedReceiptEditPage() {
         {/* Right: form */}
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm font-medium text-gray-700 mb-3">Store / Address / Cashier</p>
+            <p className="text-sm font-medium text-theme-dark/90 mb-3">Store / Address / Cashier</p>
             <div className="grid grid-cols-1 gap-2">
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Store name</span>
+                <span className="text-xs text-theme-mid">Store name</span>
                 <input className="border rounded px-2 py-1" value={storeName} onChange={(e) => setStoreName(e.target.value)} placeholder="Store name" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Address</span>
+                <span className="text-xs text-theme-mid">Address</span>
                 <input className="border rounded px-2 py-1" value={storeAddress} onChange={(e) => setStoreAddress(e.target.value)} placeholder="Address" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Cashier</span>
+                <span className="text-xs text-theme-mid">Cashier</span>
                 <input className="border rounded px-2 py-1" value={cashier} onChange={(e) => setCashier(e.target.value)} placeholder="Cashier (optional)" />
               </label>
             </div>
           </div>
 
           <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm font-medium text-gray-700 mb-3">Item lines (add/remove)</p>
+            <p className="text-sm font-medium text-theme-dark/90 mb-3">Item lines (add/remove)</p>
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm border-collapse">
                 <thead>
-                  <tr className="border-b border-gray-200">
-                    <th className="text-left py-2 pr-4 font-medium text-gray-700" style={{ minWidth: 200 }}>Product name</th>
-                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-20">Quantity</th>
-                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-16">Unit</th>
-                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-20">Unit price</th>
-                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-20">Line total</th>
-                    <th className="text-left py-2 pr-2 font-medium text-gray-700 w-14">On sale</th>
+                  <tr className="border-b border-theme-light-gray">
+                    <th className="text-left py-2 pr-4 font-medium text-theme-dark/90" style={{ minWidth: 200 }}>Product name</th>
+                    <th className="text-left py-2 pr-2 font-medium text-theme-dark/90 w-20">Quantity</th>
+                    <th className="text-left py-2 pr-2 font-medium text-theme-dark/90 w-16">Unit</th>
+                    <th className="text-left py-2 pr-2 font-medium text-theme-dark/90 w-20">Unit price</th>
+                    <th className="text-left py-2 pr-2 font-medium text-theme-dark/90 w-20">Line total</th>
+                    <th className="text-left py-2 pr-2 font-medium text-theme-dark/90 w-14">On sale</th>
                     <th className="text-left py-2 w-12" />
                   </tr>
                 </thead>
@@ -360,21 +360,21 @@ export default function FailedReceiptEditPage() {
                     const expectedLineTotal = hasQtyAndPrice ? qty * price : NaN
                     const lineTotalMismatch = hasQtyAndPrice && !isNaN(lt) && Math.abs(expectedLineTotal - lt) > toleranceForLine(lt)
                     return (
-                      <tr key={index} className={`border-b border-gray-100 ${lineTotalMismatch ? 'bg-red-100' : ''}`}>
+                      <tr key={index} className={`border-b border-theme-light-gray/50 ${lineTotalMismatch ? 'bg-theme-red/15' : ''}`}>
                         <td className="py-1.5 pr-4">
-                          <input className="w-full min-w-[180px] border border-gray-200 rounded px-1.5 py-0.5 text-sm" placeholder="product name" value={row.product_name} onChange={(e) => updateItem(index, 'product_name', e.target.value)} />
+                          <input className="w-full min-w-[180px] border border-theme-light-gray rounded px-1.5 py-0.5 text-sm" placeholder="product name" value={row.product_name} onChange={(e) => updateItem(index, 'product_name', e.target.value)} />
                         </td>
                         <td className="py-1.5 pr-2">
-                          <input className="w-full max-w-16 border border-gray-200 rounded px-1 py-0.5 text-sm" placeholder="quantity" value={row.quantity} onChange={(e) => updateItem(index, 'quantity', e.target.value)} />
+                          <input className="w-full max-w-16 border border-theme-light-gray rounded px-1 py-0.5 text-sm" placeholder="quantity" value={row.quantity} onChange={(e) => updateItem(index, 'quantity', e.target.value)} />
                         </td>
                         <td className="py-1.5 pr-2">
-                          <input className="w-full max-w-12 border border-gray-200 rounded px-1 py-0.5 text-sm" placeholder="unit" value={row.unit} onChange={(e) => updateItem(index, 'unit', e.target.value)} />
+                          <input className="w-full max-w-12 border border-theme-light-gray rounded px-1 py-0.5 text-sm" placeholder="unit" value={row.unit} onChange={(e) => updateItem(index, 'unit', e.target.value)} />
                         </td>
                         <td className="py-1.5 pr-2">
-                          <input className="w-full max-w-20 border border-gray-200 rounded px-1 py-0.5 text-sm" placeholder="unit price" value={row.unit_price} onChange={(e) => updateItem(index, 'unit_price', e.target.value)} />
+                          <input className="w-full max-w-20 border border-theme-light-gray rounded px-1 py-0.5 text-sm" placeholder="unit price" value={row.unit_price} onChange={(e) => updateItem(index, 'unit_price', e.target.value)} />
                         </td>
                         <td className="py-1.5 pr-2">
-                          <input className="w-full max-w-20 border border-gray-200 rounded px-1 py-0.5 text-sm" placeholder="line total" value={row.line_total} onChange={(e) => updateItem(index, 'line_total', e.target.value)} />
+                          <input className="w-full max-w-20 border border-theme-light-gray rounded px-1 py-0.5 text-sm" placeholder="line total" value={row.line_total} onChange={(e) => updateItem(index, 'line_total', e.target.value)} />
                         </td>
                         <td className="py-1.5 pr-2">
                           <label className="flex items-center gap-1">
@@ -382,7 +382,7 @@ export default function FailedReceiptEditPage() {
                           </label>
                         </td>
                         <td className="py-1.5">
-                          <button type="button" className="text-red-600 hover:underline" onClick={() => removeRow(index)}>Delete</button>
+                          <button type="button" className="text-theme-red hover:underline" onClick={() => removeRow(index)}>Delete</button>
                         </td>
                       </tr>
                     )
@@ -397,10 +397,10 @@ export default function FailedReceiptEditPage() {
                     const capturedSubtotal = subtotal.trim() ? parseFloat(subtotal) : NaN
                     const sumMatchesSubtotal = !isNaN(capturedSubtotal) && !Number.isNaN(itemsSum) && Math.abs(itemsSum - capturedSubtotal) < 0.02
                     return (
-                      <tr className="bg-white border-t-2 border-gray-200">
-                        <td colSpan={4} className="py-2 pr-4 text-right font-medium text-gray-600">Items total:</td>
+                      <tr className="bg-white border-t-2 border-theme-light-gray">
+                        <td colSpan={4} className="py-2 pr-4 text-right font-medium text-theme-dark/90">Items total:</td>
                         <td className="py-2 pr-2">
-                          <span className={`font-semibold ${sumMatchesSubtotal ? 'text-green-600' : 'text-gray-800'}`}>
+                          <span className={`font-semibold ${sumMatchesSubtotal ? 'text-green-600' : 'text-theme-dark'}`}>
                             ${itemsSum.toFixed(2)}
                           </span>
                         </td>
@@ -411,39 +411,39 @@ export default function FailedReceiptEditPage() {
                 </tfoot>
               </table>
             </div>
-            <p className="text-xs text-gray-500 mt-1">Compare Items total above with Subtotal below. Green = match.</p>
-            <button type="button" className="mt-2 px-3 py-1 border rounded text-sm bg-gray-100 hover:bg-gray-200" onClick={addRow}>+ Add row</button>
+            <p className="text-xs text-theme-mid mt-1">Compare Items total above with Subtotal below. Green = match.</p>
+            <button type="button" className="mt-2 px-3 py-1 border rounded text-sm bg-theme-light-gray/50 hover:bg-theme-light-gray" onClick={addRow}>+ Add row</button>
           </div>
 
           <div className="bg-white rounded-lg shadow p-4">
-            <p className="text-sm font-medium text-gray-700 mb-3">Total & payment</p>
+            <p className="text-sm font-medium text-theme-dark/90 mb-3">Total & payment</p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Date</span>
+                <span className="text-xs text-theme-mid">Date</span>
                 <input type="date" className="border rounded px-2 py-1" value={receiptDate} onChange={(e) => setReceiptDate(e.target.value)} />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Subtotal</span>
+                <span className="text-xs text-theme-mid">Subtotal</span>
                 <input className="border rounded px-2 py-1" value={subtotal} onChange={(e) => setSubtotal(e.target.value)} placeholder="0.00" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Tax</span>
+                <span className="text-xs text-theme-mid">Tax</span>
                 <input className="border rounded px-2 py-1" value={tax} onChange={(e) => setTax(e.target.value)} placeholder="0.00" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Total *</span>
+                <span className="text-xs text-theme-mid">Total *</span>
                 <input className="border rounded px-2 py-1" value={total} onChange={(e) => setTotal(e.target.value)} placeholder="0.00" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Currency</span>
+                <span className="text-xs text-theme-mid">Currency</span>
                 <input className="border rounded px-2 py-1" value={currency} onChange={(e) => setCurrency(e.target.value)} placeholder="USD" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Payment method</span>
+                <span className="text-xs text-theme-mid">Payment method</span>
                 <input className="border rounded px-2 py-1" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} placeholder="credit_card / cash" />
               </label>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-gray-500">Card last 4</span>
+                <span className="text-xs text-theme-mid">Card last 4</span>
                 <input className="border rounded px-2 py-1" value={paymentLast4} onChange={(e) => setPaymentLast4(e.target.value)} placeholder="1234" maxLength={4} />
               </label>
             </div>
@@ -453,7 +453,7 @@ export default function FailedReceiptEditPage() {
             <button type="button" className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50" disabled={submitting || invalidRows.length > 0} onClick={handleSubmit}>
               {submitting ? 'Submitting...' : 'Submit'}
             </button>
-            <button type="button" className="px-4 py-2 border rounded hover:bg-gray-100" onClick={handleCancel}>
+            <button type="button" className="px-4 py-2 border rounded hover:bg-theme-light-gray/50" onClick={handleCancel}>
               Cancel
             </button>
           </div>

@@ -1,25 +1,119 @@
 @import "tailwindcss";
 
-:root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 214, 219, 220;
-  --background-end-rgb: 255, 255, 255;
+/* ─── Tailwind v4: define all custom design tokens ───────────────────── */
+@theme {
+  /* 黑 */
+  --color-theme-black:     #000000;
+  --color-theme-slate:     #191919;
+  --color-theme-dark-262:  #262625;
+  --color-theme-dark-404:  #40403e;
+  /* 灰 */
+  --color-theme-gray-666:  #666663;
+  --color-theme-gray-919:  #91918d;
+  --color-theme-cloud:     #bfbfba;
+  /* 白 */
+  --color-theme-ivory-dark: #e5e4df;
+  --color-theme-cream-f0:  #f0f0eb;
+  --color-theme-ivory:     #fafaf7;
+  /* 橙 */
+  --color-book-cloth:       #cc785c;
+  --color-theme-orange-mid: #d4a27f;
+  --color-manilla:          #ebdbbc;
+  /* 其他：蓝、红 */
+  --color-theme-blue: #61aaf2;
+  --color-theme-red:  #bf4d43;
+
+  /* LedgerLens theme (main UI) */
+  --color-theme-dark:         #141413;
+  --color-theme-cream:        #faf9f5;
+  --color-theme-cream-alt:    #f5f4f0;
+  --color-theme-mid:          #b0aea5;
+  --color-theme-light-gray:   #e8e6dc;
+  --color-theme-orange:       #d97757;
+  --color-theme-orange-hover: #c4694a;
+  --color-theme-orange-muted: #e8b5a5;
+  --color-slate-dark:             #191919;
+  --color-ivory-light:             #fafaf7;
+  --color-ivory-dark:             #e5e4df;
+  --color-cloud-light:            #bfbfba;
+
+  /* Font families */
+  --font-body:    var(--font-lora), Georgia, serif;
+  --font-heading: var(--font-poppins), Arial, sans-serif;
+  --font-receipt: var(--font-space-mono), 'Courier New', monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --foreground-rgb: 255, 255, 255;
-    --background-start-rgb: 0, 0, 0;
-    --background-end-rgb: 0, 0, 0;
-  }
+/* Receipt / technical monospace */
+.font-receipt {
+  font-family: var(--font-space-mono), 'Courier New', monospace;
+}
+
+/* ─── CSS custom properties (kept for plain CSS rules below) ──────────── */
+:root {
+  --theme-dark:         #141413;
+  --theme-cream:        #faf9f5;
+  --theme-mid:          #b0aea5;
+  --theme-light-gray:   #e8e6dc;
+  --theme-orange:       #d97757;
+  --theme-orange-hover: #c4694a;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  font-family: var(--font-lora), Georgia, serif;
+  color: #141413;
+  background: #faf9f5;
 }
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-poppins), Arial, sans-serif;
+  font-weight: 700;
+  color: #141413;
+}
+
+/* ─── Button helpers ─────────────────────────────────────────────────── */
+
+/* Primary action: Book Cloth orange #CC785C */
+.btn-primary {
+  font-family: var(--font-poppins), Arial, sans-serif;
+  font-weight: 600;
+  padding: 0.625rem 1.5rem;
+  border-radius: 0.5rem;
+  background-color: #CC785C;
+  color: #FAFAF7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s;
+}
+.btn-primary:hover { opacity: 0.88; }
+
+/* Secondary action: Slate Dark #191919 */
+.btn-secondary {
+  font-family: var(--font-poppins), Arial, sans-serif;
+  font-weight: 600;
+  padding: 0.625rem 1.5rem;
+  border-radius: 0.5rem;
+  background-color: #191919;
+  color: #FAFAF7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s;
+}
+.btn-secondary:hover { opacity: 0.85; }
+
+/* Outline: dark border, no fill */
+.btn-outline {
+  font-family: var(--font-poppins), Arial, sans-serif;
+  font-weight: 600;
+  padding: 0.625rem 1.5rem;
+  border-radius: 0.5rem;
+  border: 2px solid #141413;
+  color: #141413;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s;
+}
+.btn-outline:hover { background: #e8e6dc; }

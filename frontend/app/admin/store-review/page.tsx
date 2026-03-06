@@ -3,8 +3,7 @@
 import { Fragment, useEffect, useState } from 'react'
 import { getFirebaseAuth } from '@/lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { useApiUrl } from '@/lib/api-url-context'
 
 type Row = {
   id: string
@@ -28,6 +27,7 @@ type Row = {
 type Chain = { id: string; name: string; normalized_name: string }
 
 export default function StoreReviewPage() {
+  const apiBaseUrl = useApiUrl()
   const [rows, setRows] = useState<Row[]>([])
   const [total, setTotal] = useState(0)
   const [statusFilter, setStatusFilter] = useState('pending')
@@ -55,6 +55,8 @@ export default function StoreReviewPage() {
   const [cardZipCode, setCardZipCode] = useState<Record<string, string>>({})
   const [cardCountryCode, setCardCountryCode] = useState<Record<string, string>>({})
   const [cardPhone, setCardPhone] = useState<Record<string, string>>({})
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillResult, setBackfillResult] = useState<{ total_updated: number; per_location: { location_id: string; updated: number }[] } | null>(null)
 
   useEffect(() => {
     const auth = getFirebaseAuth()
@@ -71,7 +73,7 @@ export default function StoreReviewPage() {
     try {
       const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
       if (statusFilter) params.set('status', statusFilter)
-      const res = await fetch(`${apiUrl}/api/admin/store-review?${params}`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/store-review?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error(res.status === 403 ? 'Forbidden' : await res.text())
@@ -88,7 +90,7 @@ export default function StoreReviewPage() {
   const fetchChains = async () => {
     if (!token) return
     try {
-      const res = await fetch(`${apiUrl}/api/admin/store-review/chains?active_only=false`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/store-review/chains?active_only=false`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (res.ok) {
@@ -108,7 +110,7 @@ export default function StoreReviewPage() {
   const handlePatch = async (id: string, payload: Record<string, unknown>) => {
     if (!token) return
     try {
-      const res = await fetch(`${apiUrl}/api/admin/store-review/${id}`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/store-review/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(payload),
@@ -153,7 +155,7 @@ export default function StoreReviewPage() {
       const patchPayload: Record<string, unknown> = {}
       if (chainName !== (row.raw_name ?? '')) patchPayload.raw_name = chainName
       if (Object.keys(patchPayload).length > 0) {
-        const patchRes = await fetch(`${apiUrl}/api/admin/store-review/${id}`, {
+        const patchRes = await fetch(`${apiBaseUrl}/api/admin/store-review/${id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify(patchPayload),
@@ -173,7 +175,7 @@ export default function StoreReviewPage() {
       if (cardAddr.zip_code) body.zip_code = cardAddr.zip_code
       if (cardAddr.country_code) body.country_code = cardAddr.country_code
       if (cardAddr.phone) body.phone = cardAddr.phone
-      const res = await fetch(`${apiUrl}/api/admin/store-review/${id}/approve`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/store-review/${id}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
@@ -206,7 +208,7 @@ export default function StoreReviewPage() {
     setRejectingId(id)
     setError(null)
     try {
-      const res = await fetch(`${apiUrl}/api/admin/store-review/${id}/reject`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/store-review/${id}/reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ rejection_reason: rejectReason || undefined }),
@@ -227,8 +229,29 @@ export default function StoreReviewPage() {
     setRejectReason('')
   }
 
+  const handleBackfillStoreLocations = async () => {
+    if (!token) return
+    setBackfilling(true)
+    setBackfillResult(null)
+    setError(null)
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/admin/store-review/backfill-store-locations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const data = await res.json()
+      setBackfillResult({ total_updated: data.total_updated ?? 0, per_location: data.per_location ?? [] })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Backfill failed')
+    } finally {
+      setBackfilling(false)
+    }
+  }
+
   if (!token) {
-    return <div className="text-center py-8 text-gray-500">Please sign in first.</div>
+    return <div className="text-center py-8 text-theme-mid">Please sign in first.</div>
   }
 
   return (
@@ -248,15 +271,28 @@ export default function StoreReviewPage() {
             <option value="rejected">rejected</option>
           </select>
         </label>
-        <span className="text-sm text-gray-500">{total} total</span>
+        <span className="text-sm text-theme-mid">{total} total</span>
+        <button
+          type="button"
+          onClick={handleBackfillStoreLocations}
+          disabled={backfilling}
+          className="px-3 py-1.5 rounded border border-theme-mid/40 bg-theme-cream/60 hover:bg-theme-cream disabled:opacity-50 text-sm"
+        >
+          {backfilling ? 'Backfilling…' : 'Backfill record_summaries store_location_id'}
+        </button>
+        {backfillResult && (
+          <span className="text-sm text-theme-mid">
+            Updated {backfillResult.total_updated} receipt(s) across {backfillResult.per_location.filter((p) => p.updated > 0).length} location(s).
+          </span>
+        )}
       </div>
-      {error && <div className="mb-4 p-2 bg-red-100 text-red-700 rounded text-sm">{error}</div>}
+      {error && <div className="mb-4 p-2 bg-theme-red/15 text-theme-red rounded text-sm">{error}</div>}
       {loading ? (
-        <p className="text-gray-500">Loading…</p>
+        <p className="text-theme-mid">Loading…</p>
       ) : (
         <div className="overflow-x-auto bg-white rounded-lg shadow">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="bg-gray-50">
+          <table className="min-w-full divide-y divide-theme-light-gray text-sm">
+            <thead className="bg-theme-cream/80">
               <tr>
                 <th className="px-3 py-2 text-left">raw_name</th>
                 <th className="px-3 py-2 text-left">normalized_name</th>
@@ -267,11 +303,11 @@ export default function StoreReviewPage() {
                 <th className="px-3 py-2 text-left">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
+            <tbody className="divide-y divide-theme-light-gray">
               {rows.map((r) => (
                 <Fragment key={r.id}>
                   <tr
-                    className={r.status === 'pending' ? 'cursor-pointer hover:bg-gray-50' : ''}
+                    className={r.status === 'pending' ? 'cursor-pointer hover:bg-theme-cream/80' : ''}
                     onClick={() => {
                       if (r.status !== 'pending') return
                       const next = expandedId === r.id ? null : r.id
@@ -300,9 +336,9 @@ export default function StoreReviewPage() {
                         onClick={(e) => e.stopPropagation()}
                       />
                     </td>
-                    <td className="px-3 py-2 text-gray-600">{r.suggested_chain_name ?? '—'}</td>
+                    <td className="px-3 py-2 text-theme-dark/90">{r.suggested_chain_name ?? '—'}</td>
                     <td className="px-3 py-2 max-w-[200px]">
-                      <span className="text-gray-600 truncate block">{r.address_display ?? '—'}</span>
+                      <span className="text-theme-dark/90 truncate block">{r.address_display ?? '—'}</span>
                     </td>
                     <td className="px-3 py-2">{r.source}</td>
                     <td className="px-3 py-2">
@@ -321,7 +357,7 @@ export default function StoreReviewPage() {
                       {r.status === 'pending' && (
                         <button
                           type="button"
-                          className="p-1 rounded hover:bg-gray-200"
+                          className="p-1 rounded hover:bg-theme-light-gray"
                           aria-label={expandedId === r.id ? 'Collapse' : 'Expand'}
                           onClick={() => {
                             const next = expandedId === r.id ? null : r.id
@@ -337,7 +373,7 @@ export default function StoreReviewPage() {
                       )}
                       {(r.status === 'approved' || r.status === 'rejected') && (
                         <button
-                          className="px-2 py-1 border rounded text-gray-600"
+                          className="px-2 py-1 border rounded text-theme-dark/90"
                           onClick={() => handlePatch(r.id, { status: 'pending' })}
                         >
                           Reopen
@@ -347,14 +383,14 @@ export default function StoreReviewPage() {
                   </tr>
                   {expandedId === r.id && r.status === 'pending' && (
                     <tr>
-                      <td colSpan={7} className="px-0 py-0 bg-gray-50">
-                        <div className="p-4 border-t border-b border-gray-200">
-                          <p className="text-sm font-medium text-gray-700 mb-3">Pre-filled store_chains / store_locations — confirm then Approve.</p>
+                      <td colSpan={7} className="px-0 py-0 bg-theme-cream/80">
+                        <div className="p-4 border-t border-b border-theme-light-gray">
+                          <p className="text-sm font-medium text-theme-dark/90 mb-3">Pre-filled store_chains / store_locations — confirm then Approve.</p>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                             <div className="space-y-2">
-                              <p className="text-xs font-medium text-gray-500">store_chains (when creating new chain)</p>
+                              <p className="text-xs font-medium text-theme-mid">store_chains (when creating new chain)</p>
                               <div className="p-3 bg-white rounded border space-y-2 mb-2">
-                                <span className="text-xs font-medium text-gray-500">Action</span>
+                                <span className="text-xs font-medium text-theme-mid">Action</span>
                                 <div className="flex flex-col gap-2">
                                   <label className="flex items-center gap-1">
                                     <input
@@ -385,7 +421,7 @@ export default function StoreReviewPage() {
                                     </select>
                                   )}
                                   {r.suggested_chain_id != null && (
-                                    <span className="text-xs text-gray-500">
+                                    <span className="text-xs text-theme-mid">
                                       AI suggestion: {r.suggested_chain_name ?? r.suggested_chain_id}
                                       {r.confidence_score != null && ` (${(r.confidence_score * 100).toFixed(0)}%)`}
                                     </span>
@@ -393,9 +429,9 @@ export default function StoreReviewPage() {
                                 </div>
                               </div>
                               <div>
-                                <label className="block text-xs text-gray-500">name</label>
+                                <label className="block text-xs text-theme-mid">name</label>
                                 <input
-                                  className={`border rounded px-2 py-1 w-full ${approveAsNewChain[r.id] === false ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                                  className={`border rounded px-2 py-1 w-full ${approveAsNewChain[r.id] === false ? 'bg-theme-light-gray/50 text-theme-mid cursor-not-allowed' : ''}`}
                                   value={editedRawName[r.id] ?? r.raw_name ?? ''}
                                   onChange={(e) => setEditedRawName((p) => ({ ...p, [r.id]: e.target.value }))}
                                   readOnly={approveAsNewChain[r.id] === false}
@@ -403,9 +439,9 @@ export default function StoreReviewPage() {
                                 />
                               </div>
                               <div>
-                                <label className="block text-xs text-gray-500">normalized_name</label>
+                                <label className="block text-xs text-theme-mid">normalized_name</label>
                                 <input
-                                  className={`border rounded px-2 py-1 w-full ${approveAsNewChain[r.id] === false ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                                  className={`border rounded px-2 py-1 w-full ${approveAsNewChain[r.id] === false ? 'bg-theme-light-gray/50 text-theme-mid cursor-not-allowed' : ''}`}
                                   value={editedNormalizedName[r.id] ?? r.normalized_name ?? ''}
                                   onChange={(e) => setEditedNormalizedName((p) => ({ ...p, [r.id]: e.target.value }))}
                                   readOnly={approveAsNewChain[r.id] === false}
@@ -414,9 +450,9 @@ export default function StoreReviewPage() {
                               </div>
                             </div>
                             <div className="space-y-2">
-                              <p className="text-xs font-medium text-gray-500">store_locations</p>
+                              <p className="text-xs font-medium text-theme-mid">store_locations</p>
                               <div>
-                                <label className="block text-xs text-gray-500">Store name (name)</label>
+                                <label className="block text-xs text-theme-mid">Store name (name)</label>
                                 <input
                                   className="border rounded px-2 py-1 w-full"
                                   placeholder="Store name"
@@ -425,7 +461,7 @@ export default function StoreReviewPage() {
                                 />
                               </div>
                               <div>
-                                <label className="block text-xs text-gray-500">address_line1</label>
+                                <label className="block text-xs text-theme-mid">address_line1</label>
                                 <input
                                   className="border rounded px-2 py-1 w-full"
                                   value={getCardAddr(r).address_line1}
@@ -433,7 +469,7 @@ export default function StoreReviewPage() {
                                 />
                               </div>
                               <div>
-                                <label className="block text-xs text-gray-500">address_line2</label>
+                                <label className="block text-xs text-theme-mid">address_line2</label>
                                 <input
                                   className="border rounded px-2 py-1 w-full"
                                   placeholder="Suite / Unit"
@@ -443,7 +479,7 @@ export default function StoreReviewPage() {
                               </div>
                               <div className="grid grid-cols-2 gap-2">
                                 <div>
-                                  <label className="block text-xs text-gray-500">city</label>
+                                  <label className="block text-xs text-theme-mid">city</label>
                                   <input
                                     className="border rounded px-2 py-1 w-full"
                                     value={getCardAddr(r).city}
@@ -451,7 +487,7 @@ export default function StoreReviewPage() {
                                   />
                                 </div>
                                 <div>
-                                  <label className="block text-xs text-gray-500">state</label>
+                                  <label className="block text-xs text-theme-mid">state</label>
                                   <input
                                     className="border rounded px-2 py-1 w-full"
                                     value={getCardAddr(r).state}
@@ -461,7 +497,7 @@ export default function StoreReviewPage() {
                               </div>
                               <div className="grid grid-cols-2 gap-2">
                                 <div>
-                                  <label className="block text-xs text-gray-500">zip_code</label>
+                                  <label className="block text-xs text-theme-mid">zip_code</label>
                                   <input
                                     className="border rounded px-2 py-1 w-full"
                                     value={getCardAddr(r).zip_code}
@@ -469,7 +505,7 @@ export default function StoreReviewPage() {
                                   />
                                 </div>
                                 <div>
-                                  <label className="block text-xs text-gray-500">country_code</label>
+                                  <label className="block text-xs text-theme-mid">country_code</label>
                                   <input
                                     className="border rounded px-2 py-1 w-full"
                                     placeholder="US / CA"
@@ -479,7 +515,7 @@ export default function StoreReviewPage() {
                                 </div>
                               </div>
                               <div>
-                                <label className="block text-xs text-gray-500">Phone</label>
+                                <label className="block text-xs text-theme-mid">Phone</label>
                                 <input
                                   className="border rounded px-2 py-1 w-full"
                                   placeholder="xxx-xxx-xxxx"
@@ -498,7 +534,7 @@ export default function StoreReviewPage() {
                               {approvingId === r.id ? '...' : 'Approve'}
                             </button>
                             <button
-                              className="px-3 py-1.5 bg-red-50 rounded text-red-700 border border-red-200"
+                              className="px-3 py-1.5 bg-theme-red/10 rounded text-theme-red border border-theme-red/30"
                               onClick={() => openReject(r.id)}
                             >
                               Reject
@@ -526,7 +562,7 @@ export default function StoreReviewPage() {
       )}
 
       {rejectingId && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-10">
+        <div className="fixed inset-0 bg-theme-black/30 flex items-center justify-center z-10">
           <div className="bg-white rounded-lg p-4 shadow max-w-md w-full mx-4">
             <p className="font-medium mb-2">Reject reason (optional)</p>
             <input
@@ -536,7 +572,7 @@ export default function StoreReviewPage() {
               placeholder="rejection_reason"
             />
             <div className="flex gap-2">
-              <button className="px-3 py-1 bg-red-100 rounded text-red-800" onClick={() => handleReject(rejectingId)}>
+              <button className="px-3 py-1 bg-theme-red/15 rounded text-theme-red" onClick={() => handleReject(rejectingId)}>
                 Confirm reject
               </button>
               <button className="px-3 py-1 border rounded" onClick={() => setRejectingId(null)}>

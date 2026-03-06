@@ -52,10 +52,10 @@ export default function DevLoginPage() {
 
   if (status === 'loading') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="min-h-screen flex items-center justify-center bg-theme-cream">
         <div className="text-center">
           <div className="animate-spin text-4xl mb-4">⏳</div>
-          <p className="text-gray-600">Signing in…</p>
+          <p className="text-theme-dark/90">Signing in…</p>
         </div>
       </div>
     )
@@ -63,13 +63,13 @@ export default function DevLoginPage() {
 
   if (status === 'error') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="min-h-screen flex items-center justify-center bg-theme-cream p-4">
         <div className="max-w-md w-full p-6 bg-white rounded-xl shadow">
-          <h2 className="text-xl font-semibold text-red-600 mb-2">Sign-in failed</h2>
-          <p className="text-gray-700 mb-4">{error}</p>
+          <h2 className="text-xl font-semibold text-theme-red mb-2">Sign-in failed</h2>
+          <p className="text-theme-dark/90 mb-4">{error}</p>
           <a
             href="/login"
-            className="text-blue-600 hover:underline"
+            className="text-theme-orange hover:underline"
           >
             ← Back to sign-in
           </a>
@@ -79,8 +79,8 @@ export default function DevLoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <p className="text-gray-600">Redirecting to dashboard…</p>
+    <div className="min-h-screen flex items-center justify-center bg-theme-cream">
+      <p className="text-theme-dark/90">Redirecting to dashboard…</p>
     </div>
   )
 }

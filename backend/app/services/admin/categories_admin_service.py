@@ -117,3 +117,100 @@ def delete_category_soft(cat_id: str) -> None:
     res = supabase.table("categories").update({"is_active": False}).eq("id", cat_id).execute()
     if not res.data:
         raise ValueError("Category not found")
+
+
+def _get_descendant_ids(supabase, cat_id: str) -> List[str]:
+    """Return all category ids that are descendants of cat_id (children, grandchildren, ...)."""
+    out: List[str] = []
+    stack = [cat_id]
+    while stack:
+        parent_id = stack.pop()
+        res = supabase.table("categories").select("id").eq("parent_id", parent_id).execute()
+        for row in (res.data or []):
+            cid = row.get("id")
+            if cid:
+                out.append(str(cid))
+                stack.append(cid)
+    return out
+
+
+def get_category_and_descendant_ids(cat_id: str) -> List[Dict[str, Any]]:
+    """
+    Return the category row and all its descendants as list of dicts with id, level.
+    Used to know which category ids will be removed by hard delete and to delete in correct order (children first).
+    """
+    supabase = _get_client()
+    row = get_category(cat_id)
+    if not row:
+        raise ValueError("Category not found")
+    ids_with_level = [(str(row["id"]), int(row.get("level", 1)))]
+    descendant_ids = _get_descendant_ids(supabase, cat_id)
+    if descendant_ids:
+        res = supabase.table("categories").select("id, level").in_("id", descendant_ids).execute()
+        for r in (res.data or []):
+            if r.get("id"):
+                ids_with_level.append((str(r["id"]), int(r.get("level", 1))))
+    # Sort by level desc so we delete children before parents
+    ids_with_level.sort(key=lambda x: -x[1])
+    return [{"id": i, "level": lv} for i, lv in ids_with_level]
+
+
+def hard_delete_category(
+    cat_id: str,
+    action: str,
+    target_category_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Hard delete a category (and all its descendants). Before deleting, handle related data:
+    - action "release": set record_items.category_id and classification_review.category_id to NULL
+      for any ref to this category or descendants; rules/overrides referencing this category are
+      deleted (CASCADE) or updated so we can delete the category.
+    - action "reassign": set all such references to target_category_id (must be L3, not in deleted set).
+    Then delete the category and all descendants (children first).
+    """
+    if action not in ("release", "reassign"):
+        raise ValueError("action must be 'release' or 'reassign'")
+    if action == "reassign" and not target_category_id:
+        raise ValueError("target_category_id required when action is reassign")
+
+    supabase = _get_client()
+    nodes = get_category_and_descendant_ids(cat_id)
+    ids_to_remove = [n["id"] for n in nodes]
+    if not ids_to_remove:
+        raise ValueError("Category not found")
+
+    if action == "reassign":
+        target = get_category(target_category_id)
+        if not target:
+            raise ValueError("Target category not found")
+        if int(target.get("level", 0)) != 3:
+            raise ValueError("Target category must be level 3 (L3)")
+        if target_category_id in ids_to_remove:
+            raise ValueError("Target category cannot be the deleted category or its descendant")
+
+    # 1) record_items: set category_id to NULL (release) or target (reassign)
+    if action == "release":
+        supabase.table("record_items").update({"category_id": None}).in_("category_id", ids_to_remove).execute()
+    else:
+        supabase.table("record_items").update({"category_id": target_category_id}).in_("category_id", ids_to_remove).execute()
+
+    # 2) classification_review: RESTRICT, so we must update before delete
+    if action == "release":
+        supabase.table("classification_review").update({"category_id": None}).in_("category_id", ids_to_remove).execute()
+    else:
+        supabase.table("classification_review").update({"category_id": target_category_id}).in_("category_id", ids_to_remove).execute()
+
+    # 3) product_categorization_rules: CASCADE would delete; for reassign we update to target first
+    if action == "reassign":
+        supabase.table("product_categorization_rules").update({"category_id": target_category_id}).in_("category_id", ids_to_remove).execute()
+
+    # 4) user_item_category_overrides: CASCADE would delete; for reassign we update to target first
+    if action == "reassign":
+        supabase.table("user_item_category_overrides").update({"category_id": target_category_id}).in_("category_id", ids_to_remove).execute()
+
+    # 5) Delete categories: children first (nodes already sorted by level desc)
+    for n in nodes:
+        supabase.table("categories").delete().eq("id", n["id"]).execute()
+        logger.info("Hard-deleted category %s (level %s)", n["id"], n["level"])
+
+    return {"message": "hard_deleted", "deleted_count": len(nodes)}

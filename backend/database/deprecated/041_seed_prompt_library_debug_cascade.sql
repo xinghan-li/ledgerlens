@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 023_seed_prompt_library.sql
+-- Content: INSERT receipt_parse_debug_ocr + receipt_parse_debug_vision prompts
+-- New databases: do NOT run this file (already in 023_seed).

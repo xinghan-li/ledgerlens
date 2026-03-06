@@ -151,8 +151,7 @@ class TimelineRecorder:
             "timestamp": now.isoformat(),
             "duration_ms": None
         })
-        logger.debug(f"Timeline: {step} started at {now.isoformat()}")
-    
+
     def end(self, step: str):
         """Record step end time."""
         now = datetime.now(timezone.utc)
@@ -168,8 +167,7 @@ class TimelineRecorder:
             "timestamp": now.isoformat(),
             "duration_ms": duration_ms
         })
-        logger.debug(f"Timeline: {step} ended at {now.isoformat()}, duration: {duration_ms}ms")
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format."""
         return {
@@ -379,15 +377,11 @@ async def process_receipt_workflow(
     # Calculate file hash for duplicate detection
     original_file_hash = hashlib.sha256(image_bytes).hexdigest()
     file_hash = original_file_hash
-    logger.info(f"File hash calculated: {file_hash[:16]}... (for duplicate detection)")
-    
+
     # Get user_id
     if user_id is None:
-        logger.info("user_id not provided, attempting to get from get_test_user_id()...")
         user_id = get_test_user_id()
-        if user_id:
-            logger.info(f"Got user_id from get_test_user_id(): {user_id}")
-        else:
+        if not user_id:
             logger.warning("get_test_user_id() returned None")
     
     # 12h lock check (non-admin): 3 strikes in 1h -> locked
@@ -415,9 +409,6 @@ async def process_receipt_workflow(
             if allow_duplicate:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 file_hash = f"{original_file_hash}_debug_{timestamp}"
-                logger.info(
-                    f"Duplicate allowed for {user_class} user {user_id}; reprocessing with modified hash (existing: {existing_receipt_id})."
-                )
             else:
                 logger.warning(
                     f"Duplicate receipt rejected for user {user_id} (class={user_class}): existing_receipt_id={existing_receipt_id}"
@@ -441,12 +432,11 @@ async def process_receipt_workflow(
         # Continue without database storage, but log the issue
         db_receipt_id = None
     else:
-        logger.info(f"Attempting to create receipt record with user_id: {user_id}")
         # Create receipt record in database
         db_receipt_id: Optional[str] = None
         try:
             db_receipt_id = create_receipt(user_id=user_id, raw_file_url=None, file_hash=file_hash)
-            logger.info(f"✓ Created receipt record in database: {db_receipt_id}")
+            logger.info(f"Created receipt record: {db_receipt_id}")
             if db_receipt_id:
                 append_workflow_step(db_receipt_id, "create_db", "ok")
         except Exception as e:
@@ -458,10 +448,9 @@ async def process_receipt_workflow(
                 if allow_duplicate:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                     file_hash = f"{original_file_hash}_debug_{timestamp}"
-                    logger.info(f"Duplicate during create: allowing for {user_class}, retrying with modified hash.")
                     try:
                         db_receipt_id = create_receipt(user_id=user_id, raw_file_url=None, file_hash=file_hash)
-                        logger.info(f"✓ Created receipt record in database: {db_receipt_id}")
+                        logger.info(f"Created receipt record (retry): {db_receipt_id}")
                     except Exception as retry_error:
                         logger.error(f"Failed to create receipt even with modified hash: {retry_error}")
                         raise
@@ -731,7 +720,6 @@ async def process_receipt_workflow(
             # Use GPT-4o-mini
             llm_provider = "openai"
             logger.info(f"Using GPT-4o-mini LLM (Gemini unavailable: {gemini_reason})")
-            logger.debug(f"Gemini unavailable reason: {gemini_reason}")
         
         # Update stage to llm_primary
         if db_receipt_id:
@@ -871,16 +859,6 @@ async def process_receipt_workflow(
         
         # Save LLM processing run after address correction so categorize_receipt sees final chain_id/location_id and receipt address
         if db_receipt_id and first_llm_result:
-            _meta = first_llm_result.get("_metadata", {})
-            _rec = first_llm_result.get("receipt", {})
-            _addr = (_rec.get("merchant_address") or "")
-            _addr_preview = (_addr[:100] + "...") if len(_addr) > 100 else _addr
-            logger.info(
-                "[STORE_DEBUG] workflow before save_processing_run: _metadata.chain_id=%s, _metadata.location_id=%s, receipt.merchant_address=%r",
-                _meta.get("chain_id"),
-                _meta.get("location_id"),
-                _addr_preview,
-            )
             try:
                 if llm_provider.lower() == "gemini":
                     model_name = settings.gemini_model
@@ -1346,7 +1324,8 @@ async def _escalation_to_strongest_models(
                 "image/jpeg",
             )
         )
-        gemini_result, openai_result = await asyncio.gather(gemini_task, openai_task)
+        gemini_raw, openai_result = await asyncio.gather(gemini_task, openai_task)
+        gemini_result = gemini_raw[0] if isinstance(gemini_raw, tuple) else gemini_raw
     except Exception as e:
         timeline.end("escalation_vision")
         logger.warning(f"Escalation vision (one or both models) failed: {e}, falling back to Textract")
@@ -2676,7 +2655,6 @@ async def _mark_for_manual_review(
     # Note: Timeline files are no longer saved to disk
     # Timeline data is still tracked in memory for duration calculations
     # All data is now stored in the database
-    logger.debug("Skipping timeline file generation (data stored in database)")
     
     # Build manual review result
     manual_review_result = {
@@ -2746,7 +2724,6 @@ async def _save_output(
     # Note: Timeline and CSV files are no longer saved to disk
     # All data is now stored in the database (receipts, receipt_processing_runs, api_calls tables)
     # Timeline data is still tracked in memory for duration calculations
-    logger.debug("Skipping timeline and CSV file generation (data stored in database)")
     
     # Note: Categorization (saving to record_items/record_summaries) is now done via
     # a separate API endpoint (/api/receipt/categorize) after workflow completes successfully
@@ -2867,4 +2844,3 @@ async def _save_error(
     # Note: Timeline files are no longer saved to disk
     # Timeline data is still tracked in memory for duration calculations
     # All data is now stored in the database
-    logger.debug("Skipping timeline file generation (data stored in database)")

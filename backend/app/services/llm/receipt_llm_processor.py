@@ -215,12 +215,9 @@ async def process_receipt_with_llm_from_ocr(
         )
     
     # Step 5: Call LLM (read corresponding config from environment variables based on llm_provider)
-    logger.info(f"Step 4: Calling {llm_provider.upper()} LLM...")
+    logger.info(f"Calling {llm_provider.upper()} LLM: model={settings.gemini_model if llm_provider.lower() == 'gemini' else settings.openai_model}")
     if llm_provider.lower() == "gemini":
-        # Read Gemini model config from environment variables
         model = settings.gemini_model
-        logger.info(f"Using Gemini model from settings: {model}")
-        logger.info(f"Settings.gemini_model value: {settings.gemini_model}")
         llm_result = await parse_receipt_with_gemini(
             system_message=system_message,
             user_message=user_message,
@@ -228,9 +225,7 @@ async def process_receipt_with_llm_from_ocr(
             temperature=prompt_config.get("temperature", 0.0)
         )
     else:
-        # Default to OpenAI, read OpenAI model config from environment variables
         model = settings.openai_model
-        logger.info(f"Using OpenAI model from .env: {model}")
         llm_result = parse_receipt_with_llm(
             system_message=system_message,
             user_message=user_message,
@@ -239,8 +234,6 @@ async def process_receipt_with_llm_from_ocr(
         )
     
     # Step 6: Extract prices from raw_text for validation (not dependent on LLM, not dependent on OCR source)
-    # Key: This function is already based on raw_text and can be used with any OCR!
-    logger.info("Step 5: Extracting prices from raw_text for validation (OCR-agnostic)...")
     line_items = unified_info.get("line_items", [])
     extracted_line_totals = extract_line_totals_from_raw_text(
         raw_text=raw_text,

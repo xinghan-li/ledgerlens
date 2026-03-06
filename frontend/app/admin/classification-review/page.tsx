@@ -3,8 +3,7 @@
 import { useEffect, useState } from 'react'
 import { getFirebaseAuth } from '@/lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { useApiUrl } from '@/lib/api-url-context'
 
 function prefillNormalizedName(raw: string): string {
   return (raw ?? '').toLowerCase().replace(/\s+/g, '_')
@@ -68,7 +67,7 @@ function CategoryCascade({
     <>
       <td className="px-2 py-2 overflow-hidden">
         <select
-          className="border border-gray-200 rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+          className="border border-theme-light-gray rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
           value={l1Id}
           onChange={(e) => {
             const v = e.target.value || ''
@@ -85,7 +84,7 @@ function CategoryCascade({
       </td>
       <td className="px-2 py-2 overflow-hidden">
         <select
-          className="border border-gray-200 rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+          className="border border-theme-light-gray rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
           value={l2Id}
           onChange={(e) => {
             const v = e.target.value || ''
@@ -101,7 +100,7 @@ function CategoryCascade({
       </td>
       <td className="px-2 py-2 overflow-hidden">
         <select
-          className="border border-gray-200 rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+          className="border border-theme-light-gray rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
           value={effectiveCategoryId}
           onChange={(e) => onEditedCategoryId(row.id, e.target.value || '')}
         >
@@ -123,6 +122,8 @@ type Row = {
   category_name?: string | null
   category_path?: string | null
   store_chain_name?: string | null
+  /** "Store Name\nLocation" e.g. "Costco Wholesale\nLynnwood" */
+  store_display?: string | null
   size_quantity: number | null
   size_unit: string | null
   package_type: string | null
@@ -134,6 +135,7 @@ type Row = {
 }
 
 export default function ClassificationReviewPage() {
+  const apiBaseUrl = useApiUrl()
   const [rows, setRows] = useState<Row[]>([])
   const [total, setTotal] = useState(0)
   const [statusFilter, setStatusFilter] = useState('pending')
@@ -183,7 +185,7 @@ export default function ClassificationReviewPage() {
     try {
       const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
       if (statusFilter) params.set('status', statusFilter)
-      const res = await fetch(`${apiUrl}/api/admin/classification-review?${params}`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/classification-review?${params}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error(res.status === 403 ? 'Forbidden' : await res.text())
@@ -200,7 +202,7 @@ export default function ClassificationReviewPage() {
   const fetchCategories = async () => {
     if (!token) return
     try {
-      const res = await fetch(`${apiUrl}/api/admin/categories?active_only=false`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/categories?active_only=false`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (res.ok) {
@@ -220,7 +222,7 @@ export default function ClassificationReviewPage() {
   const handlePatch = async (id: string, payload: Record<string, unknown>) => {
     if (!token) return
     try {
-      const res = await fetch(`${apiUrl}/api/admin/classification-review/${id}`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/classification-review/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(payload),
@@ -240,7 +242,7 @@ export default function ClassificationReviewPage() {
     if (!token) return
     setDeletingId(id)
     try {
-      const res = await fetch(`${apiUrl}/api/admin/classification-review/${id}`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/classification-review/${id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -262,6 +264,7 @@ export default function ClassificationReviewPage() {
     if (!row) return
     setConfirmingId(id)
     setSimilarTo(null)
+    let returned409 = false
     try {
       const currentName = getCurrentNormalizedName(row).trim()
       if (!currentName) throw new Error('normalized_name is required')
@@ -280,13 +283,13 @@ export default function ClassificationReviewPage() {
         size_unit: currentUnit || null,
         package_type: currentPkg || null,
       }
-      const patchRes = await fetch(`${apiUrl}/api/admin/classification-review/${id}`, {
+      const patchRes = await fetch(`${apiBaseUrl}/api/admin/classification-review/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(patchPayload),
       })
       if (!patchRes.ok) throw new Error(await patchRes.text())
-      const res = await fetch(`${apiUrl}/api/admin/classification-review/${id}/confirm`, {
+      const res = await fetch(`${apiBaseUrl}/api/admin/classification-review/${id}/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ force_different_name: forceDifferentName }),
@@ -294,6 +297,7 @@ export default function ClassificationReviewPage() {
       const data = res.ok ? await res.json().catch(() => ({})) : await res.json().catch(() => ({}))
       if (res.status === 409 && data.detail?.similar_to) {
         setSimilarTo(data.detail.similar_to)
+        returned409 = true
         return
       }
       if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Confirm failed')
@@ -306,12 +310,14 @@ export default function ClassificationReviewPage() {
       setEditedPackageType((prev) => { const n = { ...prev }; delete n[id]; return n })
       setSuccessMessage('Confirmed')
       setError(null)
+      setConfirmingId(null)
       fetchList()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Confirm failed')
       setSuccessMessage(null)
-    } finally {
       setConfirmingId(null)
+    } finally {
+      if (!returned409) setConfirmingId(null)
     }
   }
 
@@ -414,7 +420,7 @@ export default function ClassificationReviewPage() {
 
   if (!token) {
     return (
-      <div className="text-center py-8 text-gray-500">Please sign in first.</div>
+      <div className="text-center py-8 text-theme-mid">Please sign in first.</div>
     )
   }
 
@@ -437,19 +443,19 @@ export default function ClassificationReviewPage() {
             <option value="cancelled">cancelled</option>
           </select>
         </label>
-        <span className="text-sm text-gray-500">{total} total</span>
+        <span className="text-sm text-theme-mid">{total} total</span>
       </div>
       {/* Record items 回填：方案 A 手动触发，后续可改为定时任务 */}
-      <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded">
-        <p className="text-sm text-gray-700 mb-2">
-          <strong>Record items backfill</strong>: One-time sync for <code className="bg-gray-200 px-1 rounded">record_items</code>. Run manually when needed.
+      <div className="mb-4 p-4 bg-theme-cream/80 border border-theme-light-gray rounded">
+        <p className="text-sm text-theme-dark/90 mb-2">
+          <strong>Record items backfill</strong>: One-time sync for <code className="bg-theme-light-gray px-1 rounded">record_items</code>. Run manually when needed.
         </p>
-        <ul className="text-sm text-gray-600 list-disc list-inside mb-2">
+        <ul className="text-sm text-theme-dark/90 list-disc list-inside mb-2">
           <li><code>product_name_clean</code>: filled from normalized product name when empty</li>
           <li><code>on_sale</code>: correct qty×price items without promo text to false</li>
           <li><code>product_id</code>: match by normalized_name + store chain and backfill</li>
         </ul>
-        <p className="text-sm text-gray-500 mb-2">After confirming a batch of Classification Review, run backfill once to link new products to history record_items.</p>
+        <p className="text-sm text-theme-mid mb-2">After confirming a batch of Classification Review, run backfill once to link new products to history record_items.</p>
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -459,7 +465,7 @@ export default function ClassificationReviewPage() {
               setBackfillLoading(true)
               setBackfillResult(null)
               try {
-                const res = await fetch(`${apiUrl}/api/admin/classification-review/backfill-record-items?limit=0&batch=200`, {
+                const res = await fetch(`${apiBaseUrl}/api/admin/classification-review/backfill-record-items?limit=0&batch=200`, {
                   method: 'POST',
                   headers: { Authorization: `Bearer ${token}` },
                 })
@@ -473,7 +479,7 @@ export default function ClassificationReviewPage() {
                 setBackfillLoading(false)
               }
             }}
-            className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50"
+            className="min-w-42 h-9 inline-flex items-center justify-center px-3 py-1.5 btn-primary text-sm rounded disabled:opacity-50"
           >
             {backfillLoading ? 'Running…' : 'Backfill now'}
           </button>
@@ -485,7 +491,7 @@ export default function ClassificationReviewPage() {
               setDedupeLoading(true)
               setError(null)
               try {
-                const res = await fetch(`${apiUrl}/api/admin/classification-review/dedupe`, {
+                const res = await fetch(`${apiBaseUrl}/api/admin/classification-review/dedupe`, {
                   method: 'POST',
                   headers: { Authorization: `Bearer ${token}` },
                 })
@@ -494,26 +500,26 @@ export default function ClassificationReviewPage() {
                 setSuccessMessage(data.message ?? `Removed ${data.deleted ?? 0} duplicate row(s).`)
                 await fetchList()
               } catch (e) {
-                setError(e instanceof Error ? e.message : '去重失败')
+                setError(e instanceof Error ? e.message : 'Remove duplicate failed')
               } finally {
                 setDedupeLoading(false)
               }
             }}
-            className="px-3 py-1.5 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 disabled:opacity-50"
+            className="min-w-42 h-9 inline-flex items-center justify-center px-3 py-1.5 bg-theme-dark text-white text-sm font-semibold rounded hover:opacity-90 disabled:opacity-50"
           >
-            {dedupeLoading ? 'Running…' : '去重'}
+            {dedupeLoading ? 'Running…' : 'Remove Duplicate'}
           </button>
         </div>
         {backfillResult && (
-          <p className="mt-2 text-sm text-gray-600">
+          <p className="mt-2 text-sm text-theme-dark/90">
             This run: processed {backfillResult.total_processed}, updated {backfillResult.updated} (need_clean: {backfillResult.need_clean}, need_onsale: {backfillResult.need_onsale}, need_product_id: {backfillResult.need_product_id}).
           </p>
         )}
       </div>
       {error && (
-        <div className="mb-4 p-2 bg-red-100 text-red-700 rounded text-sm flex items-center justify-between gap-2">
+        <div className="mb-4 p-2 bg-theme-red/15 text-theme-red rounded text-sm flex items-center justify-between gap-2">
           <span>{error}</span>
-          <button type="button" className="shrink-0 text-red-700 hover:text-red-900" onClick={() => setError(null)} aria-label="Close">×</button>
+          <button type="button" className="shrink-0 text-theme-red hover:opacity-90" onClick={() => setError(null)} aria-label="Close">×</button>
         </div>
       )}
       {successMessage && (
@@ -532,11 +538,11 @@ export default function ClassificationReviewPage() {
       {/* 筛选：Category I/II/III, unit, package */}
       {!loading && rows.length > 0 && (
         <div className="mb-4 flex flex-wrap gap-3 items-center">
-          <span className="text-gray-600 text-sm">Filter:</span>
+          <span className="text-theme-dark/90 text-sm">Filter:</span>
           <select
             value={filterCat1}
             onChange={(e) => { setFilterCat1(e.target.value); setFilterCat2(''); setFilterCat3(''); }}
-            className="border border-gray-200 rounded px-2 py-1 text-sm"
+            className="border border-theme-light-gray rounded px-2 py-1 text-sm"
           >
             <option value="">Category I: All</option>
             {level1Categories.map((c) => (
@@ -546,7 +552,7 @@ export default function ClassificationReviewPage() {
           <select
             value={filterCat2}
             onChange={(e) => { setFilterCat2(e.target.value); setFilterCat3(''); }}
-            className="border border-gray-200 rounded px-2 py-1 text-sm"
+            className="border border-theme-light-gray rounded px-2 py-1 text-sm"
           >
             <option value="">Category II: All</option>
             {l2FilterOptions.map((c) => (
@@ -556,7 +562,7 @@ export default function ClassificationReviewPage() {
           <select
             value={filterCat3}
             onChange={(e) => setFilterCat3(e.target.value)}
-            className="border border-gray-200 rounded px-2 py-1 text-sm"
+            className="border border-theme-light-gray rounded px-2 py-1 text-sm"
           >
             <option value="">Category III: All</option>
             {l3FilterOptions.map((c) => (
@@ -566,7 +572,7 @@ export default function ClassificationReviewPage() {
           <select
             value={filterUnit}
             onChange={(e) => setFilterUnit(e.target.value)}
-            className="border border-gray-200 rounded px-2 py-1 text-sm"
+            className="border border-theme-light-gray rounded px-2 py-1 text-sm"
           >
             <option value="">unit: All</option>
             {uniqueUnits.map((u) => (
@@ -576,7 +582,7 @@ export default function ClassificationReviewPage() {
           <select
             value={filterPackage}
             onChange={(e) => setFilterPackage(e.target.value)}
-            className="border border-gray-200 rounded px-2 py-1 text-sm"
+            className="border border-theme-light-gray rounded px-2 py-1 text-sm"
           >
             <option value="">package: All</option>
             {uniquePackages.map((p) => (
@@ -586,36 +592,31 @@ export default function ClassificationReviewPage() {
           {(filterCat1 || filterCat2 || filterCat3 || filterUnit || filterPackage) && (
             <button
               type="button"
-              className="text-sm text-gray-600 hover:text-gray-800 underline"
+              className="text-sm text-theme-dark/90 hover:text-theme-dark underline"
               onClick={() => { setFilterCat1(''); setFilterCat2(''); setFilterCat3(''); setFilterUnit(''); setFilterPackage(''); }}
             >
               Clear filters
             </button>
           )}
-          <span className="text-sm text-gray-500">Showing {displayedRows.length} / {rows.length}</span>
+          <span className="text-sm text-theme-mid">Showing {displayedRows.length} / {rows.length}</span>
         </div>
       )}
       {loading ? (
-        <p className="text-gray-500">Loading…</p>
+        <p className="text-theme-mid">Loading…</p>
       ) : (
         <div className="overflow-x-auto bg-white rounded-lg shadow">
-          <table className="w-full table-fixed divide-y divide-gray-200 text-sm">
-            <thead className="bg-gray-50">
+          <table className="w-full table-fixed divide-y divide-theme-light-gray text-sm">
+            <thead className="bg-theme-cream/80">
               <tr>
+                <th className="px-2 py-2 text-left w-[11%]">Store</th>
                 <th
-                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[12%]"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-theme-light-gray/50 w-[14%]"
                   onClick={() => handleSort('raw_product_name')}
                 >
-                  raw_product_name {sortColumn === 'raw_product_name' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+                  Product (raw / normalized) {sortColumn === 'raw_product_name' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th
-                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[11%]"
-                  onClick={() => handleSort('normalized_name')}
-                >
-                  normalized_name {sortColumn === 'normalized_name' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
-                </th>
-                <th
-                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[11%]"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-theme-light-gray/50 w-[11%]"
                   onClick={() => handleSort('category')}
                 >
                   Category I {sortColumn === 'category' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
@@ -623,19 +624,19 @@ export default function ClassificationReviewPage() {
                 <th className="px-2 py-2 text-left w-[11%]">Category II</th>
                 <th className="px-2 py-2 text-left w-[11%]">Category III</th>
                 <th
-                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[6%]"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-theme-light-gray/50 w-[6%]"
                   onClick={() => handleSort('size_quantity')}
                 >
                   size_qty {sortColumn === 'size_quantity' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th
-                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[5%]"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-theme-light-gray/50 w-[5%]"
                   onClick={() => handleSort('size_unit')}
                 >
                   unit {sortColumn === 'size_unit' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th
-                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-gray-100 w-[7%]"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-theme-light-gray/50 w-[7%]"
                   onClick={() => handleSort('package_type')}
                 >
                   package {sortColumn === 'package_type' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
@@ -644,20 +645,27 @@ export default function ClassificationReviewPage() {
                 <th className="px-2 py-2 text-left w-[13%]">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
+            <tbody className="divide-y divide-theme-light-gray">
               {displayedRows.map((r) => (
                 <tr key={r.id}>
-                  <td className="px-2 py-2 truncate" title={r.raw_product_name}>{r.raw_product_name}</td>
-                  <td className="px-2 py-2 overflow-hidden">
-                    {r.status === 'confirmed' ? (
-                      <span className="truncate block" title={editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}>{editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}</span>
-                    ) : (
-                      <input
-                        className="border border-gray-200 rounded px-1 w-full max-w-[7rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
-                        value={editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}
-                        onChange={(e) => setEditedNormalizedName((prev) => ({ ...prev, [r.id]: e.target.value }))}
-                      />
-                    )}
+                  <td className="px-2 py-2 align-top whitespace-pre-line text-xs" title={r.store_display ?? undefined}>
+                    {(r.store_display ?? r.store_chain_name ?? '—').split('\n').filter(Boolean).map((line, i) => (
+                      <span key={i} className="block">{line}</span>
+                    ))}
+                  </td>
+                  <td className="px-2 py-2 overflow-hidden align-top">
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-xs text-theme-mid truncate" title={r.raw_product_name}>{r.raw_product_name}</span>
+                      {r.status === 'confirmed' ? (
+                        <span className="truncate block text-xs" title={editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}>{editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}</span>
+                      ) : (
+                        <input
+                          className="border border-theme-light-gray rounded px-1 w-full max-w-[8rem] text-xs focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
+                          value={editedNormalizedName[r.id] ?? r.normalized_name ?? prefillNormalizedName(r.raw_product_name)}
+                          onChange={(e) => setEditedNormalizedName((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                        />
+                      )}
+                    </div>
                   </td>
                   <CategoryCascade
                     row={r}
@@ -678,7 +686,7 @@ export default function ClassificationReviewPage() {
                       <span>{editedSizeQuantity[r.id] ?? (r.size_quantity != null ? String(r.size_quantity) : '')}</span>
                     ) : (
                       <input
-                        className="border border-gray-200 rounded px-1 w-full max-w-[3rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+                        className="border border-theme-light-gray rounded px-1 w-full max-w-[3rem] focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
                         type="text"
                         inputMode="decimal"
                         placeholder="3.5"
@@ -692,7 +700,7 @@ export default function ClassificationReviewPage() {
                       <span>{editedSizeUnit[r.id] ?? r.size_unit ?? ''}</span>
                     ) : (
                       <input
-                        className="border border-gray-200 rounded px-1 w-full max-w-[2.5rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+                        className="border border-theme-light-gray rounded px-1 w-full max-w-[2.5rem] focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
                         placeholder="oz"
                         value={editedSizeUnit[r.id] ?? r.size_unit ?? ''}
                         onChange={(e) => setEditedSizeUnit((p) => ({ ...p, [r.id]: e.target.value }))}
@@ -704,7 +712,7 @@ export default function ClassificationReviewPage() {
                       <span>{editedPackageType[r.id] ?? r.package_type ?? ''}</span>
                     ) : (
                       <input
-                        className="border border-gray-200 rounded px-1 w-full max-w-[4rem] focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+                        className="border border-theme-light-gray rounded px-1 w-full max-w-[4rem] focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
                         placeholder="bottle"
                         value={editedPackageType[r.id] ?? r.package_type ?? ''}
                         onChange={(e) => setEditedPackageType((p) => ({ ...p, [r.id]: e.target.value }))}
@@ -714,14 +722,14 @@ export default function ClassificationReviewPage() {
                   <td className="px-2 py-2">
                     {r.status === 'confirmed' ? (
                       <button
-                        className="px-2 py-1 bg-red-100 rounded text-red-800 hover:bg-red-200"
+                        className="px-2 py-1 bg-theme-red/15 rounded text-theme-red hover:bg-theme-red/20"
                         onClick={() => handlePatch(r.id, { status: 'pending' })}
                       >
                         Modification
                       </button>
                     ) : (
                       <select
-                        className="border border-gray-200 rounded px-1 w-full max-w-[4.5rem] text-xs focus:ring-1 focus:ring-gray-300 focus:border-gray-300"
+                        className="border border-theme-light-gray rounded px-1 w-full max-w-[4.5rem] text-xs focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
                         value={r.status}
                         onChange={(e) => handlePatch(r.id, { status: e.target.value })}
                         title={r.status}
@@ -745,7 +753,7 @@ export default function ClassificationReviewPage() {
                     )}
                     {(r.status === 'cancelled' || r.status === 'deferred') && (
                       <button
-                        className="px-2 py-1 border rounded text-gray-600"
+                        className="px-2 py-1 border rounded text-theme-dark/90"
                         onClick={() => handlePatch(r.id, { status: 'pending' })}
                       >
                         Reopen
@@ -755,7 +763,7 @@ export default function ClassificationReviewPage() {
                       type="button"
                       onClick={() => handleDelete(r.id)}
                       disabled={deletingId === r.id}
-                      className="px-2 py-1 text-red-600 hover:underline disabled:opacity-50"
+                      className="px-2 py-1 text-theme-red hover:underline disabled:opacity-50"
                     >
                       {deletingId === r.id ? 'Deleting…' : 'Delete'}
                     </button>

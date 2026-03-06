@@ -1,0 +1,3 @@
+-- DEPRECATED - find_categorization_rule() is not created on fresh databases (see 019).
+-- This migration dropped the function. Since 019 no longer creates it, this DROP is a no-op.
+-- New databases: do NOT run this file.

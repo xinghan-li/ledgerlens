@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 012_add_receipt_items_and_summaries.sql
+-- Content: record_summaries.information JSONB; subtotal/tax/fees/total -> INTEGER (cents); DROP uploaded_at
+-- New databases: do NOT run this file (already in 012 final schema).

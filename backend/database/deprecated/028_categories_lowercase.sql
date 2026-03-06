@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 015_add_categories_tree.sql
+-- Content: UPDATE categories SET name = lower(name), path = lower(path)
+-- New databases: do NOT run this file (seed data is already lowercase in 015).

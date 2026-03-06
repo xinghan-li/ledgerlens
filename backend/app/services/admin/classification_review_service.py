@@ -51,13 +51,55 @@ def list_classification_review(
         for c in (ch.data or []):
             chains[c["id"]] = c.get("name")
 
+    # Enrich store_display (name + location/city) from source receipt when available
+    source_ids = [r["source_record_item_id"] for r in rows if r.get("source_record_item_id")]
+    receipt_id_by_ri = {}
+    if source_ids:
+        ri_res = supabase.table("record_items").select("id, receipt_id").in_("id", source_ids).execute()
+        for ri in (ri_res.data or []):
+            receipt_id_by_ri[ri["id"]] = ri.get("receipt_id")
+    receipt_ids = list({rid for rid in receipt_id_by_ri.values() if rid})
+    summaries = {}
+    if receipt_ids:
+        rs_res = supabase.table("record_summaries").select(
+            "receipt_id, store_name, store_chain_id, store_location_id, store_address"
+        ).in_("receipt_id", receipt_ids).execute()
+        for s in (rs_res.data or []):
+            summaries[s["receipt_id"]] = s
+    location_ids = {s.get("store_location_id") for s in summaries.values() if s.get("store_location_id")}
+    locations = {}
+    if location_ids:
+        loc_res = supabase.table("store_locations").select("id, name, city").in_("id", list(location_ids)).execute()
+        for loc in (loc_res.data or []):
+            locations[loc["id"]] = loc
+
     for r in rows:
         r["category_name"] = None
         r["category_path"] = None
         if r.get("category_id") and r["category_id"] in categories:
             r["category_name"] = categories[r["category_id"]].get("name")
             r["category_path"] = categories[r["category_id"]].get("path")
-        r["store_chain_name"] = chains.get(r["store_chain_id"]) if r.get("store_chain_id") else None
+        chain_name = chains.get(r["store_chain_id"]) if r.get("store_chain_id") else None
+        r["store_chain_name"] = chain_name
+
+        # store_display: "Store Name\nLocation" (e.g. "Costco Wholesale\nLynnwood")
+        line1 = chain_name or ""
+        line2 = ""
+        rid = r.get("source_record_item_id")
+        if rid and rid in receipt_id_by_ri:
+            rec_id = receipt_id_by_ri[rid]
+            s = summaries.get(rec_id) if rec_id else None
+            if s:
+                line1 = (s.get("store_name") or "").strip() or chain_name or ""
+                loc_id = s.get("store_location_id")
+                if loc_id and loc_id in locations:
+                    loc = locations[loc_id]
+                    line2 = (loc.get("name") or loc.get("city") or "").strip()
+                elif (s.get("store_address") or "").strip():
+                    # Fallback: first line of address (e.g. city if single line)
+                    addr = (s.get("store_address") or "").strip()
+                    line2 = addr.split("\n")[0].strip() if addr else ""
+        r["store_display"] = (line1 + ("\n" + line2 if line2 else "")).strip() or None
 
     return rows, total
 

@@ -5,7 +5,7 @@ Supports text-only and vision (image + text) modes.
 import google.genai as genai
 from google.genai import types
 from ...config import settings
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import logging
 import json
 
@@ -90,10 +90,6 @@ async def parse_receipt_with_gemini(
     client = await _get_client()
     model = model or settings.gemini_model
     
-    # Add debug logs to confirm the model being used
-    logger.info(f"Gemini model from settings: {settings.gemini_model}")
-    logger.info(f"Using Gemini model: {model}")
-    
     try:
         # Merge system_message and user_message
         # In the new API, we can use system_instruction parameter
@@ -105,8 +101,7 @@ async def parse_receipt_with_gemini(
             response_mime_type="application/json",
         )
 
-        logger.info(f"Calling Google Gemini API with model: {model}")
-        logger.debug(f"Gemini API call - message length: {len(combined_message)} chars")
+        logger.info(f"Gemini API call: model={model}")
 
         # Call API using google-genai SDK (config param, not generation_config)
         try:
@@ -115,7 +110,6 @@ async def parse_receipt_with_gemini(
                 contents=combined_message,
                 config=config,
             )
-            logger.debug(f"Gemini API response received: {type(response)}")
         except Exception as api_error:
             _handle_gemini_api_error(api_error, "Gemini text")
             raise
@@ -137,8 +131,6 @@ async def parse_receipt_with_gemini(
                 raise ValueError("Unexpected response format from Gemini API")
         else:
             raise ValueError("Unexpected response format from Gemini API")
-        
-        logger.info("Google Gemini API call successful")
         
         # Parse JSON (Gemini sometimes wraps it with ```json)
         content = _extract_json_from_response(content)
@@ -208,7 +200,7 @@ Instructions:
         response_mime_type="application/json",
     )
 
-    logger.info(f"Calling Gemini vision retry with model={model}, image size={len(image_bytes)} bytes")
+    logger.info(f"Gemini vision retry: model={model}")
     try:
         response = client.models.generate_content(
             model=model,
@@ -243,15 +235,28 @@ Instructions:
         raise ValueError(f"Invalid JSON response from Gemini vision: {e}")
 
 
+def _usage_from_gemini_response(response: Any) -> Optional[Dict[str, int]]:
+    """Extract token usage from Gemini GenerateContentResponse. Returns None if not available."""
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return None
+    in_tok = getattr(usage, "prompt_token_count", None) or getattr(usage, "promptTokenCount", None)
+    out_tok = getattr(usage, "candidates_token_count", None) or getattr(usage, "candidatesTokenCount", None)
+    if in_tok is None and out_tok is None:
+        return None
+    return {"input_tokens": in_tok, "output_tokens": out_tok}
+
+
 async def parse_receipt_with_gemini_vision_escalation(
     image_bytes: bytes,
     instruction: str,
     model: str,
     mime_type: str = "image/jpeg",
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Optional[Dict[str, int]]]:
     """
     Escalation path: send receipt image + single instruction to Gemini (vision).
     Same instruction is used for both OpenAI and Gemini escalation for consensus.
+    Returns (parsed_json, usage_dict). usage_dict has input_tokens, output_tokens (or None).
     """
     client = await _get_client()
     blob = types.Blob(data=image_bytes, mime_type=mime_type)
@@ -263,7 +268,7 @@ async def parse_receipt_with_gemini_vision_escalation(
         temperature=0,
         response_mime_type="application/json",
     )
-    logger.info(f"Calling Gemini vision escalation with model={model}, image size={len(image_bytes)} bytes")
+    logger.info(f"Gemini vision escalation: model={model}")
     try:
         response = client.models.generate_content(
             model=model,
@@ -273,6 +278,7 @@ async def parse_receipt_with_gemini_vision_escalation(
     except Exception as api_error:
         _handle_gemini_api_error(api_error, "Gemini vision escalation")
         raise
+    usage = _usage_from_gemini_response(response)
     if hasattr(response, "text"):
         content = response.text.strip()
     elif hasattr(response, "candidates") and response.candidates:
@@ -290,7 +296,7 @@ async def parse_receipt_with_gemini_vision_escalation(
         raise ValueError("Unexpected Gemini vision escalation response format")
     content = _extract_json_from_response(content)
     try:
-        return json.loads(content)
+        return json.loads(content), usage
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON from Gemini vision escalation: {e}")
         raise ValueError(f"Invalid JSON from Gemini vision escalation: {e}")

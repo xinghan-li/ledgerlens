@@ -46,10 +46,10 @@ export default function AuthCallbackPage() {
 
   if (status === 'checking') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="min-h-screen flex items-center justify-center bg-theme-cream">
         <div className="text-center">
           <div className="animate-spin text-6xl">⏳</div>
-          <p className="mt-4 text-gray-600">Completing sign-in…</p>
+          <p className="mt-4 text-theme-dark/90">Completing sign-in…</p>
         </div>
       </div>
     )
@@ -57,19 +57,19 @@ export default function AuthCallbackPage() {
 
   if (status === 'success') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="min-h-screen flex items-center justify-center bg-theme-cream">
         <div className="text-center">
-          <p className="text-gray-600">Sign-in successful. Redirecting…</p>
+          <p className="text-theme-dark/90">Sign-in successful. Redirecting…</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-theme-cream p-4">
       <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center">
-        <p className="text-red-600 mb-4">{message}</p>
-        <a href="/login" className="text-blue-600 hover:underline">Back to sign-in</a>
+        <p className="text-theme-red mb-4">{message}</p>
+        <a href="/login" className="text-theme-orange hover:underline">Back to sign-in</a>
       </div>
     </div>
   )

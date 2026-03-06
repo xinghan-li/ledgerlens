@@ -210,19 +210,26 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
     if subtotal is None:
         if total is not None:
             total_float = float(total)
+            tax_float = float(tax)
             tol = _effective_tolerance(subtotal, total, line_total_sum)
-            line_total_diff = abs(line_total_sum - total_float)
+            # When subtotal is null, total usually includes tax: check line_total_sum + tax ≈ total
+            line_total_plus_tax = line_total_sum + tax_float
+            line_total_diff = abs(line_total_plus_tax - total_float)
             line_total_check_passed = line_total_diff <= tol
             check_details["line_total_sum_check"] = {
                 "passed": line_total_check_passed,
-                "reason": "subtotal_is_null_using_total",
-                "calculated": round(line_total_sum, 2), "expected": round(total_float, 2),
-                "difference": round(line_total_diff, 2), "tolerance": tol
+                "reason": "subtotal_is_null_compare_items_plus_tax_to_total",
+                "calculated": round(line_total_plus_tax, 2),
+                "line_total_sum": round(line_total_sum, 2),
+                "tax": round(tax_float, 2),
+                "expected": round(total_float, 2),
+                "difference": round(line_total_diff, 2),
+                "tolerance": tol,
             }
             check_details["subtotal_tax_sum_check"] = None
             if not line_total_check_passed:
                 check_details["errors"].append(
-                    f"Line total sum mismatch (subtotal is null): calculated {line_total_sum:.2f}, expected {total_float:.2f}"
+                    f"Line total sum + tax mismatch (subtotal is null): calculated {line_total_plus_tax:.2f}, expected {total_float:.2f}"
                 )
                 return False, check_details
             return True, check_details

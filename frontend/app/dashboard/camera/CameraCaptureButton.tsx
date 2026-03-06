@@ -2,32 +2,38 @@
 
 import { useRef, useCallback, useState, useEffect } from 'react'
 import { useCameraStream } from './useCameraStream'
+import { useApiUrl } from '@/lib/api-url-context'
+import { authFetch } from '@/lib/auth-context'
 
-const apiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
-function normalizeNetworkError(msg: string): string {
+function normalizeNetworkError(msg: string, apiBaseUrl: string): string {
   if (msg === 'Load failed' || msg === 'Load failed.' || msg.includes('Failed to fetch')) {
-    const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-    return 'Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current: ' + base
+    return 'Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current: ' + apiBaseUrl
   }
   return msg
 }
 
+type AuthCtx = { token: string | null; refreshToken: () => Promise<string | null> } | null
+
 type Props = {
   token: string | null
+  /** 若传入则 401 时自动刷新并重试一次 */
+  auth?: AuthCtx
   disabled?: boolean
   /** 由父组件传入：整页处于「上传中」时为 true，相机按钮显示为沙漏 + Processing… 与 Upload receipt 一致 */
   showAsProcessing?: boolean
   onUploadStart?: () => void
   onSuccess?: () => void
   onError?: (message: string) => void
+  /** Optional ref to the trigger button so parent can call .click() to open camera (e.g. from header) */
+  triggerRef?: React.RefObject<HTMLButtonElement | null>
 }
 
 /**
  * Button that opens a camera modal, captures a photo, shows preview (freeze), then user can Upload or Retake.
  * Intended for mobile (camera permission) but works on desktop with webcam.
  */
-export default function CameraCaptureButton({ token, disabled, showAsProcessing, onUploadStart, onSuccess, onError }: Props) {
+export default function CameraCaptureButton({ token, auth, disabled, showAsProcessing, onUploadStart, onSuccess, onError, triggerRef }: Props) {
+  const apiBaseUrl = useApiUrl()
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const { stream, error: streamError, status, start, stop } = useCameraStream()
@@ -151,12 +157,19 @@ export default function CameraCaptureButton({ token, disabled, showAsProcessing,
     try {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 180000)
-      const res = await fetch(`${apiUrl()}/api/receipt/workflow`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-        signal: controller.signal,
-      })
+      const res = auth
+        ? await authFetch(
+            apiBaseUrl,
+            '/api/receipt/workflow-vision',
+            { method: 'POST', headers: {}, body: formData, signal: controller.signal },
+            auth
+          )
+        : await fetch(`${apiBaseUrl}/api/receipt/workflow-vision`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            body: formData,
+            signal: controller.signal,
+          })
       clearTimeout(timeoutId)
       if (res.ok) {
         const data = await res.json()
@@ -166,15 +179,19 @@ export default function CameraCaptureButton({ token, disabled, showAsProcessing,
         }
         onSuccess?.()
       } else {
-        const err = await res.json().catch(() => ({}))
-        const msg = typeof err.detail === 'string' ? err.detail : err.detail?.detail ?? res.statusText
-        onError?.(msg)
+        if (res.status === 401) {
+          onError?.('Session updated. Please try again.')
+        } else {
+          const err = await res.json().catch(() => ({}))
+          const msg = typeof err.detail === 'string' ? err.detail : err.detail?.detail ?? res.statusText
+          onError?.(msg)
+        }
       }
     } catch (e) {
       if ((e as Error).name === 'AbortError') {
         onError?.('Request timed out (3 min). Check My Receipts later in case it finished.')
       } else {
-        onError?.(normalizeNetworkError(e instanceof Error ? e.message : 'Upload failed.'))
+        onError?.(normalizeNetworkError(e instanceof Error ? e.message : 'Upload failed.', apiBaseUrl))
       }
     } finally {
       setUploading(false)
@@ -184,7 +201,7 @@ export default function CameraCaptureButton({ token, disabled, showAsProcessing,
   if (showAsProcessing) {
     return (
       <div
-        className="inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-500 cursor-wait select-none min-h-[44px] sm:min-h-0"
+        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-500 cursor-wait select-none min-h-[44px] sm:min-h-0"
         aria-busy="true"
         aria-label="Processing receipt"
       >
@@ -197,14 +214,16 @@ export default function CameraCaptureButton({ token, disabled, showAsProcessing,
   return (
     <>
       <button
+        ref={triggerRef}
         type="button"
         onClick={handleOpen}
         disabled={disabled}
-        className="inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-gray-600 hover:bg-gray-700 disabled:opacity-50 transition min-h-[44px] sm:min-h-0"
+        className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium hover:opacity-85 disabled:opacity-50 disabled:cursor-not-allowed transition min-h-[44px] sm:min-h-0"
+        style={{ backgroundColor: '#191919', color: '#FAFAF7' }}
         aria-label="Take photo of receipt"
       >
         <span aria-hidden>📷</span>
-        <span className="hidden sm:inline">Camera</span>
+        <span>Camera</span>
       </button>
 
       {open && (
@@ -223,7 +242,7 @@ export default function CameraCaptureButton({ token, disabled, showAsProcessing,
 
           <div className="flex-1 relative flex items-center justify-center min-h-0 overflow-hidden">
             {streamError && (
-              <p className="text-red-400 px-4 text-center text-sm">{streamError}</p>
+              <p className="text-theme-red px-4 text-center text-sm">{streamError}</p>
             )}
             {status === 'requesting' && !previewUrl && (
               <p className="text-white text-sm">Requesting camera…</p>
@@ -268,14 +287,14 @@ export default function CameraCaptureButton({ token, disabled, showAsProcessing,
                   type="button"
                   onClick={handleRetake}
                   disabled={uploading}
-                  className="px-6 py-3 rounded-lg font-medium text-gray-200 hover:bg-white/10 min-h-[48px]"
+                  className="px-6 py-3 rounded-lg font-medium text-theme-gray-919 hover:bg-white/10 min-h-[48px]"
                 >
                   Retake
                 </button>
                 <button
                   type="button"
                   onClick={handleClose}
-                  className="px-6 py-3 rounded-lg font-medium text-gray-400 hover:bg-white/10 min-h-[48px]"
+                  className="px-6 py-3 rounded-lg font-medium text-theme-mid hover:bg-white/10 min-h-[48px]"
                 >
                   Cancel
                 </button>
@@ -293,7 +312,7 @@ export default function CameraCaptureButton({ token, disabled, showAsProcessing,
                 <button
                   type="button"
                   onClick={handleClose}
-                  className="px-6 py-3 rounded-lg font-medium text-gray-200 hover:bg-white/10 min-h-[48px]"
+                  className="px-6 py-3 rounded-lg font-medium text-theme-gray-919 hover:bg-white/10 min-h-[48px]"
                 >
                   Cancel
                 </button>
