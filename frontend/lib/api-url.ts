@@ -12,7 +12,7 @@ let resolvePromise: Promise<string> | null = null
 function fallbackUrl(): string {
   return (
     (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_URL) ||
-    'https://ledgerlens-be.ngrok-free.app'
+    ''
   )
 }
 
@@ -28,20 +28,23 @@ export function getApiBaseUrl(): Promise<string> {
     if (typeof window === 'undefined') {
       return fallbackUrl()
     }
-    try {
-      const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS)
-      const res = await fetch(`${LOCAL}/health`, {
-        signal: ctrl.signal,
-        cache: 'no-store',
-      })
-      clearTimeout(t)
-      if (res.ok) {
-        cached = LOCAL
-        return LOCAL
+    // 只在 localhost 域名下才探测本地后端，生产环境直接用 NEXT_PUBLIC_API_URL
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      try {
+        const ctrl = new AbortController()
+        const t = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS)
+        const res = await fetch(`${LOCAL}/health`, {
+          signal: ctrl.signal,
+          cache: 'no-store',
+        })
+        clearTimeout(t)
+        if (res.ok) {
+          cached = LOCAL
+          return LOCAL
+        }
+      } catch {
+        /* ignore */
       }
-    } catch {
-      /* ignore */
     }
     cached = fallbackUrl()
     return cached
