@@ -135,6 +135,95 @@ def load_prompts_for_receipt_parse(
     return result
 
 
+# Appended to second-round system message only when first-run item count mismatch AND items contain fee/deposit (see build_second_round_system_message).
+ITEM_COUNT_DEPOSIT_PARAGRAPH = (
+    "**Item count vs. receipt:** If your extracted item count does not match the receipt's \"Items sold\" (or similar), "
+    "check for bottle deposit, bottle fee, container fee, or environmental fee lines—stores may or may not count these as items. "
+    "If the mismatch is within ± the number of such fee/deposit lines, do not change your extraction; "
+    "add a bullet in reasoning (e.g. \"• Item count off by N; may be due to deposit/fee lines being counted or not as items.\"). "
+    "Only correct the extraction if the difference is larger than that or there is another clear error."
+)
+
+
+def _should_append_item_count_deposit_paragraph(first_pass_result: Dict[str, Any]) -> bool:
+    """
+    True when first-pass has item count mismatch and at least one item looks like fee/deposit,
+    so we should append the item-count/deposit paragraph to the second-round system message.
+    """
+    if not first_pass_result:
+        return False
+    items = first_pass_result.get("items") or []
+    meta = first_pass_result.get("_metadata") or {}
+    expected = meta.get("item_count_on_receipt")
+    if expected is None:
+        return False
+    try:
+        expected = int(expected)
+    except (TypeError, ValueError):
+        return False
+    actual = len(items)
+    if actual == expected:
+        return False
+    # Check for fee/deposit-like lines (case-insensitive)
+    keywords = ("bottle", "deposit", "fee", "container", "environmental", "crf", "env ", "bag fee")
+    for it in items:
+        text = " ".join(
+            str(it.get(k) or "") for k in ("product_name", "raw_text")
+        ).lower()
+        if any(kw in text for kw in keywords):
+            return True
+    return False
+
+
+def build_second_round_system_message(
+    store_chain_id: Optional[str] = None,
+    location_id: Optional[str] = None,
+    first_pass_result: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Build the full system message for the second LLM pass (refinement).
+    Uses load_second_round_prompts; then, only when first-pass item count is wrong
+    AND items contain fee/deposit wording, appends the item-count vs. receipt paragraph.
+    Call this (with first_pass_result) when building the second-round request.
+    """
+    loaded = load_second_round_prompts(
+        store_chain_id=store_chain_id,
+        location_id=location_id,
+    )
+    parts = loaded.get("system_parts") or []
+    system_message = "\n\n".join(parts) if parts else ""
+    if first_pass_result and _should_append_item_count_deposit_paragraph(first_pass_result):
+        if system_message:
+            system_message += "\n\n" + ITEM_COUNT_DEPOSIT_PARAGRAPH
+        else:
+            system_message = ITEM_COUNT_DEPOSIT_PARAGRAPH
+        logger.info(
+            "[PromptLoader] Appended item-count/deposit paragraph to second-round prompt "
+            "(first-pass count mismatch and fee/deposit items present)"
+        )
+    return system_message
+
+
+def load_second_round_prompts(
+    store_chain_id: Optional[str] = None,
+    location_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Load prompts for the second LLM pass (refinement when store is matched).
+    Returns [common prefix] + [store-specific content]: corrected-input rules and
+    suspicious-correction escalation are prepended for every store; then chain-
+    scoped content (e.g. Costco discount merge) is appended when chain_id matches.
+    Uses prompt_key='receipt_parse_second'. See migration 052.
+    For the full system message with optional item-count/deposit paragraph, use
+    build_second_round_system_message(..., first_pass_result=...).
+    """
+    return load_prompts_for_receipt_parse(
+        prompt_key="receipt_parse_second",
+        store_chain_id=store_chain_id,
+        location_id=location_id,
+    )
+
+
 def get_debug_prompt_system(prompt_key: str) -> Optional[str]:
     """
     Load the system prompt for a debug cascade step (e.g. receipt_parse_debug_ocr, receipt_parse_debug_vision).

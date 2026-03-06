@@ -11,6 +11,16 @@ import { useApiUrl } from '@/lib/api-url-context'
 import { useAuth, authFetch } from '@/lib/auth-context'
 import { useDashboardActions } from './dashboard-actions-context'
 
+const MAX_PROCESSING = 5
+
+async function sha256Hex(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer()
+  const hash = await crypto.subtle.digest('SHA-256', buf)
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
 type ReceiptListItem = {
   id: string
   uploaded_at: string
@@ -29,16 +39,15 @@ export default function DashboardPage() {
   const [userName, setUserName] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [sessionRefreshedHint, setSessionRefreshedHint] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [uploadSource, setUploadSource] = useState<'file' | 'camera' | null>(null)
+  const [processingCount, setProcessingCount] = useState(0)
   const [uploadWorkingHard, setUploadWorkingHard] = useState(false)
-  const [uploadBannerStep, setUploadBannerStep] = useState(0) // 0: writing, 1: escalated, 2: final check
   const [uploadResult, setUploadResult] = useState<any>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const workingHardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const uploadAbortRef = useRef<AbortController | null>(null)
-  const uploadCancelledByUserRef = useRef(false)
-  const uploadCleanupRef = useRef<{ clearBanner: () => void; timeoutId: ReturnType<typeof setTimeout> | null } | null>(null)
+  const inFlightKeysRef = useRef<Set<string>>(new Set())
+  const uploadControllersRef = useRef<Map<string, AbortController>>(new Map())
+  const processingCountRef = useRef(0)
+  const cancelledKeysRef = useRef<Set<string>>(new Set())
   const cameraUploadTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const [receiptList, setReceiptList] = useState<ReceiptListItem[]>([])
   const [receiptListLoading, setReceiptListLoading] = useState(false)
@@ -72,7 +81,7 @@ export default function DashboardPage() {
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
   const [smartCategorizeSelectedIds, setSmartCategorizeSelectedIds] = useState<Record<string, Set<string>>>({})
-  const [userClass, setUserClass] = useState<string | null>(null)
+  const [userClass, setUserClass] = useState<number | null>(null)
   const [processingRunsModalReceiptId, setProcessingRunsModalReceiptId] = useState<string | null>(null)
   const [processingRunsData, setProcessingRunsData] = useState<{ track: string; track_method: string | null; runs: Array<Record<string, unknown>>; workflow_steps: Array<Record<string, unknown>>; pipeline_version?: string | null } | null>(null)
   const [processingRunsLoading, setProcessingRunsLoading] = useState(false)
@@ -92,6 +101,10 @@ export default function DashboardPage() {
   const setSelectedIdsForReceipt = useCallback((receiptId: string, setter: (prev: Set<string>) => Set<string>) => {
     setSmartCategorizeSelectedIds((prev) => ({ ...prev, [receiptId]: setter(prev[receiptId] ?? new Set()) }))
   }, [])
+
+  useEffect(() => {
+    processingCountRef.current = processingCount
+  }, [processingCount])
 
   useEffect(() => {
     if (!token) {
@@ -309,43 +322,60 @@ export default function DashboardPage() {
     cameraUploadTimersRef.current = []
   }, [])
 
-  const handleCameraUploadStart = useCallback(() => {
-    setUploading(true)
-    setUploadSource('camera')
-    setUploadError(null)
-    setUploadResult(null)
-    setUploadBannerStep(0)
-    setUploadWorkingHard(false)
-    clearCameraUploadTimers()
-    cameraUploadTimersRef.current = [
-      setTimeout(() => setUploadBannerStep(1), 25000),
-      setTimeout(() => setUploadBannerStep(2), 55000),
-      setTimeout(() => setUploadWorkingHard(true), 30000),
-    ]
-  }, [clearCameraUploadTimers])
+  const addToQueue = useCallback((key: string): boolean => {
+    if (processingCountRef.current >= MAX_PROCESSING) return false
+    if (inFlightKeysRef.current.has(key)) return false
+    inFlightKeysRef.current.add(key)
+    setProcessingCount((prev) => {
+      const next = prev + 1
+      if (next === 1)
+        workingHardTimerRef.current = setTimeout(() => setUploadWorkingHard(true), 30000)
+      return next
+    })
+    return true
+  }, [])
+
+  const removeFromQueue = useCallback((key: string) => {
+    inFlightKeysRef.current.delete(key)
+    uploadControllersRef.current.delete(key)
+    cancelledKeysRef.current.delete(key)
+    setProcessingCount((prev) => {
+      const next = prev - 1
+      if (next <= 0) {
+        if (workingHardTimerRef.current) {
+          clearTimeout(workingHardTimerRef.current)
+          workingHardTimerRef.current = null
+        }
+        setUploadWorkingHard(false)
+      }
+      return Math.max(0, next)
+    })
+  }, [])
+
+  const checkAndStartUpload = useCallback(
+    async (blob: Blob): Promise<{ allowed: boolean; key?: string }> => {
+      if (processingCountRef.current >= MAX_PROCESSING)
+        return { allowed: false }
+      const key = await sha256Hex(blob)
+      if (!addToQueue(key)) return { allowed: false }
+      return { allowed: true, key }
+    },
+    [addToQueue]
+  )
 
   const handleCameraUploadSuccess = useCallback(() => {
     clearCameraUploadTimers()
-    setUploading(false)
-    setUploadSource(null)
-    setUploadWorkingHard(false)
     fetchReceiptList()
   }, [clearCameraUploadTimers, fetchReceiptList])
 
-  const handleCameraUploadError = useCallback(
-    (message: string) => {
-      clearCameraUploadTimers()
-      setUploading(false)
-      setUploadSource(null)
-      setUploadWorkingHard(false)
-      setUploadError(message)
-      if (message.includes('Session updated')) {
-        setSessionRefreshedHint(true)
-        setTimeout(() => setSessionRefreshedHint(false), 5000)
-      }
-    },
-    [clearCameraUploadTimers]
-  )
+  const handleCameraUploadError = useCallback((message: string) => {
+    clearCameraUploadTimers()
+    setUploadError(message)
+    if (message.includes('Session updated')) {
+      setSessionRefreshedHint(true)
+      setTimeout(() => setSessionRefreshedHint(false), 5000)
+    }
+  }, [clearCameraUploadTimers])
 
   const fetchCategories = useCallback(async () => {
     if (!auth?.token) return
@@ -392,68 +422,62 @@ export default function DashboardPage() {
       return
     }
 
-    // 重置状态
-    uploadCancelledByUserRef.current = false
-    setUploading(true)
-    setUploadSource('file')
-    setUploadResult(null)
-    setUploadError(null)
-    setUploadBannerStep(0)
-    const bannerTimeouts: ReturnType<typeof setTimeout>[] = []
-    bannerTimeouts.push(setTimeout(() => setUploadBannerStep(1), 25000))
-    bannerTimeouts.push(setTimeout(() => setUploadBannerStep(2), 55000))
-    const clearBannerTimers = (): void => {
-      bannerTimeouts.forEach((t) => clearTimeout(t))
+    if (processingCountRef.current >= MAX_PROCESSING) {
+      setUploadError(`Up to ${MAX_PROCESSING} receipts can be processing at once. Please wait.`)
+      e.target.value = ''
+      return
+    }
+
+    let key: string
+    try {
+      key = await sha256Hex(file)
+    } catch {
+      setUploadError('Could not read file. Please try again.')
+      e.target.value = ''
+      return
+    }
+    if (!addToQueue(key)) {
+      if (inFlightKeysRef.current.has(key)) {
+        setUploadError('This image is already being uploaded.')
+      } else {
+        setUploadError(`Up to ${MAX_PROCESSING} receipts can be processing at once. Please wait.`)
+      }
+      e.target.value = ''
+      return
     }
 
     const formData = new FormData()
     formData.append('file', file)
+    const controller = new AbortController()
+    uploadControllersRef.current.set(key, controller)
+    const timeoutId = setTimeout(() => controller.abort(), 180000)
 
     try {
-      console.log('Upload to:', `${apiBaseUrl}/api/receipt/workflow-vision`)
-      console.log('File:', file.name, file.type, file.size)
-      
-      // 3 分钟超时（多步 LLM 可能需 2–3 分钟）；30s 后仅显示 “working hard” 提示，不报错
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 180000) // 3 min
-      workingHardTimerRef.current = setTimeout(() => setUploadWorkingHard(true), 30000) // 30s 后显示友好提示
-      uploadAbortRef.current = controller
-      uploadCleanupRef.current = { clearBanner: clearBannerTimers, timeoutId }
-
-      try {
-        let response: Response
-        if (auth) {
-          response = await authFetch(
-            apiBaseUrl,
-            '/api/receipt/workflow-vision',
-            {
-              method: 'POST',
-              headers: {},
-              body: formData,
-              signal: controller.signal,
-            },
-            auth
-          )
-        } else {
-          response = await fetch(`${apiBaseUrl}/api/receipt/workflow-vision`, {
+      let response: Response
+      if (auth) {
+        response = await authFetch(
+          apiBaseUrl,
+          '/api/receipt/workflow-vision',
+          {
             method: 'POST',
-            headers: { Authorization: `Bearer ${requestToken}` },
+            headers: {},
             body: formData,
             signal: controller.signal,
-          })
-        }
+          },
+          auth
+        )
+      } else {
+        response = await fetch(`${apiBaseUrl}/api/receipt/workflow-vision`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${requestToken}` },
+          body: formData,
+          signal: controller.signal,
+        })
+      }
+      clearTimeout(timeoutId)
 
-        clearTimeout(timeoutId)
-        clearBannerTimers()
-        if (workingHardTimerRef.current) {
-          clearTimeout(workingHardTimerRef.current)
-          workingHardTimerRef.current = null
-        }
-        console.log('Response status:', response.status, response.statusText)
-
-        if (response.ok) {
+      if (response.ok) {
         const data = await response.json()
-        console.log('✅ Upload success:', data)
         setUploadResult(data)
         setUploadError(null)
         fetchReceiptList()
@@ -475,72 +499,46 @@ export default function DashboardPage() {
               const text = await response.text()
               if (text) errorMessage = text
             } catch {
-              // 忽略
+              // ignore
             }
           }
         }
         setUploadError(errorMessage)
       }
-      } catch (fetchError) {
-        clearTimeout(timeoutId)
-        clearBannerTimers()
-        if (workingHardTimerRef.current) {
-          clearTimeout(workingHardTimerRef.current)
-          workingHardTimerRef.current = null
-        }
-        throw fetchError
-      }
     } catch (error) {
-      console.error('❌ Upload error:', error)
-      clearBannerTimers()
-      if (workingHardTimerRef.current) {
-        clearTimeout(workingHardTimerRef.current)
-        workingHardTimerRef.current = null
-      }
-      // 用户点击 Stop 取消：不显示错误，直接回到未上传状态
-      if (error instanceof Error && error.name === 'AbortError' && uploadCancelledByUserRef.current) {
-        setUploadError(null)
-        setUploadResult(null)
-        return
-      }
-      // 更详细的错误提示
-      if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
-        } else if (error.message.includes('Failed to fetch') || error.message === 'Load failed' || error.message === 'Load failed.') {
-          setUploadError('Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current API: ' + apiBaseUrl)
+      clearTimeout(timeoutId)
+      if (!(error instanceof Error && error.name === 'AbortError' && cancelledKeysRef.current.has(key))) {
+        if (error instanceof Error) {
+          if (error.name === 'AbortError') {
+            setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
+          } else if (error.message.includes('Failed to fetch') || error.message === 'Load failed' || error.message === 'Load failed.') {
+            setUploadError('Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current API: ' + apiBaseUrl)
+          } else {
+            setUploadError(error.message)
+          }
         } else {
-          setUploadError(error.message)
+          setUploadError('Network error. Please retry.')
         }
-      } else {
-        setUploadError('Network error. Please retry.')
       }
     } finally {
-      setUploading(false)
-      setUploadSource(null)
-      setUploadWorkingHard(false)
-      clearBannerTimers()
-      if (workingHardTimerRef.current) {
-        clearTimeout(workingHardTimerRef.current)
-        workingHardTimerRef.current = null
-      }
-      uploadAbortRef.current = null
-      uploadCleanupRef.current = null
-      // 清空 input value，否则下次选同一文件时 onChange 不会触发（删除小票后未整页刷新时会出现）
+      removeFromQueue(key)
       e.target.value = ''
     }
   }
 
-  const handleCancelUpload = (): void => {
-    uploadCancelledByUserRef.current = true
-    uploadCleanupRef.current?.clearBanner()
-    if (uploadCleanupRef.current?.timeoutId != null) clearTimeout(uploadCleanupRef.current.timeoutId)
+  const handleCancelAllUploads = useCallback(() => {
+    const keys = Array.from(uploadControllersRef.current.keys())
+    keys.forEach((k) => cancelledKeysRef.current.add(k))
+    uploadControllersRef.current.forEach((c) => c.abort())
+    uploadControllersRef.current.clear()
+    inFlightKeysRef.current.clear()
     if (workingHardTimerRef.current) {
       clearTimeout(workingHardTimerRef.current)
       workingHardTimerRef.current = null
     }
-    uploadAbortRef.current?.abort()
-  }
+    setUploadWorkingHard(false)
+    setProcessingCount(0)
+  }, [])
 
   if (loading) {
     return (
@@ -576,52 +574,25 @@ export default function DashboardPage() {
                 onChange={handleUpload}
                 className="hidden"
                 id="receipt-upload"
-                disabled={uploading}
+                disabled={processingCount >= MAX_PROCESSING}
               />
-              {uploading && uploadSource === 'file' ? (
-              <div
-                className="group relative flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium cursor-wait select-none min-h-[44px] sm:min-h-0"
-                style={{ backgroundColor: '#CC785C', color: '#FAFAF7' }}
-                title="Hover to show Stop"
-              >
-                <span className="inline-block animate-spin text-lg">⏳</span>
-                <span>Processing…</span>
-                <button
-                  type="button"
-                  onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); handleCancelUpload() }}
-                  className="absolute right-2 px-2.5 py-1 rounded bg-theme-red hover:bg-theme-red/90 text-white text-sm font-medium opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 focus:outline-none"
-                  aria-label="Stop and cancel upload"
-                >
-                  Stop
-                </button>
-              </div>
-            ) : uploading && uploadSource === 'camera' ? (
-              <div
-                className="flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium cursor-not-allowed select-none min-h-[44px] sm:min-h-0"
-                style={{ backgroundColor: '#e8e6dc', color: '#b0aea5' }}
-                aria-hidden
-              >
-                <span aria-hidden>🧾</span>
-                <span className="hidden sm:inline">Upload Receipt</span>
-              </div>
-            ) : (
               <label
                 htmlFor="receipt-upload"
-                className="flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium cursor-pointer transition-opacity hover:opacity-90 select-none min-h-[44px] sm:min-h-0"
+                className={`flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium select-none min-h-[44px] sm:min-h-0 ${processingCount >= MAX_PROCESSING ? 'cursor-not-allowed opacity-60' : 'cursor-pointer transition-opacity hover:opacity-90'}`}
                 style={{ backgroundColor: '#CC785C', color: '#FAFAF7' }}
               >
                 <span aria-hidden>🧾</span>
                 <span>Upload Receipt</span>
               </label>
-            )}
             </div>
             <div className="min-w-0 order-2 sm:order-3">
               <CameraCaptureButton
                 token={token}
                 auth={auth ?? undefined}
-                disabled={uploading}
-                showAsProcessing={uploading && uploadSource === 'camera'}
-                onUploadStart={handleCameraUploadStart}
+                disabled={processingCount >= MAX_PROCESSING}
+                showAsProcessing={false}
+                onCheckQueue={checkAndStartUpload}
+                onRemoveFromQueue={removeFromQueue}
                 onSuccess={handleCameraUploadSuccess}
                 onError={handleCameraUploadError}
                 triggerRef={cameraTriggerRef}
@@ -640,27 +611,31 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* 上传中：bookkeeper 状态横幅（随等待时间切换） */}
-        {uploading && (
-          <div className="mb-4 p-4 sm:p-5 bg-theme-light-gray/50 border border-theme-orange/30 rounded-lg text-center animate-pulse">
-            {uploadBannerStep === 0 && (
-              <>
-                <p className="text-theme-dark font-medium text-base sm:text-lg mb-1">Your smart assistant is working hard on bookkeeping</p>
-                <p className="text-theme-orange text-sm">No need to stay here. The task may take a minute.</p>
-              </>
-            )}
-            {uploadBannerStep === 1 && (
-              <>
-                <p className="text-theme-dark font-medium text-base sm:text-lg mb-1">The bookkeeper has questions on the receipt. Escalating it to senior bookkeeper.</p>
-                <p className="text-theme-orange text-sm">You can close this page and come back later — we’ll have it ready when they’re done.</p>
-              </>
-            )}
-            {uploadBannerStep === 2 && (
-              <>
-                <p className="text-theme-dark font-medium text-base sm:text-lg mb-1">Doing final check.</p>
-                <p className="text-theme-orange text-sm">Almost there — thank you for your patience.</p>
-              </>
-            )}
+        {/* 上传中：显示还有几张在处理，允许继续上传（最多 5 张） */}
+        {processingCount > 0 && (
+          <div className="mb-4 p-4 sm:p-5 bg-theme-light-gray/50 border border-theme-orange/30 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 animate-processing-pulse">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <span className="inline-block text-xl sm:text-2xl animate-sandglass-tilt select-none" aria-hidden>
+                ⏳
+              </span>
+              <div>
+                <p className="text-theme-dark font-medium text-base sm:text-lg mb-0.5">
+                  {processingCount} receipt{processingCount !== 1 ? 's' : ''} still processing.
+                </p>
+                <p className="text-theme-orange text-sm">
+                  You can upload more (up to {MAX_PROCESSING} at a time).
+                  {uploadWorkingHard && ' This may take a minute.'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleCancelAllUploads}
+              className="px-3 py-1.5 rounded bg-theme-red/90 hover:bg-theme-red text-white text-sm font-medium shrink-0"
+              aria-label="Cancel all uploads"
+            >
+              Cancel all
+            </button>
           </div>
         )}
         {/* Upload success/error toasts */}
@@ -996,12 +971,173 @@ export default function DashboardPage() {
                                           <span className="text-sm font-medium text-theme-dark/90">Edit receipt</span>
                                           <button type="button" className="p-1.5 text-theme-mid hover:text-theme-dark hover:bg-theme-light-gray rounded" onClick={(e) => { e.stopPropagation(); setCorrectionOpenReceiptId(null) }} title="Close">▶</button>
                                         </div>
-                                        <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
-                                          <p className="text-sm text-theme-mid">Edit form matches desktop. Use desktop for full editing; you can close this panel on mobile.</p>
+                                        <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0 pb-safe">
+                                          {correctMessage && (
+                                            <div className={`p-2 rounded text-sm ${correctMessage.startsWith('Saved') ? 'bg-green-100 text-green-800' : 'bg-theme-red/15 text-theme-red'}`}>
+                                              {correctMessage}
+                                            </div>
+                                          )}
+                                          <div className="grid grid-cols-1 gap-2">
+                                            <label className="flex flex-col gap-0.5">
+                                              <span className="text-xs text-theme-mid">Store name</span>
+                                              <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editStoreName} onChange={(e) => setEditStoreName(e.target.value)} placeholder="Store name" />
+                                            </label>
+                                            <label className="flex flex-col gap-0.5">
+                                              <span className="text-xs text-theme-mid">Address line 1</span>
+                                              <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressLine1} onChange={(e) => setEditAddressLine1(e.target.value)} placeholder="Street address" />
+                                            </label>
+                                            <label className="flex flex-col gap-0.5">
+                                              <span className="text-xs text-theme-mid">Address line 2</span>
+                                              <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressLine2} onChange={(e) => setEditAddressLine2(e.target.value)} placeholder="Unit / Suite" />
+                                            </label>
+                                            <label className="flex flex-col gap-0.5">
+                                              <span className="text-xs text-theme-mid">City, State ZIP</span>
+                                              <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressCityStateZip} onChange={(e) => setEditAddressCityStateZip(e.target.value)} placeholder="Lynnwood, WA 98036" />
+                                            </label>
+                                            <label className="flex flex-col gap-0.5">
+                                              <span className="text-xs text-theme-mid">Country</span>
+                                              <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressCountry} onChange={(e) => setEditAddressCountry(e.target.value)} placeholder="US" />
+                                            </label>
+                                            <label className="flex flex-col gap-0.5">
+                                              <span className="text-xs text-theme-mid">Phone</span>
+                                              <input className="border rounded px-2 py-2 text-sm touch-manipulation" type="tel" value={editMerchantPhone} onChange={(e) => setEditMerchantPhone(e.target.value)} placeholder="425-640-2648" />
+                                            </label>
+                                            <label className="flex flex-col gap-0.5">
+                                              <span className="text-xs text-theme-mid">Purchase date</span>
+                                              <input type="date" className="border rounded px-2 py-2 text-sm touch-manipulation" value={editReceiptDate} onChange={(e) => setEditReceiptDate(e.target.value)} />
+                                            </label>
+                                            <label className="flex flex-col gap-0.5">
+                                              <span className="text-xs text-theme-mid">Purchase time (optional, 24h e.g. 15:34)</span>
+                                              <input type="text" className="border rounded px-2 py-2 text-sm font-mono touch-manipulation" placeholder="15:34" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} maxLength={5} inputMode="numeric" />
+                                            </label>
+                                            <div className="grid grid-cols-3 gap-2">
+                                              <label className="flex flex-col gap-0.5">
+                                                <span className="text-xs text-theme-mid">Subtotal</span>
+                                                <input className="border rounded px-2 py-2 text-sm touch-manipulation" inputMode="decimal" value={editSubtotal} onChange={(e) => setEditSubtotal(e.target.value)} placeholder="0.00" />
+                                              </label>
+                                              <label className="flex flex-col gap-0.5">
+                                                <span className="text-xs text-theme-mid">Tax</span>
+                                                <input className="border rounded px-2 py-2 text-sm touch-manipulation" inputMode="decimal" value={editTax} onChange={(e) => setEditTax(e.target.value)} placeholder="0.00" />
+                                              </label>
+                                              <label className="flex flex-col gap-0.5">
+                                                <span className="text-xs text-theme-mid">Total *</span>
+                                                <input className="border rounded px-2 py-2 text-sm touch-manipulation" inputMode="decimal" value={editTotal} onChange={(e) => setEditTotal(e.target.value)} placeholder="0.00" />
+                                              </label>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2">
+                                              <label className="flex flex-col gap-0.5">
+                                                <span className="text-xs text-theme-mid">Currency</span>
+                                                <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editCurrency} onChange={(e) => setEditCurrency(e.target.value)} placeholder="USD" />
+                                              </label>
+                                              <label className="flex flex-col gap-0.5">
+                                                <span className="text-xs text-theme-mid">Payment method</span>
+                                                <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editPaymentMethod} onChange={(e) => setEditPaymentMethod(e.target.value)} placeholder="AMEX Credit" />
+                                              </label>
+                                              <label className="flex flex-col gap-0.5">
+                                                <span className="text-xs text-theme-mid">Card last 4</span>
+                                                <input className="border rounded px-2 py-2 text-sm touch-manipulation" inputMode="numeric" maxLength={4} value={editPaymentLast4} onChange={(e) => setEditPaymentLast4(e.target.value)} placeholder="5030" />
+                                              </label>
+                                            </div>
+                                          </div>
+                                          <div>
+                                            <p className="text-xs text-theme-dark/90 mb-2">Item lines</p>
+                                            <div className="max-h-56 overflow-auto border border-theme-light-gray rounded-lg divide-y divide-theme-light-gray/50 overscroll-contain">
+                                              {editItems.map((row, idx) => (
+                                                <div key={idx} className="p-2.5 space-y-2 bg-white first:rounded-t-lg last:rounded-b-lg">
+                                                  <div>
+                                                    <label className="text-xs text-theme-mid block mb-0.5">Product name</label>
+                                                    <input className="w-full border rounded px-2 py-2 text-sm touch-manipulation" placeholder="Product name" value={row.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], product_name: e.target.value }; return n })} />
+                                                  </div>
+                                                  <div className="grid grid-cols-3 gap-2">
+                                                    <div>
+                                                      <label className="text-xs text-theme-mid block mb-0.5">Qty</label>
+                                                      <input type="text" inputMode="numeric" className="w-full border rounded px-2 py-2 text-sm touch-manipulation" value={row.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], quantity: e.target.value }; return n })} />
+                                                    </div>
+                                                    <div>
+                                                      <label className="text-xs text-theme-mid block mb-0.5">Unit pr</label>
+                                                      <input className="w-full border rounded px-2 py-2 text-sm touch-manipulation" inputMode="decimal" value={row.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], unit_price: e.target.value }; return n })} />
+                                                    </div>
+                                                    <div>
+                                                      <label className="text-xs text-theme-mid block mb-0.5">$ Amount</label>
+                                                      <input className="w-full border rounded px-2 py-2 text-sm touch-manipulation" inputMode="decimal" value={row.line_total} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], line_total: e.target.value }; return n })} />
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                            <button type="button" className="mt-2 w-full py-2.5 text-sm font-medium text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/20 rounded-lg border border-theme-mid touch-manipulation" onClick={() => setEditItems((prev) => [...prev, { product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])}>
+                                              + Add row
+                                            </button>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            className="w-full px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm font-medium touch-manipulation safe-area-pb"
+                                            disabled={correctSubmitting || !editTotal.trim()}
+                                            onClick={async (e) => {
+                                              e.stopPropagation()
+                                              if (!token || !r.id) return
+                                              setCorrectSubmitting(true)
+                                              setCorrectMessage(null)
+                                              try {
+                                                const totalNum = editTotal.trim() ? parseFloat(editTotal) : NaN
+                                                if (isNaN(totalNum)) { setCorrectMessage('Please enter Total'); setCorrectSubmitting(false); return }
+                                                const summary = {
+                                                  store_name: editStoreName.trim() || undefined,
+                                                  store_address: [editAddressLine1, editAddressLine2, editAddressCityStateZip, editAddressCountry].filter(Boolean).join('\n').trim() || undefined,
+                                                  merchant_phone: editMerchantPhone.trim() || undefined,
+                                                  receipt_date: editReceiptDate.trim() || undefined,
+                                                  purchase_time: formatTimeToHHmm(editPurchaseTime).trim() || undefined,
+                                                  subtotal: editSubtotal.trim() ? parseFloat(editSubtotal) : undefined,
+                                                  tax: editTax.trim() ? parseFloat(editTax) : undefined,
+                                                  total: totalNum,
+                                                  currency: editCurrency.trim() || 'USD',
+                                                  payment_method: editPaymentMethod.trim() || undefined,
+                                                  payment_last4: editPaymentLast4.trim() || undefined,
+                                                }
+                                                const itemsPayload = editItems
+                                                  .filter((it) => (it.product_name || '').trim())
+                                                  .map((it) => ({
+                                                    id: it.id || undefined,
+                                                    product_name: it.product_name.trim(),
+                                                    quantity: it.quantity.trim() ? parseFloat(it.quantity) : undefined,
+                                                    unit: it.unit.trim() || undefined,
+                                                    unit_price: it.unit_price.trim() ? parseFloat(it.unit_price) : undefined,
+                                                    line_total: it.line_total.trim() ? parseFloat(it.line_total) : undefined,
+                                                    on_sale: it.on_sale,
+                                                    original_price: it.original_price?.trim() ? parseFloat(it.original_price) : undefined,
+                                                    discount_amount: it.discount_amount?.trim() ? parseFloat(it.discount_amount) : undefined,
+                                                  }))
+                                                const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/correct`, {
+                                                  method: 'POST',
+                                                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                  body: JSON.stringify({ summary, items: itemsPayload }),
+                                                })
+                                                const data = res.ok ? await res.json().catch(() => ({})) : await res.json().catch(() => ({}))
+                                                if (!res.ok) throw new Error(data.detail || data.detail?.detail || 'Submit failed')
+                                                setCorrectMessage('Saved. Receipt updated.')
+                                                setUploadResult(null)
+                                                setUploadError(null)
+                                                fetchReceiptList()
+                                                const detailRes = await fetch(`${apiBaseUrl}/api/receipt/${r.id}`, {
+                                                  headers: { Authorization: `Bearer ${token}` },
+                                                })
+                                                if (detailRes.ok) {
+                                                  const detailJson = await detailRes.json()
+                                                  setExpandedReceiptData((prev) => ({ ...prev, [r.id]: detailJson }))
+                                                }
+                                              } catch (err) {
+                                                setCorrectMessage(err instanceof Error ? err.message : 'Submit failed')
+                                              } finally {
+                                                setCorrectSubmitting(false)
+                                              }
+                                            }}
+                                          >
+                                            {correctSubmitting ? 'Saving…' : 'Save correction'}
+                                          </button>
                                         </div>
                                       </div>
                                       <div className="mt-4 flex flex-wrap items-center gap-2 px-4 pb-2">
-                                        {(userClass === 'admin' || userClass === 'super_admin') && (
+                                        {(userClass === 7 || userClass === 9) && (
                                           <>
                                             <button type="button" className="text-sm text-theme-dark/90 hover:text-theme-dark underline" onClick={(e) => { e.stopPropagation(); setShowRawJson((v) => !v) }}>{showRawJson ? 'Hide' : 'Show'} raw JSON</button>
                                             <button type="button" className="text-sm text-theme-dark/90 hover:text-theme-dark underline" onClick={(e) => { e.stopPropagation(); if (expandedReceiptData[r.id]) navigator.clipboard.writeText(JSON.stringify(expandedReceiptData[r.id], null, 2)); alert('Copied'); }}>Copy</button>
@@ -1853,7 +1989,7 @@ export default function DashboardPage() {
                                       </div>
                                     </div>
                                   </div>
-                                {(userClass === 'admin' || userClass === 'super_admin') && (
+                                {(userClass === 7 || userClass === 9) && (
                                   <div className="mt-4 flex flex-wrap items-center gap-2">
                                     <button
                                       type="button"
@@ -2069,7 +2205,7 @@ export default function DashboardPage() {
             </div>
           </div>
         )}
-      {/* Back to top */}
+      {/* Back to top: only on tap; overscroll-behavior in globals prevents bounce-to-top when reaching bottom */}
       <div className="flex justify-center pb-8 pt-2">
         <button
           type="button"

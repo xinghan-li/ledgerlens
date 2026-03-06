@@ -27,6 +27,7 @@ from ..config import settings
 from ..processors.core.sum_checker import check_receipt_sums
 from ..services.categorization.receipt_categorizer import categorize_receipt
 from ..services.database.supabase_client import (
+    USER_CLASS_ADMIN,
     append_workflow_step,
     check_duplicate_by_hash,
     check_user_locked,
@@ -60,6 +61,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Prompt constants
 # ---------------------------------------------------------------------------
+
+# Injected at runtime so the LLM knows which dates are valid (any receipt date on or before this is valid)
+REFERENCE_DATE_INSTRUCTION = """REFERENCE DATE (today): {reference_date}. Any receipt date on or before this date is valid; use the date exactly as printed on the receipt. Do not change the year to match this reference date.
+
+"""
 
 VISION_PRIMARY_PROMPT = """You are a bookkeeper for personal shopping categorization.
 Read the attached receipt image and extract the data into the JSON structure below.
@@ -133,13 +139,17 @@ RULES:
     If only one method: output as a string: "Visa"
     If unknown: "Other"
 
-12. purchase_time: output as HH:MM in 24-hour format. Drop seconds. Null if not visible.
+12. purchase_date: Use the date EXACTLY as printed on the receipt, in YYYY-MM-DD format.
+    Do NOT substitute or "correct" the year: if the receipt shows 2026, output 2026; if it shows 2025, output 2025.
+    Never change the year to the current year or assume a typo. Null if not visible.
 
-13. fees: extract any environmental fee, bottle deposit, bag fee, CRF, etc. as a
+13. purchase_time: output as HH:MM in 24-hour format. Drop seconds. Null if not visible.
+
+14. fees: extract any environmental fee, bottle deposit, bag fee, CRF, etc. as a
     receipt-level total (sum of all such charges in cents). Null or 0 if none present.
     These are also included as individual line items in the items array.
 
-14. Output only valid JSON — no markdown fences, no extra text.
+15. Output only valid JSON — no markdown fences, no extra text.
 
 OUTPUT SCHEMA (all amounts in cents):
 {
@@ -205,6 +215,8 @@ OUTPUT SCHEMA (all amounts in cents):
 
 
 VISION_ESCALATION_PROMPT_TEMPLATE = """You are a senior bookkeeper for personal shopping categorization.
+REFERENCE DATE (today): {reference_date}. Any receipt date on or before this date is valid; use the date exactly as printed on the receipt. Do not change the year to match this reference date.
+
 A faster model (gemini-2.5-flash) attempted to read the attached receipt image but could not produce a reliable result.
 
 FAILURE REASON FROM PREVIOUS ATTEMPT:
@@ -247,17 +259,19 @@ RULES:
 8. payment_method must be one of: "Visa", "Mastercard", "AmEx", "Discover", "Cash",
    "Gift Card", "Other". If two methods: output as array ["Gift Card", "Visa"].
 
-9. purchase_time: HH:MM in 24-hour format. Drop seconds.
+9. purchase_date: Use the date EXACTLY as printed on the receipt (YYYY-MM-DD). Do NOT substitute the year: if the receipt shows 2026, output 2026; never change it to the current year. Null if not visible.
 
-10. fees: sum of all environmental/bottle/bag/CRF charges at receipt level (cents).
+10. purchase_time: HH:MM in 24-hour format. Drop seconds.
 
-11. Set _metadata.validation_status and reasoning:
+11. fees: sum of all environmental/bottle/bag/CRF charges at receipt level (cents).
+
+12. Set _metadata.validation_status and reasoning:
     - "pass" if sum check passes, item count matches, confidence is high or medium.
     - "needs_review" if sum check fails or item count mismatches or confidence is low.
     - When only item count mismatches (e.g. receipt says 10, extracted 9) and sum check passes: set validation_status="needs_review" so the user can review; the backend will NOT escalate (often just deposit/fee or count difference).
     - _metadata.reasoning must explain specifically what passed or failed.
 
-12. Output only valid JSON — no markdown, no extra text.
+13. Output only valid JSON — no markdown, no extra text.
 
 OUTPUT SCHEMA (identical to primary, all amounts in cents):
 {{
@@ -307,6 +321,11 @@ OUTPUT SCHEMA (identical to primary, all amounts in cents):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _get_reference_date() -> str:
+    """Current date (UTC) for prompt context: any receipt date on or before this is valid."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
 
 def _normalize_payment_method(pm: Any) -> str:
     """Normalize payment_method: array → joined string, single string → as-is."""
@@ -505,6 +524,7 @@ async def _run_vision_escalation(
     Returns (gemini_result, openai_result); either may be None on error.
     """
     escalation_prompt = VISION_ESCALATION_PROMPT_TEMPLATE.format(
+        reference_date=_get_reference_date(),
         failure_reason=failure_reason,
         primary_notes=primary_notes,
     )
@@ -640,7 +660,7 @@ async def process_receipt_workflow_vision(
     # Rate-limit / lock check
     if user_id:
         user_class = get_user_class(user_id)
-        if user_class not in ("super_admin", "admin"):
+        if user_class < USER_CLASS_ADMIN:
             locked, locked_until = check_user_locked(user_id)
             if locked:
                 return {
@@ -658,7 +678,7 @@ async def process_receipt_workflow_vision(
         existing_receipt_id = check_duplicate_by_hash(file_hash, user_id)
         if existing_receipt_id:
             user_class = get_user_class(user_id)
-            allow_dup = user_class in ("super_admin", "admin") or settings.allow_duplicate_for_debug
+            allow_dup = user_class >= USER_CLASS_ADMIN or settings.allow_duplicate_for_debug
             if allow_dup:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 file_hash = f"{original_file_hash}_debug_{timestamp}"
@@ -699,9 +719,10 @@ async def process_receipt_workflow_vision(
 
     primary_usage: Optional[Dict[str, int]] = None
     try:
+        primary_instruction = REFERENCE_DATE_INSTRUCTION.format(reference_date=_get_reference_date()) + VISION_PRIMARY_PROMPT
         primary_result, primary_usage = await parse_receipt_with_gemini_vision_escalation(
             image_bytes=image_bytes,
-            instruction=VISION_PRIMARY_PROMPT,
+            instruction=primary_instruction,
             model=settings.gemini_model,
             mime_type=mime_type,
         )

@@ -59,6 +59,11 @@
   --theme-orange-hover: #c4694a;
 }
 
+/* Prevent overscroll at bottom from bouncing page back to top on mobile */
+html, body {
+  overscroll-behavior-y: contain;
+}
+
 body {
   font-family: var(--font-lora), Georgia, serif;
   color: #141413;

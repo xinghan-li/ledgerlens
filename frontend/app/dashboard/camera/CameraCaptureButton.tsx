@@ -21,6 +21,10 @@ type Props = {
   disabled?: boolean
   /** 由父组件传入：整页处于「上传中」时为 true，相机按钮显示为沙漏 + Processing… 与 Upload receipt 一致 */
   showAsProcessing?: boolean
+  /** 上传前检查队列：返回 { allowed, key }，不允许时（满 5 张或重复图）不发起上传 */
+  onCheckQueue?: (blob: Blob) => Promise<{ allowed: boolean; key?: string }>
+  /** 上传结束（成功或失败）时从队列移除，传入 onCheckQueue 返回的 key */
+  onRemoveFromQueue?: (key: string) => void
   onUploadStart?: () => void
   onSuccess?: () => void
   onError?: (message: string) => void
@@ -32,7 +36,7 @@ type Props = {
  * Button that opens a camera modal, captures a photo, shows preview (freeze), then user can Upload or Retake.
  * Intended for mobile (camera permission) but works on desktop with webcam.
  */
-export default function CameraCaptureButton({ token, auth, disabled, showAsProcessing, onUploadStart, onSuccess, onError, triggerRef }: Props) {
+export default function CameraCaptureButton({ token, auth, disabled, showAsProcessing, onCheckQueue, onRemoveFromQueue, onUploadStart, onSuccess, onError, triggerRef }: Props) {
   const apiBaseUrl = useApiUrl()
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -143,6 +147,17 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
       onError?.('Not logged in. Please refresh the page and try again.')
       return
     }
+    let queueKey: string | undefined
+    if (onCheckQueue) {
+      const result = await onCheckQueue(capturedBlob)
+      if (!result.allowed) {
+        onError?.('This image is already being uploaded or the queue is full (up to 5 at a time).')
+        return
+      }
+      queueKey = result.key
+    } else {
+      onUploadStart?.()
+    }
     setUploading(true)
     const formData = new FormData()
     formData.append('file', capturedBlob, 'capture.jpg')
@@ -153,7 +168,6 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
     }
     setCapturedBlob(null)
     stop()
-    onUploadStart?.()
     try {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 180000)
@@ -195,8 +209,9 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
       }
     } finally {
       setUploading(false)
+      if (queueKey) onRemoveFromQueue?.(queueKey)
     }
-  }, [capturedBlob, token, onUploadStart, onSuccess, onError, stop, previewUrl])
+  }, [capturedBlob, token, onCheckQueue, onRemoveFromQueue, onUploadStart, onSuccess, onError, stop, previewUrl])
 
   if (showAsProcessing) {
     return (
@@ -228,12 +243,12 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
 
       {open && (
         <div className="fixed inset-0 z-[99999] flex flex-col bg-black" style={{ touchAction: 'manipulation' }}>
-          <div className="flex items-center justify-between p-3 sm:p-4 bg-black/80 text-white shrink-0">
-            <span className="text-sm font-medium">Point camera at receipt</span>
+          <div className="flex items-center justify-between py-2 px-3 sm:py-2 sm:px-4 bg-black/80 text-white shrink-0">
+            <span className="text-xs sm:text-sm font-medium">Point camera at receipt</span>
             <button
               type="button"
               onClick={handleClose}
-              className="p-2 rounded-full hover:bg-white/20 min-h-[44px] min-w-[44px] flex items-center justify-center"
+              className="p-1.5 rounded-full hover:bg-white/20 min-h-[32px] min-w-[32px] sm:min-h-[44px] sm:min-w-[44px] flex items-center justify-center"
               aria-label="Close"
             >
               ✕
@@ -270,31 +285,33 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
 
           <canvas ref={canvasRef} className="hidden" />
 
-          <div className="p-4 sm:p-6 bg-black/80 flex flex-col sm:flex-row gap-3 justify-center items-stretch sm:items-center">
+          <div className="p-3 sm:p-4 bg-black/80 flex flex-row gap-2 sm:gap-3 justify-center items-center shrink-0">
             {previewUrl ? (
               <>
+                <button
+                  type="button"
+                  onClick={handleRetake}
+                  disabled={uploading}
+                  className="flex-1 sm:flex-none px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-theme-gray-919 hover:bg-white/10 min-h-[44px] sm:min-h-[48px] select-none"
+                  aria-label="Retake photo"
+                >
+                  Retake
+                </button>
                 <button
                   type="button"
                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleUpload() }}
                   onPointerDown={(e) => e.stopPropagation()}
                   disabled={uploading}
-                  className="px-6 py-3 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[48px] active:bg-green-800 select-none"
+                  className="flex-1 sm:flex-none px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] sm:min-h-[48px] active:bg-green-800 select-none"
                   aria-label="Upload photo"
                 >
                   {uploading ? 'Uploading…' : 'Upload'}
                 </button>
                 <button
                   type="button"
-                  onClick={handleRetake}
-                  disabled={uploading}
-                  className="px-6 py-3 rounded-lg font-medium text-theme-gray-919 hover:bg-white/10 min-h-[48px]"
-                >
-                  Retake
-                </button>
-                <button
-                  type="button"
                   onClick={handleClose}
-                  className="px-6 py-3 rounded-lg font-medium text-theme-mid hover:bg-white/10 min-h-[48px]"
+                  className="flex-1 sm:flex-none px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-theme-red hover:bg-theme-red/20 min-h-[44px] sm:min-h-[48px] select-none"
+                  aria-label="Cancel"
                 >
                   Cancel
                 </button>

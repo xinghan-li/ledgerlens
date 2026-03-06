@@ -138,7 +138,7 @@ def get_or_create_user_id(firebase_uid: str, email: str) -> Optional[str]:
         "id": new_id,
         "firebase_uid": firebase_uid,
         "email": email or None,
-        "user_class": "free",
+        "user_class": 0,
         "status": "active",
     }).execute()
     logger.info("Created new user from Firebase: id=%s firebase_uid=%s email=%s", new_id, firebase_uid, email)

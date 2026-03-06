@@ -56,6 +56,74 @@ npm run dev
 
 ---
 
+## 🌐 部署架构
+
+### 生产环境
+
+| 服务 | 平台 | 地址 |
+|---|---|---|
+| 前端 | Vercel (production 分支) | https://ledgerlens.net |
+| 后端 | GCP Cloud Run | `https://xxxx-uc.a.run.app` |
+| 数据库 | Supabase (production project) | `pwbgiszbsercdtsjfjmy.supabase.co` |
+
+### 分支与部署对应关系
+
+```
+main        → Vercel Preview (ledgerlens-git-main-xinghans-projects-2327145c.vercel.app)
+production  → Vercel Production (ledgerlens.net)
+```
+
+**更新生产环境流程：**
+1. 在 `main` 上开发和测试
+2. 测试通过后：`git checkout production && git merge main && git push origin production`
+3. Vercel 自动重新部署 `ledgerlens.net`
+
+---
+
+## 🔧 本地后端 + Preview 前端调试
+
+当需要用**真实登录**测试前后端交互时，使用 Preview URL + ngrok。
+
+**Preview URL 使用本地后端（ngrok），Production URL 始终使用 Cloud Run，互不干扰。**
+
+### 环境变量配置（已在 Vercel 中配置好）
+
+| 环境 | `NEXT_PUBLIC_API_URL` |
+|---|---|
+| Production | Cloud Run URL |
+| Preview | `https://ledgerlens-be.ngrok-free.app` |
+
+### 调试步骤
+
+**第一步：启动 ngrok（暴露本地后端）**
+
+```powershell
+ngrok http 8000 --hostname=ledgerlens-be.ngrok-free.app
+```
+
+**第二步：启动本地后端**
+
+```powershell
+cd backend
+python run_backend.py
+```
+
+**第三步：打开 Preview URL 测试**
+
+```
+https://ledgerlens-git-main-xinghans-projects-2327145c.vercel.app
+```
+
+用邮箱登录，此时请求走 ngrok → `localhost:8000` → dev Supabase。
+
+### 注意事项
+
+- `localhost:3000`（本地前端）也自动用 `localhost:8000`，不需要 ngrok
+- `ledgerlens.net`（生产）始终用 Cloud Run，本地跑不跑后端**没有任何影响**
+- Preview URL 已加入 Firebase Authorized Domains，可以正常登录
+
+---
+
 ## 📦 技术栈
 
 ### 后端

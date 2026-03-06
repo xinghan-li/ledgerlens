@@ -12,7 +12,8 @@ import { DashboardActionsProvider, useDashboardActions } from './dashboard-actio
 type UserInfo = {
   user_id: string
   email: string
-  user_class: string
+  /** User tier: 0=free, 2=premium, 7=admin, 9=super_admin */
+  user_class: number
   registration_no?: number
   registration_no_display?: string
   username?: string | null
@@ -81,10 +82,11 @@ export default function DashboardLayout({
         })
         if (res.ok) {
           const data = await res.json()
+          const userClass = Number(data.user_class)
           setUserInfo({
             user_id: data.user_id,
             email: data.email,
-            user_class: data.user_class,
+            user_class: Number.isNaN(userClass) ? 0 : userClass,
             registration_no: data.registration_no,
             registration_no_display: data.registration_no_display,
             username: data.username,
@@ -116,10 +118,11 @@ export default function DashboardLayout({
       const res = await fetch(`${apiBaseUrl}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
       if (res.ok) {
         const data = await res.json()
+        const userClass = Number(data.user_class)
         setUserInfo({
           user_id: data.user_id,
           email: data.email,
-          user_class: data.user_class,
+          user_class: Number.isNaN(userClass) ? 0 : userClass,
           registration_no: data.registration_no,
           registration_no_display: data.registration_no_display,
           username: data.username,
@@ -161,13 +164,15 @@ export default function DashboardLayout({
       >
         About
       </Link>
-      <Link
-        href="/admin/classification-review"
-        onClick={() => setNavOpen(false)}
-        className={`${navItemClass} min-h-[44px] sm:min-h-0`}
-      >
-        Admin Portal
-      </Link>
+      {userInfo && (Number(userInfo.user_class) >= 7) && (
+        <Link
+          href="/admin/classification-review"
+          onClick={() => setNavOpen(false)}
+          className={`${navItemClass} min-h-[44px] sm:min-h-0`}
+        >
+          Admin Portal
+        </Link>
+      )}
       <button
         onClick={() => { setNavOpen(false); handleLogout() }}
         className={`${navItemClass} min-h-[44px] sm:min-h-0 w-full sm:w-auto sm:min-w-28 text-left sm:justify-center`}
