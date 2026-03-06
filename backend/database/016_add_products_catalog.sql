@@ -1,118 +1,70 @@
 -- ============================================
--- Migration 016: Add products catalog table
--- ============================================
--- Purpose: Create unified product catalog for cross-receipt aggregation
--- and future PricePeek price comparison
+-- Migration 016: products 商品目录（最终形态）
 --
--- This enables:
--- 1. Aggregate same product across multiple receipts
--- 2. Normalize product names (banana vs BANANA vs Bananas)
--- 3. Cross-store price comparison
--- 4. Efficient product-level analytics
+-- 已合并以下迁移（新库直接建到最终形态，无需再单独运行）：
+--   020_drop_brands_table.sql                         → 新库从未建 brands，直接无 brand_id
+--   022_simplify_products.sql                         → 删除 variant_type/is_organic/aliases 等冗余列
+--   027_size_quantity_unit_package.sql (products 部分) → size 拆分为 size_quantity/size_unit/package_type
+--   029_size_quantity_2dec_and_products_store_chain.sql → size_quantity NUMERIC(12,2)；加 store_chain_id；唯一索引
 --
--- PREREQUISITES: 
--- - Migration 015 (categories table) must be run first
+-- PREREQUISITES: 015 (categories)
 -- ============================================
 
 BEGIN;
 
--- Enable pg_trgm extension for fuzzy text search
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
--- ============================================
--- 1. Create products catalog table
--- ============================================
 CREATE TABLE products (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  
-  -- Core identification
-  normalized_name TEXT NOT NULL,  -- 'banana', 'milk', 'bread' (lowercase, singular)
-  
-  -- Product specifications
-  size TEXT,                      -- '1 lb', '1 gallon', '24 oz'
-  unit_type TEXT,                 -- 'lb', 'gallon', 'oz', 'each', 'kg'
-  
-  -- Classification
+
+  normalized_name TEXT NOT NULL,
+
+  -- 商品规格（来自 027+029）
+  size_quantity NUMERIC(12,2),
+  size_unit TEXT,
+  package_type TEXT,
+
+  -- 关联门店（来自 029）
+  store_chain_id UUID REFERENCES store_chains(id) ON DELETE SET NULL,
+
   category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
-  
-  -- Statistics (updated by triggers/jobs)
-  usage_count INT DEFAULT 0,      -- How many times this product appears
-  last_seen_date DATE,            -- Last time this product was purchased
-  
-  -- Timestamps
+
+  usage_count INT DEFAULT 0,
+  last_seen_date DATE,
+
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  
-  -- Uniqueness constraint
-  CONSTRAINT products_unique_key UNIQUE(normalized_name, size)
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ============================================
--- 2. Indexes for performance
--- ============================================
+-- 索引
 CREATE INDEX products_normalized_name_idx ON products(normalized_name);
 CREATE INDEX products_category_idx ON products(category_id) WHERE category_id IS NOT NULL;
 CREATE INDEX products_usage_count_idx ON products(usage_count DESC);
 CREATE INDEX products_last_seen_idx ON products(last_seen_date DESC NULLS LAST);
-
--- Text search index
+CREATE INDEX products_store_chain_id_idx ON products(store_chain_id) WHERE store_chain_id IS NOT NULL;
 CREATE INDEX products_normalized_name_trgm_idx ON products USING gin(normalized_name gin_trgm_ops);
 
--- ============================================
--- 3. Triggers
--- ============================================
-CREATE TRIGGER products_updated_at 
+-- 唯一索引：NULL store_chain_id 统一视为同一 bucket（来自 029）
+CREATE UNIQUE INDEX products_unique_key ON products (
+  normalized_name,
+  COALESCE(size_quantity::text, ''),
+  COALESCE(size_unit, ''),
+  COALESCE(package_type, ''),
+  COALESCE(store_chain_id, '00000000-0000-0000-0000-000000000000'::uuid)
+);
+
+CREATE TRIGGER products_updated_at
   BEFORE UPDATE ON products
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
--- ============================================
--- 4. Comments
--- ============================================
-COMMENT ON TABLE products IS 'Unified product catalog for cross-receipt aggregation and price comparison';
+COMMENT ON TABLE products IS 'Unified product catalog for cross-receipt aggregation';
 COMMENT ON COLUMN products.normalized_name IS 'Normalized product name (lowercase, singular) for matching';
-COMMENT ON COLUMN products.size IS 'Product size/package (e.g., 1 lb, 1 gallon, 24 oz)';
-COMMENT ON COLUMN products.unit_type IS 'Unit of measurement (lb, gallon, oz, each, kg)';
-COMMENT ON COLUMN products.usage_count IS 'Number of times this product appears across all receipts';
-
--- ============================================
--- 5. Verification
--- ============================================
-DO $$
-BEGIN
-  RAISE NOTICE 'Migration 016 completed successfully.';
-  RAISE NOTICE 'Created products table with normalized catalog structure';
-  RAISE NOTICE 'Next steps:';
-  RAISE NOTICE '1. Run migration 017 to link receipt_items to products';
-  RAISE NOTICE '2. Implement LLM-based product normalization logic';
-  RAISE NOTICE '3. Backfill existing receipt_items with product_id';
-END $$;
+COMMENT ON COLUMN products.size_quantity IS 'Numeric quantity, 2 decimal places (e.g. 3.50)';
+COMMENT ON COLUMN products.size_unit IS 'Unit of measure (oz, ml, lb, ct, etc.)';
+COMMENT ON COLUMN products.package_type IS 'Package type (bottle, box, bag, jar, can, etc.)';
+COMMENT ON COLUMN products.store_chain_id IS 'Store chain for this product; NULL = global/legacy';
 
 COMMIT;
 
--- ============================================
--- Example queries
--- ============================================
-
--- Create a product
--- INSERT INTO products (normalized_name, size, unit_type, category_id)
--- SELECT 'banana', '1 lb', 'lb', c.id
--- FROM categories c WHERE c.path = 'Grocery/Produce/Fruit';
-
--- Search for products
--- SELECT p.normalized_name, p.size, c.path as category
--- FROM products p
--- LEFT JOIN categories c ON p.category_id = c.id
--- WHERE p.normalized_name LIKE '%banana%'
--- ORDER BY p.usage_count DESC;
-
--- Get category hierarchy for a product
--- SELECT 
---   c1.name as l1,
---   c2.name as l2,
---   c3.name as l3,
---   p.normalized_name
--- FROM products p
--- JOIN categories c3 ON p.category_id = c3.id
--- LEFT JOIN categories c2 ON c3.parent_id = c2.id
--- LEFT JOIN categories c1 ON c2.parent_id = c1.id
--- WHERE p.id = 'some-uuid';
+DO $$
+BEGIN
+  RAISE NOTICE 'Migration 016 completed: products table (final schema, incl. 020+022+027+029)';
+END $$;

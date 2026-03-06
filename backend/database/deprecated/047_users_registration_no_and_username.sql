@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 013_auto_create_user_on_signup.sql
+-- Content: users_registration_no_seq sequence; users.registration_no column; users_user_name_key unique index
+-- New databases: do NOT run this file (already in 013).

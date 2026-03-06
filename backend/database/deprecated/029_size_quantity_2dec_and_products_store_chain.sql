@@ -1,0 +1,4 @@
+-- DEPRECATED - Merged into 016_add_products_catalog.sql
+-- Content: size_quantity NUMERIC(12,2); products.store_chain_id FK; unique index with COALESCE(store_chain_id, sentinel)
+--          record_items_enriched view rebuild -> 017_link_receipt_items_to_products.sql
+-- New databases: do NOT run this file (already in 016 final schema).

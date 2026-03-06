@@ -5,8 +5,9 @@ import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { getFirebaseAuth } from '@/lib/firebase'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
-
-const apiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { useApiUrl } from '@/lib/api-url-context'
+import { AuthProvider } from '@/lib/auth-context'
+import { DashboardActionsProvider, useDashboardActions } from './dashboard-actions-context'
 
 type UserInfo = {
   user_id: string
@@ -17,6 +18,34 @@ type UserInfo = {
   username?: string | null
 } | null
 
+function HeaderActionButtons() {
+  const pathname = usePathname()
+  const { actions, bannerInView } = useDashboardActions()
+  const [justMounted, setJustMounted] = useState(true)
+  useEffect(() => {
+    if (!bannerInView) {
+      setJustMounted(true)
+      const t = requestAnimationFrame(() => {
+        requestAnimationFrame(() => setJustMounted(false))
+      })
+      return () => cancelAnimationFrame(t)
+    }
+  }, [bannerInView])
+  if (pathname !== '/dashboard' || !actions || bannerInView) return null
+  const baseClass = 'inline-flex items-center justify-center w-9 h-9 rounded-lg min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 sm:w-9 sm:h-9 shrink-0 transition-opacity hover:opacity-90'
+  return (
+    <span
+      className={`flex items-center gap-1.5 transition-all duration-300 ease-out ${
+        justMounted ? 'translate-x-2 opacity-0' : 'translate-x-0 opacity-100'
+      }`}
+    >
+      <button type="button" onClick={() => actions.onReceiptHistory()} className={`${baseClass} border-2 border-theme-mid/40 bg-white text-theme-dark hover:bg-theme-light-gray/50`} aria-label="Receipt History"><span aria-hidden>🔍</span></button>
+      <button type="button" onClick={() => actions.onUpload()} className={baseClass} style={{ backgroundColor: '#CC785C', color: '#FAFAF7' }} aria-label="Upload Receipt"><span aria-hidden>🧾</span></button>
+      <button type="button" onClick={() => actions.onCamera()} className={baseClass} style={{ backgroundColor: '#191919', color: '#FAFAF7' }} aria-label="Camera"><span aria-hidden>📷</span></button>
+    </span>
+  )
+}
+
 export default function DashboardLayout({
   children,
 }: {
@@ -24,11 +53,13 @@ export default function DashboardLayout({
 }) {
   const router = useRouter()
   const pathname = usePathname()
+  const apiBaseUrl = useApiUrl()
   const [userInfo, setUserInfo] = useState<UserInfo>(null)
   const [loading, setLoading] = useState(true)
   const [navOpen, setNavOpen] = useState(false)
   const [mounted, setMounted] = useState(false)
   const [usernameModalOpen, setUsernameModalOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   useEffect(() => {
     setMounted(true)
@@ -45,7 +76,7 @@ export default function DashboardLayout({
       }
       try {
         const token = await user.getIdToken()
-        const res = await fetch(`${apiUrl()}/api/auth/me`, {
+        const res = await fetch(`${apiBaseUrl}/api/auth/me`, {
           headers: { Authorization: `Bearer ${token}` },
         })
         if (res.ok) {
@@ -68,7 +99,7 @@ export default function DashboardLayout({
       }
     })
     return () => unsubscribe()
-  }, [router])
+  }, [router, apiBaseUrl])
 
   const handleLogout = async () => {
     const auth = getFirebaseAuth()
@@ -82,7 +113,7 @@ export default function DashboardLayout({
     if (!user) return
     try {
       const token = await user.getIdToken()
-      const res = await fetch(`${apiUrl()}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      const res = await fetch(`${apiBaseUrl}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
       if (res.ok) {
         const data = await res.json()
         setUserInfo({
@@ -103,74 +134,76 @@ export default function DashboardLayout({
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="min-h-screen flex items-center justify-center bg-theme-cream">
         <div className="text-center">
           <div className="animate-spin text-6xl">⏳</div>
-          <p className="mt-4 text-gray-600">Loading…</p>
+          <p className="mt-4 text-theme-dark/90">Loading…</p>
         </div>
       </div>
     )
   }
 
+  const navItemClass =
+    'inline-flex items-center justify-center min-w-28 py-2 text-sm font-medium text-theme-dark/90 hover:text-theme-dark hover:underline transition rounded-none'
+
   const navLinks = (
     <>
+      <HeaderActionButtons />
       {displayName && (
-        <span className="px-2 text-sm text-gray-600 truncate max-w-[120px] sm:max-w-[180px]" title={userInfo?.email || ''}>
+        <span className="px-2 text-sm text-theme-dark/90 truncate max-w-[120px] sm:max-w-[180px]" title={userInfo?.email || ''}>
           Hi, {userInfo?.username ? userInfo.username : userInfo?.registration_no_display ? `#${userInfo.registration_no_display}` : userInfo?.email}
         </span>
       )}
-      <button
-        type="button"
-        onClick={() => { setNavOpen(false); setUsernameModalOpen(true) }}
-        className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition"
+      <Link
+        href="/home"
+        onClick={() => setNavOpen(false)}
+        className={`${navItemClass} min-h-[44px] sm:min-h-0`}
       >
-        {userInfo?.username ? 'Edit username' : 'Set username'}
-      </button>
-      {userInfo?.user_class === 'super_admin' && (
-        <Link
-          href="/dashboard/developer"
-          onClick={() => setNavOpen(false)}
-          className={`flex items-center px-4 py-3 sm:py-2 text-sm font-medium rounded-lg transition min-h-[44px] sm:min-h-0 ${
-            mounted && pathname === '/dashboard/developer'
-              ? 'bg-gray-200 text-gray-900'
-              : 'text-gray-700 hover:text-gray-900 hover:bg-gray-100'
-          }`}
-        >
-          Developer
-        </Link>
-      )}
+        About
+      </Link>
       <Link
         href="/admin/classification-review"
         onClick={() => setNavOpen(false)}
-        className="flex items-center px-4 py-3 sm:py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition min-h-[44px] sm:min-h-0"
+        className={`${navItemClass} min-h-[44px] sm:min-h-0`}
       >
-        Admin
+        Admin Portal
       </Link>
       <button
         onClick={() => { setNavOpen(false); handleLogout() }}
-        className="w-full text-left px-4 py-3 sm:py-2 text-sm font-medium text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition min-h-[44px] sm:min-h-0 flex items-center"
+        className={`${navItemClass} min-h-[44px] sm:min-h-0 w-full sm:w-auto sm:min-w-28 text-left sm:justify-center`}
       >
         Log out
+      </button>
+      <button
+        type="button"
+        onClick={() => { setNavOpen(false); setSettingsOpen((o) => !o) }}
+        className="inline-flex items-center justify-center rounded-lg border-2 border-theme-mid/40 bg-white text-theme-dark hover:bg-theme-light-gray/50 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 w-auto sm:w-9 h-auto sm:h-9 px-3 sm:px-0"
+        aria-label="Settings"
+        title="Settings"
+      >
+        <span className="sm:hidden text-sm font-medium">setting</span>
+        <span className="hidden sm:inline text-lg" aria-hidden>⚙️</span>
       </button>
     </>
   )
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 py-3 sm:py-4 sm:px-6 lg:px-8 flex justify-between items-center gap-4">
-          <h1 className="text-xl sm:text-2xl font-bold text-gray-900 truncate min-w-0">
-            <Link href="/dashboard" className="hover:text-gray-700" onClick={() => setNavOpen(false)}>LedgerLens</Link>
-          </h1>
-          {/* Desktop nav */}
-          <nav className="hidden sm:flex items-center gap-2 lg:gap-4">
-            {navLinks}
-          </nav>
+    <DashboardActionsProvider>
+      <div className="min-h-screen bg-theme-cream">
+        <header className="sticky top-0 z-20 bg-white shadow border-b border-theme-light-gray/50">
+          <div className="max-w-7xl mx-auto px-4 py-3 sm:py-4 sm:px-6 lg:px-8 flex justify-between items-center gap-4">
+            <h1 className="font-heading text-xl font-bold text-theme-dark truncate min-w-0">
+              <Link href="/dashboard" className="hover:text-theme-orange hover:underline" onClick={() => setNavOpen(false)}>LedgerLens</Link>
+            </h1>
+            {/* Desktop nav */}
+            <nav className="hidden sm:flex items-center gap-2 lg:gap-4">
+              {navLinks}
+            </nav>
           {/* Mobile: hamburger + overlay nav */}
           <button
             type="button"
             onClick={() => setNavOpen((o) => !o)}
-            className="sm:hidden p-2 rounded-lg text-gray-700 hover:bg-gray-100 min-h-[44px] min-w-[44px] flex items-center justify-center"
+            className="sm:hidden p-2 rounded-lg text-theme-dark/90 hover:bg-theme-cream-f0 min-h-[44px] min-w-[44px] flex items-center justify-center"
             aria-label="Toggle menu"
           >
             {navOpen ? (
@@ -181,12 +214,34 @@ export default function DashboardLayout({
           </button>
         </div>
         {navOpen && (
-          <div className="sm:hidden border-t border-gray-200 bg-white px-2 py-2 flex flex-col gap-1">
+          <div className="sm:hidden border-t border-theme-ivory-dark bg-white px-2 py-2 flex flex-col gap-1">
             {navLinks}
           </div>
         )}
       </header>
-      <div className="min-h-[calc(100vh-4rem)] sm:min-h-0">{children}</div>
+      <div className="min-h-[calc(100vh-4rem)] sm:min-h-0">
+        <AuthProvider>{children}</AuthProvider>
+      </div>
+
+      {/* Settings dropdown: only "Edit username" for now */}
+      {settingsOpen && (
+        <div
+          className="fixed inset-0 z-10 sm:z-30"
+          aria-hidden
+          onClick={() => setSettingsOpen(false)}
+        />
+      )}
+      {settingsOpen && (
+        <div className="fixed right-4 top-16 z-20 sm:z-40 bg-white rounded-lg shadow-lg border border-theme-light-gray/50 py-1 min-w-[160px]">
+          <button
+            type="button"
+            className="w-full px-4 py-2 text-left text-sm text-theme-dark hover:bg-theme-light-gray/50"
+            onClick={() => { setUsernameModalOpen(true); setSettingsOpen(false) }}
+          >
+            {userInfo?.username ? 'Edit username' : 'Set username'}
+          </button>
+        </div>
+      )}
 
       {/* Set username modal */}
       {usernameModalOpen && (
@@ -200,6 +255,7 @@ export default function DashboardLayout({
         />
       )}
     </div>
+    </DashboardActionsProvider>
   )
 }
 
@@ -212,10 +268,10 @@ function UsernameModal({
   onClose: () => void
   onSuccess: () => void
 }) {
+  const apiBaseUrl = useApiUrl()
   const [value, setValue] = useState(currentUsername)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const apiUrl = () => process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -241,7 +297,7 @@ function UsernameModal({
         setError('Not signed in')
         return
       }
-      const res = await fetch(`${apiUrl()}/api/auth/me`, {
+      const res = await fetch(`${apiBaseUrl}/api/auth/me`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ username }),
@@ -261,25 +317,25 @@ function UsernameModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-lg font-semibold text-gray-900 mb-2">Set your username</h3>
-        <p className="text-sm text-gray-600 mb-4">Unique name for greeting and future feedback. Letters, numbers, . _ - only.</p>
+      <div className="bg-white rounded-xl shadow-xl border border-theme-light-gray/50 max-w-sm w-full p-6" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-heading text-lg font-semibold text-theme-dark mb-2">Set your username</h3>
+        <p className="text-sm text-theme-dark/90 mb-4">Unique name for greeting and future feedback. Letters, numbers, . _ - only.</p>
         <form onSubmit={handleSubmit}>
           <input
             type="text"
             value={value}
             onChange={(e) => setValue(e.target.value)}
             placeholder="e.g. alice_2024"
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            className="w-full px-3 py-2 border border-theme-mid rounded-lg focus:ring-2 focus:ring-theme-orange focus:border-theme-orange"
             maxLength={64}
             autoFocus
           />
-          {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+          {error && <p className="mt-2 text-sm text-theme-red">{error}</p>}
           <div className="mt-4 flex gap-2 justify-end">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-theme-dark/90 hover:bg-theme-cream-f0 rounded-lg">
               Cancel
             </button>
-            <button type="submit" disabled={loading} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            <button type="submit" disabled={loading} className="px-4 py-2 btn-primary disabled:opacity-50">
               {loading ? 'Saving…' : 'Save'}
             </button>
           </div>

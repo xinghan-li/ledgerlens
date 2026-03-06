@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 012_add_receipt_items_and_summaries.sql
+-- Content: record_items.user_feedback JSONB
+-- New databases: do NOT run this file (already in 012 final schema).

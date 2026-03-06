@@ -145,9 +145,20 @@ class Settings(BaseSettings):
     gemini_escalation_model: Optional[str] = Field(
         default=None,
         alias="GEMINI_ESCALATION_MODEL",
-        description="When set (e.g. gemini-3), cascade failures escalate to this model with image input for consensus with OpenAI escalation"
+        description="When set (e.g. gemini-3.1-pro), cascade failures escalate to this model with image input for consensus with OpenAI escalation"
     )
     
+    # Vision-First pipeline (Route B) settings
+    vision_pipeline_enabled: bool = Field(
+        default=True,
+        alias="VISION_PIPELINE_ENABLED",
+        description=(
+            "Enable Vision-First pipeline (Route B). "
+            "When True, /api/receipt/workflow-vision is active and the frontend uses "
+            "the vision-first flow. Set to 'false' to disable and fall back to legacy."
+        )
+    )
+
     # Debug settings
     allow_duplicate_for_debug: bool = Field(
         default=False,
@@ -168,7 +179,7 @@ class Settings(BaseSettings):
         )
     )
     
-    @field_validator('allow_duplicate_for_debug', 'enable_debug_logs', mode='before')
+    @field_validator('allow_duplicate_for_debug', 'enable_debug_logs', 'vision_pipeline_enabled', mode='before')
     @classmethod
     def parse_bool_from_string(cls, v: Any) -> bool:
         """Parse boolean from string environment variable."""

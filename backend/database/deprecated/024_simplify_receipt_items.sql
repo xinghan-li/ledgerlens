@@ -1,0 +1,4 @@
+-- DEPRECATED - Merged into 012_add_receipt_items_and_summaries.sql (table built with final schema)
+-- Content: DROP brand/category_l1/l2/l3/ocr_coordinates/ocr_confidence; convert numeric to BIGINT (cents x100)
+--          aggregate_prices_for_date function rewrite -> merged into 018_add_price_snapshots.sql
+-- New databases: do NOT run this file.

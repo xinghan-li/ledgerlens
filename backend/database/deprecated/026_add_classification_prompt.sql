@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 023_seed_prompt_library.sql
+-- Content: INSERT classification prompt into prompt_library + prompt_binding
+-- New databases: do NOT run this file (already in 023_seed).

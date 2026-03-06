@@ -302,9 +302,9 @@ def extract_items(
         # All unused amount blocks in this row (sorted by center_y so topmost amount first)
         amount_blocks = _find_all_amounts_in_row(row, main_x, tolerance, tracker)
 
-        logger.debug(f"[消消乐] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row.blocks)} blocks, {len(amount_blocks)} amounts")
+        logger.debug(f"[AmountUsage] Row {row.row_id}: Y_center={row.y_center:.4f}, text='{row.text[:80]}', {len(row.blocks)} blocks, {len(amount_blocks)} amounts")
         for idx, amount_block in enumerate(amount_blocks):
-            logger.debug(f"[消消乐] === Processing row_id={row.row_id}, amount #{idx+1}/{len(amount_blocks)}: ${amount_block.amount:.2f} at Y={amount_block.center_y:.4f} ===")
+            logger.debug(f"[AmountUsage] === Processing row_id={row.row_id}, amount #{idx+1}/{len(amount_blocks)}: ${amount_block.amount:.2f} at Y={amount_block.center_y:.4f} ===")
             # Skip rows that are not items: Points N with $0.00, or membership *** with $0.00 (store_config)
             if _should_skip_row_as_non_item(row, amount_block, store_config):
                 tracker.mark_used(amount_block, role="SKIP_NON_ITEM", row_id=row.row_id)
@@ -316,19 +316,19 @@ def extract_items(
             if not row_name_part.strip():
                 row_name_part = _remove_amount_from_text(row.text, amount_block.text)
             row_name_part = _strip_fp_and_amounts(row_name_part).strip()
-            logger.debug(f"[消消乐] row_name_part (left of amount in current row): '{row_name_part}'")
+            logger.debug(f"[AmountUsage] row_name_part (left of amount in current row): '{row_name_part}'")
 
             # 每行左边必须有内容：品名或 qty/unit。若当前行没有左侧块，说明 row_reconstructor 把本应同行的左右拆开了。
             left_blocks_in_row = [b for b in row.blocks if b.center_x < LEFT_RIGHT_BOUNDARY]
             if not left_blocks_in_row:
                 tracker.mark_used(amount_block, role="SKIP_ROW_NO_LEFT", row_id=row.row_id)
-                logger.warning(f"[消消乐] Skip amount ${amount_block.amount:.2f}: row has no left-side blocks (row_reconstructor may have split same line)")
+                logger.warning(f"[AmountUsage] Skip amount ${amount_block.amount:.2f}: row has no left-side blocks (row_reconstructor may have split same line)")
                 continue
 
             # 每个金额独立解析 name；已用过的品名不再使用（消消乐，基于 Y 坐标追踪）
             name_y_position = None  # Track Y position of the name line for 消消乐
             auxiliary_y_positions = []  # Track auxiliary lines (qty/unit lines) to mark as used
-            logger.debug(f"[消消乐] Processing amount ${amount_block.amount:.2f} at Y={amount_block.center_y:.4f}, used_Y={sorted(used_name_y_positions)}")
+            logger.debug(f"[AmountUsage] Processing amount ${amount_block.amount:.2f} at Y={amount_block.center_y:.4f}, used_Y={sorted(used_name_y_positions)}")
 
             # Section header row + amount: amount belongs to NEXT row's first product (e.g. "DELI" + $4.99 -> AFC SOYMILK)
             # OR: prev amount used this row's product (section header case), so this amount -> row BELOW (e.g. $5.99 -> GYG)
@@ -343,7 +343,7 @@ def extract_items(
                         below_mean_y = sum(b.center_y for b in below_left) / len(below_left)
                         if not _is_y_position_used(below_mean_y, used_name_y_positions, LINE_Y_EPS):
                             full_name = (_remove_sku_from_name(below_text), below_mean_y, [])
-                            logger.info(f"[消消乐] Amount ${amount_block.amount:.2f} -> row below product (prev was section-header) at Y={below_mean_y:.4f}")
+                            logger.info(f"[AmountUsage] Amount ${amount_block.amount:.2f} -> row below product (prev was section-header) at Y={below_mean_y:.4f}")
                 prev_section_header_used_row_index[0] = None  # consumed
             elif _is_section_header_row_from_text(row_name_part, section_headers) and i + 1 < len(rows):
                 next_row = rows[i + 1]
@@ -355,7 +355,7 @@ def extract_items(
                         if not _is_y_position_used(next_mean_y, used_name_y_positions, LINE_Y_EPS):
                             full_name = (_remove_sku_from_name(next_text), next_mean_y, [])
                             prev_section_header_used_row_index[0] = i + 1  # mark that we used next row's product
-                            logger.info(f"[消消乐] Section-header row: amount ${amount_block.amount:.2f} -> next row product at Y={next_mean_y:.4f}")
+                            logger.info(f"[AmountUsage] Section-header row: amount ${amount_block.amount:.2f} -> next row product at Y={next_mean_y:.4f}")
 
             if full_name is None:
                 prev_section_header_used_row_index[0] = None  # clear when not using section-header path
@@ -367,19 +367,19 @@ def extract_items(
             )
             if full_name:
                 product_name, name_y_position, auxiliary_y_positions = full_name  # Returns (name, y_position, auxiliary_ys) tuple
-                logger.debug(f"[消消乐] full_name path: name='{product_name}', Y={name_y_position:.4f}, auxiliary_Ys={auxiliary_y_positions}")
+                logger.debug(f"[AmountUsage] full_name path: name='{product_name}', Y={name_y_position:.4f}, auxiliary_Ys={auxiliary_y_positions}")
                 # Build combined_for_parse: collect all left blocks (including qty/unit lines) for parsing
                 left_blocks = _left_blocks_above_and_at_amount(
                     row, amount_block, amount_blocks, rows, i, last_amount_y, HALF_LINE_Y_EPS, ABOVE_AMOUNT_WINDOW, LEFT_RIGHT_BOUNDARY
                 )
                 combined_for_parse = " ".join(b.text.strip() for b in left_blocks).strip() if left_blocks else row.text
             else:
-                logger.debug(f"[消消乐] full_name returned None, trying fallback paths")
+                logger.debug(f"[AmountUsage] full_name returned None, trying fallback paths")
                 # Fallback: topmost name line (current row only) or previous-row lookup
                 topmost_result = _topmost_name_line_above_amount(row, amount_block, amount_blocks, section_headers, LINE_Y_EPS, used_name_y_positions)
                 if topmost_result:
                     topmost_name, name_y_position, auxiliary_y_positions = topmost_result  # Returns (name, y_position, auxiliary_ys) tuple
-                    logger.info(f"[消消乐] topmost_name path: name='{topmost_name}', Y={name_y_position:.4f}")
+                    logger.info(f"[AmountUsage] topmost_name path: name='{topmost_name}', Y={name_y_position:.4f}")
                     product_name = _strip_qty_unit_pattern_from_name(topmost_name).strip() or topmost_name
                     
                     # Build combined_for_parse: collect all left blocks (including qty/unit lines) for parsing
@@ -388,7 +388,7 @@ def extract_items(
                     )
                     combined_for_parse = " ".join(b.text.strip() for b in left_blocks).strip() if left_blocks else row.text
                 else:
-                    logger.info(f"[消消乐] topmost_name also returned None, trying deep fallback")
+                    logger.info(f"[AmountUsage] topmost_name also returned None, trying deep fallback")
                     # Deep fallback: try looking DOWN for next all-caps product name
                     # This handles cases where:
                     # 1. Current row only has amount (e.g. "FP $6.50")
@@ -409,7 +409,7 @@ def extract_items(
                         if not next_left_blocks:
                             # No left blocks, check if row has amounts (another item started)
                             if next_row.get_amount_blocks():
-                                logger.debug(f"[消消乐] Row {next_idx} has only amounts (no left text), stopping search")
+                                logger.debug(f"[AmountUsage] Row {next_idx} has only amounts (no left text), stopping search")
                                 break
                             continue
                         
@@ -417,12 +417,12 @@ def extract_items(
                         
                         # Skip section headers (DELI, FOOD, etc.) - continue searching
                         if _is_section_header_row_from_text(next_text, section_headers):
-                            logger.debug(f"[消消乐] Row {next_idx} is section header '{next_text}', skipping")
+                            logger.debug(f"[AmountUsage] Row {next_idx} is section header '{next_text}', skipping")
                             continue
                         
                         # Skip qty/unit lines - continue searching
                         if _row_looks_like_qty_unit_line(next_text):
-                            logger.debug(f"[消消乐] Row {next_idx} is qty/unit line '{next_text}', skipping")
+                            logger.debug(f"[AmountUsage] Row {next_idx} is qty/unit line '{next_text}', skipping")
                             continue
                         
                         # Check if it's an all-caps name
@@ -433,7 +433,7 @@ def extract_items(
                                 product_name = _remove_sku_from_name(next_text)
                                 name_y_position = next_mean_y
                                 combined_for_parse = next_text  # Keep SKU in combined_for_parse for context
-                                logger.info(f"[消消乐] Deep fallback: found name in next row {next_idx}: '{product_name}' at Y={name_y_position:.4f}")
+                                logger.info(f"[AmountUsage] Deep fallback: found name in next row {next_idx}: '{product_name}' at Y={name_y_position:.4f}")
                                 
                                 # Check if the row AFTER the product name has qty/unit info (e.g. "1.20 lb @ $1.38/lb")
                                 qty_unit_idx = next_idx + 1
@@ -452,7 +452,7 @@ def extract_items(
                                                 combined_for_parse = product_name + " " + qty_unit_text
                                                 # Mark qty/unit line Y as used (消消乐)
                                                 auxiliary_y_positions.append(qty_unit_mean_y)
-                                                logger.info(f"[消消乐] Deep fallback: found qty/unit in row {qty_unit_idx}: '{qty_unit_text}' at Y={qty_unit_mean_y:.4f}")
+                                                logger.info(f"[AmountUsage] Deep fallback: found qty/unit in row {qty_unit_idx}: '{qty_unit_text}' at Y={qty_unit_mean_y:.4f}")
                                 break
                     
                     # If still no name found, use row.text as last resort - MUST check used (用后即焚)
@@ -463,9 +463,9 @@ def extract_items(
                             product_name = row.text or ""
                             name_y_position = row_mean_y
                             combined_for_parse = row.text or ""
-                            logger.info(f"[消消乐] Deep fallback: using row.text='{product_name}', Y={name_y_position:.4f}")
+                            logger.info(f"[AmountUsage] Deep fallback: using row.text='{product_name}', Y={name_y_position:.4f}")
                         else:
-                            logger.warning(f"[消消乐] Row Y={row_mean_y:.4f} already used, no unused name for ${amount_block.amount:.2f} - skip (用后即焚)")
+                            logger.warning(f"[AmountUsage] Row Y={row_mean_y:.4f} already used, no unused name for ${amount_block.amount:.2f} - skip (single-use)")
                             tracker.mark_used(amount_block, role="SKIP_NO_UNUSED_NAME", row_id=row.row_id)
                             continue
 
@@ -488,9 +488,9 @@ def extract_items(
             if name_y_position is not None:
                 name_y_int = int(round(name_y_position * 10000))
                 used_name_y_positions.add(name_y_int)
-                logger.debug(f"[消消乐] Marked product name y={name_y_position:.4f} as used (cannot be used as product name again)")
+                logger.debug(f"[AmountUsage] Marked product name y={name_y_position:.4f} as used (cannot be used as product name again)")
             else:
-                logger.warning(f"[消消乐] WARNING: name_y_position is None for '{product_name}' (amount=${amount_block.amount:.2f})! Cannot track for 消消乐.")
+                logger.warning(f"[AmountUsage] WARNING: name_y_position is None for '{product_name}' (amount=${amount_block.amount:.2f})! Cannot track for amount-tracking.")
             
             # Mark auxiliary Y positions (qty/unit lines found during name search) as "used for product name"
             # This prevents them from being selected as product names for future items
@@ -498,7 +498,7 @@ def extract_items(
             for aux_y in auxiliary_y_positions:
                 aux_y_int = int(round(aux_y * 10000))
                 used_name_y_positions.add(aux_y_int)
-                logger.debug(f"[消消乐] Marked auxiliary line (qty/unit) y={aux_y:.4f} as used (cannot be used as product name)")
+                logger.debug(f"[AmountUsage] Marked auxiliary line (qty/unit) y={aux_y:.4f} as used (cannot be used as product name)")
 
             # Extract qty/unit price/unit: use left_blocks to find the closest qty/unit to amount's Y
             # Build left_blocks for this amount (includes up to +2 rows below)
@@ -515,18 +515,18 @@ def extract_items(
             if qty_unit_y is not None:
                 qty_unit_y_int = int(round(qty_unit_y * 10000))
                 used_qty_unit_y_positions.add(qty_unit_y_int)
-                logger.debug(f"[消消乐] Marked qty/unit line y={qty_unit_y:.4f} as used for qty/unit extraction")
+                logger.debug(f"[AmountUsage] Marked qty/unit line y={qty_unit_y:.4f} as used for qty/unit extraction")
                 # Weight items: if qty/unit text lacks /lb suffix (e.g. "0.92 lb @ $1.99") but qty*up validates, escalate
                 # /1b is OCR typo for /lb, count as present
                 if error_log is not None and unit and "lb" in str(unit).lower() and qty_unit_text:
                     if "/lb" not in qty_unit_text and "/1b" not in qty_unit_text and "/kg" not in qty_unit_text:
                         err = f"qty/unit '{qty_unit_text[:50]}' missing /lb suffix, math validates"
                         error_log.append(err)
-                        logger.info(f"[消消乐] {err}")
+                        logger.info(f"[AmountUsage] {err}")
             
             # For debugging: also show combined text
             combined_text = " ".join(b.text.strip() for b in left_blocks).strip() if left_blocks else row.text
-            logger.info(f"[消消乐] '{product_name}' (${amount_block.amount:.2f}): qty={qty}, unit={unit}, up={unit_price} from '{combined_text[:80]}'")
+            logger.info(f"[AmountUsage] '{product_name}' (${amount_block.amount:.2f}): qty={qty}, unit={unit}, up={unit_price} from '{combined_text[:80]}'")
             
             # If no qty/unit_price parsed, default quantity to 1
             if qty is None and unit_price is None:
@@ -551,7 +551,7 @@ def extract_items(
                 on_sale=on_sale
             )
             if qty and qty != 1.0:
-                logger.info(f"[消消乐] Created item '{product_name_final}': qty={qty} (type={type(qty).__name__}), unit={unit}, unit_price={unit_price}")
+                logger.info(f"[AmountUsage] Created item '{product_name_final}': qty={qty} (type={type(qty).__name__}), unit={unit}, unit_price={unit_price}")
             items.append(item)
             tracker.mark_used(amount_block, role="ITEM", row_id=row.row_id)
             last_amount_y = amount_block.center_y
@@ -756,7 +756,7 @@ def _topmost_name_line_above_amount(
     if not lines:
         return None
     amount_y = amount_block.center_y
-    logger.debug(f"[消消乐] _topmost_name: amount_y={amount_y:.4f}, found {len(lines)} lines, used_y={sorted(used_y)}")
+    logger.debug(f"[AmountUsage] _topmost_name: amount_y={amount_y:.4f}, found {len(lines)} lines, used_y={sorted(used_y)}")
     for idx, (mean_y, blks) in enumerate(lines[:5]):  # Show first 5 lines
         line_text = " ".join(b.text.strip() for b in blks).strip()
         logger.debug(f"  Line {idx}: Y={mean_y:.4f}, text='{line_text[:50]}'")
@@ -776,11 +776,11 @@ def _topmost_name_line_above_amount(
             continue
         # 消消乐：检查 Y 坐标是否已用过 (with tolerance for mean_y variation, use line_y_eps)
         if _is_y_position_used(mean_y, used_y, line_y_eps):
-            logger.debug(f"[消消乐] _topmost_name SKIP: '{line_text}' at Y={mean_y:.4f} already used")
+            logger.debug(f"[AmountUsage] _topmost_name SKIP: '{line_text}' at Y={mean_y:.4f} already used")
             continue
         # Remove SKU codes before returning
         line_text = _remove_sku_from_name(line_text)
-        logger.debug(f"[消消乐] _topmost_name found: '{line_text}' at Y={mean_y:.4f}")
+        logger.debug(f"[AmountUsage] _topmost_name found: '{line_text}' at Y={mean_y:.4f}")
         return (line_text, mean_y, [])  # No auxiliary lines in this path
     return None
 
@@ -853,14 +853,14 @@ def _full_product_name_above_amount(
             # Remove trailing tax/fee markers and SKU codes before returning
             at_text = _remove_tax_markers_from_name(at_text)
             at_text = _remove_sku_from_name(at_text)
-            logger.debug(f"[消消乐] Found name at amount line: '{at_text}' at Y={at_mean_y:.4f}")
+            logger.debug(f"[AmountUsage] Found name at amount line: '{at_text}' at Y={at_mean_y:.4f}")
             return (at_text, at_mean_y, [])  # No auxiliary lines
         else:
-            logger.debug(f"[消消乐] SKIP: '{at_text}' at Y={at_mean_y:.4f} already used")
+            logger.debug(f"[AmountUsage] SKIP: '{at_text}' at Y={at_mean_y:.4f} already used")
     
     # **NEW**: Check if amount line itself is qty/unit line → look one line above for product name
     if at_text and _row_looks_like_qty_unit_line(at_text):
-        logger.debug(f"[消消乐] Amount line is qty/unit: '{at_text}' at Y={at_mean_y:.4f}, looking one line above")
+        logger.debug(f"[AmountUsage] Amount line is qty/unit: '{at_text}' at Y={at_mean_y:.4f}, looking one line above")
         if amount_line_idx >= 1:
             mean_y_above, blks_above = lines[amount_line_idx - 1]
             if prev_amount_y is None or mean_y_above > prev_amount_y:
@@ -868,12 +868,12 @@ def _full_product_name_above_amount(
                 if above_text and not _is_section_header_row_from_text(above_text, section_headers):
                     if not _is_y_position_used(mean_y_above, used_y, line_y_eps):
                         # OCR correction then remove tax/fee markers from qty/unit line before concatenation
-                        logger.debug(f"[消消乐] Found name above qty/unit (at amount line): '{above_text}' at Y={mean_y_above:.4f}, qty/unit line at Y={at_mean_y:.4f}, marking qty/unit Y as used")
+                        logger.debug(f"[AmountUsage] Found name above qty/unit (at amount line): '{above_text}' at Y={mean_y_above:.4f}, qty/unit line at Y={at_mean_y:.4f}, marking qty/unit Y as used")
                         # Return only product name (no concatenation), but mark qty/unit line Y as used
                         above_text = _remove_sku_from_name(above_text)
                         return (above_text, mean_y_above, [at_mean_y])  # Mark qty/unit line as used
                     else:
-                        logger.debug(f"[消消乐] SKIP: '{above_text}' at Y={mean_y_above:.4f} already used")
+                        logger.debug(f"[AmountUsage] SKIP: '{above_text}' at Y={mean_y_above:.4f} already used")
     
     # 从 amount 行往上扫（idx 递减）
     idx = amount_line_idx - 1
@@ -895,14 +895,14 @@ def _full_product_name_above_amount(
                 # Remove trailing tax/fee markers and SKU codes before returning
                 line_text = _remove_tax_markers_from_name(line_text)
                 line_text = _remove_sku_from_name(line_text)
-                logger.debug(f"[消消乐] Found name above amount: '{line_text}' at Y={mean_y:.4f}")
+                logger.debug(f"[AmountUsage] Found name above amount: '{line_text}' at Y={mean_y:.4f}")
                 return (line_text, mean_y, [])  # No auxiliary lines
             else:
-                logger.debug(f"[消消乐] SKIP: '{line_text}' at Y={mean_y:.4f} already used")
+                logger.debug(f"[AmountUsage] SKIP: '{line_text}' at Y={mean_y:.4f} already used")
             idx -= 1
             continue
         if _row_looks_like_qty_unit_line(line_text):
-            logger.debug(f"[消消乐] Found qty/unit line: '{line_text}' at Y={mean_y:.4f}, looking one line above")
+            logger.debug(f"[AmountUsage] Found qty/unit line: '{line_text}' at Y={mean_y:.4f}, looking one line above")
             if idx >= 1:
                 mean_y_above, blks_above = lines[idx - 1]
                 if prev_amount_y is None or mean_y_above > prev_amount_y:
@@ -911,12 +911,12 @@ def _full_product_name_above_amount(
                     if above_text and not _is_section_header_row_from_text(above_text, section_headers):
                         if not _is_y_position_used(mean_y_above, used_y, line_y_eps):
                             # OCR correction then remove tax/fee markers from qty/unit line before concatenation
-                            logger.debug(f"[消消乐] Found name above qty/unit: '{above_text}' at Y={mean_y_above:.4f}, qty/unit line at Y={mean_y:.4f}, marking qty/unit Y as used")
+                            logger.debug(f"[AmountUsage] Found name above qty/unit: '{above_text}' at Y={mean_y_above:.4f}, qty/unit line at Y={mean_y:.4f}, marking qty/unit Y as used")
                             # Return only product name (no concatenation), but mark qty/unit line Y as used
                             above_text = _remove_sku_from_name(above_text)
                             return (above_text, mean_y_above, [mean_y])  # Mark qty/unit line as used
                         else:
-                            logger.debug(f"[消消乐] SKIP: '{above_text}' at Y={mean_y_above:.4f} already used")
+                            logger.debug(f"[AmountUsage] SKIP: '{above_text}' at Y={mean_y_above:.4f} already used")
             break
         idx -= 1
     return None

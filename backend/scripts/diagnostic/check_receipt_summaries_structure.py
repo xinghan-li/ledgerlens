@@ -19,21 +19,21 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 print("\n" + "="*80)
-print("🔍 检查 record_summaries 表结构")
+print("🔍 Check record_summaries table structure")
 print("="*80)
 
-# 1. 检查表是否存在
-print("\n1. 检查表是否存在...")
+# 1. Check table exists
+print("\n1. Checking if table exists...")
 try:
     result = supabase.table('record_summaries').select('id').limit(0).execute()
-    print("✓ record_summaries 表存在")
+    print("✓ record_summaries table exists")
 except Exception as e:
-    print(f"❌ record_summaries 表不存在或无法访问: {e}")
+    print(f"❌ record_summaries table not found or not accessible: {e}")
     sys.exit(0)
 
-# 2. 获取表结构（列信息）
-print("\n2. 获取表结构（列）...")
-print("   (需要在 Supabase SQL Editor 中运行以下查询：)")
+# 2. Get table structure (columns)
+print("\n2. Table structure (columns)...")
+print("   (Run the following query in Supabase SQL Editor:)")
 print("""
 SELECT 
     column_name,
@@ -46,8 +46,8 @@ WHERE table_schema = 'public'
 ORDER BY ordinal_position;
 """)
 
-# 3. 获取索引信息
-print("\n3. 获取索引（在 Supabase SQL Editor 中运行）...")
+# 3. Get indexes
+print("\n3. Indexes (run in Supabase SQL Editor)...")
 print("""
 SELECT 
     indexname,
@@ -58,8 +58,8 @@ WHERE schemaname = 'public'
 ORDER BY indexname;
 """)
 
-# 4. 获取约束信息
-print("\n4. 获取约束（在 Supabase SQL Editor 中运行）...")
+# 4. Get constraints
+print("\n4. Constraints (run in Supabase SQL Editor)...")
 print("""
 SELECT 
     conname as constraint_name,
@@ -70,13 +70,13 @@ WHERE conrelid = 'record_summaries'::regclass
 ORDER BY conname;
 """)
 
-# 5. 检查数据量
-print("\n5. 检查数据量...")
+# 5. Row count
+print("\n5. Row count...")
 result = supabase.table('record_summaries').select('id', count='exact').limit(0).execute()
-print(f"   总记录数: {result.count}")
+print(f"   Total rows: {result.count}")
 
-# 6. 查看几条数据示例
-print("\n6. 数据示例...")
+# 6. Sample rows
+print("\n6. Sample data...")
 result = supabase.table('record_summaries')\
     .select('id, receipt_id, store_name, store_chain_id, total')\
     .limit(3)\
@@ -90,8 +90,8 @@ if result.data:
         print(f"       Store Chain ID: {row.get('store_chain_id', 'NULL')}")
         print(f"       Total: {row.get('total', 'NULL')}")
 else:
-    print("   (无数据)")
+    print("   (no data)")
 
 print("\n" + "="*80)
-print("✓ 检查完成")
+print("✓ Done")
 print("="*80)

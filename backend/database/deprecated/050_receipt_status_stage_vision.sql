@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 001_schema_v2.sql
+-- Content: ALTER TABLE receipt_status current_stage check to add vision_primary/vision_escalation
+-- New databases: do NOT run this file (001 already has final current_stage enum).

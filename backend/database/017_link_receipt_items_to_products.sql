@@ -1,91 +1,68 @@
 -- ============================================
--- Migration 017: Link record_items to products catalog
--- ============================================
--- Purpose: Add product_id foreign key to record_items to enable
--- cross-receipt product aggregation
+-- Migration 017: record_items 关联 products/categories + record_items_enriched 视图
 --
--- This enables:
--- 1. "How much did I spend on Dole Banana across all receipts?"
--- 2. "What's my average price for milk?"
--- 3. Product price trends over time
--- 4. Cross-store price comparison (PricePeek foundation)
+-- 原来此文件还 ADD COLUMN product_id / category_id。
+-- 由于 products(016) 和 categories(015) 在 012 之后建，FK 无法提前加，
+-- 故这两列仍在本文件添加。
 --
--- PREREQUISITES: Migration 016 (products catalog) must be run first
+-- 视图使用 products 最终列名（size_quantity/size_unit/package_type），
+-- 合并了原来 020/021/022/027/029 里多次 DROP+CREATE 视图的操作——
+-- 新库里只在此处建一次。
+--
+-- PREREQUISITES: 012, 015, 016
 -- ============================================
 
 BEGIN;
 
 -- ============================================
--- 1. Add product_id column to record_items
+-- 1. record_items 增加 product_id / category_id FK
 -- ============================================
--- Add column (nullable initially for backfill)
-ALTER TABLE record_items 
-ADD COLUMN product_id UUID REFERENCES products(id) ON DELETE SET NULL;
-
--- ============================================
--- 2. Add category_id for direct category access
--- ============================================
--- This is in addition to product.category_id
--- Allows flexibility: item can override product's category if needed
 ALTER TABLE record_items
-ADD COLUMN category_id UUID REFERENCES categories(id) ON DELETE SET NULL;
+  ADD COLUMN product_id UUID REFERENCES products(id) ON DELETE SET NULL;
 
--- ============================================
--- 3. Add indexes for performance
--- ============================================
+ALTER TABLE record_items
+  ADD COLUMN category_id UUID REFERENCES categories(id) ON DELETE SET NULL;
+
+-- 索引
 CREATE INDEX record_items_product_id_idx ON record_items(product_id);
 CREATE INDEX record_items_category_id_idx ON record_items(category_id);
-
--- Composite indexes for common queries
 CREATE INDEX record_items_user_product_idx ON record_items(user_id, product_id);
 CREATE INDEX record_items_product_date_idx ON record_items(product_id, created_at DESC);
 CREATE INDEX record_items_user_category_idx ON record_items(user_id, category_id);
 
--- ============================================
--- 4. Add comments
--- ============================================
-COMMENT ON COLUMN record_items.product_id IS 'Foreign key to products table for normalized product aggregation';
-COMMENT ON COLUMN record_items.category_id IS 'Direct category link (can override product.category_id if needed)';
+COMMENT ON COLUMN record_items.product_id IS 'FK to products for normalized product aggregation';
+COMMENT ON COLUMN record_items.category_id IS 'FK to categories (level-3/leaf). L1/L2 via JOIN.';
 
 -- ============================================
--- 5. Create helper view for easy querying
+-- 2. record_items_enriched 视图（最终形态，仅建一次）
+--    合并了 020/021/022/027/029 里多次 DROP+CREATE 的结果
 -- ============================================
 CREATE OR REPLACE VIEW record_items_enriched AS
-SELECT 
+SELECT
   ri.id,
   ri.receipt_id,
   ri.user_id,
-  
-  -- Product info
-  ri.product_name as raw_product_name,
-  p.normalized_name as product_normalized_name,
-  p.size as product_size,
-  p.unit_type as product_unit_type,
-  
-  -- Category hierarchy
-  c1.name as category_l1,
-  c2.name as category_l2,
-  c3.name as category_l3,
-  COALESCE(ri.category_id, p.category_id) as category_id,
-  
-  -- Pricing
+  ri.product_name AS raw_product_name,
+  p.normalized_name AS product_normalized_name,
+  p.size_quantity AS product_size_quantity,
+  p.size_unit AS product_size_unit,
+  p.package_type AS product_package_type,
+  c1.name AS category_l1,
+  c2.name AS category_l2,
+  c3.name AS category_l3,
+  COALESCE(ri.category_id, p.category_id) AS category_id,
   ri.quantity,
   ri.unit,
   ri.unit_price,
   ri.line_total,
   ri.on_sale,
   ri.discount_amount,
-  
-  -- Store info (from record_summaries)
   rs.store_chain_id,
   rs.store_location_id,
-  sc.name as store_chain_name,
-  sl.name as store_location_name,
-  
-  -- Receipt info
+  sc.name AS store_chain_name,
+  sl.name AS store_location_name,
   rs.receipt_date,
   ri.created_at
-  
 FROM record_items ri
 LEFT JOIN products p ON ri.product_id = p.id
 LEFT JOIN categories c3 ON COALESCE(ri.category_id, p.category_id) = c3.id
@@ -96,33 +73,11 @@ LEFT JOIN record_summaries rs ON r.id = rs.receipt_id
 LEFT JOIN store_chains sc ON rs.store_chain_id = sc.id
 LEFT JOIN store_locations sl ON rs.store_location_id = sl.id;
 
-COMMENT ON VIEW record_items_enriched IS 'Enriched view of record_items with product, category, and store information';
-
--- ============================================
--- 6. Verification
--- ============================================
-DO $$
-DECLARE
-  items_count INTEGER;
-  items_with_product INTEGER;
-BEGIN
-  SELECT COUNT(*) INTO items_count FROM record_items;
-  SELECT COUNT(*) INTO items_with_product FROM record_items WHERE product_id IS NOT NULL;
-  
-  RAISE NOTICE 'Migration 017 completed successfully.';
-  RAISE NOTICE 'Total record_items: %', items_count;
-  RAISE NOTICE 'Items with product_id: % (backfill needed)', items_with_product;
-  RAISE NOTICE '';
-  RAISE NOTICE 'Next steps:';
-  RAISE NOTICE '1. Implement product normalization logic in backend';
-  RAISE NOTICE '2. Backfill existing record_items with product_id';
-  RAISE NOTICE '3. Make product_id NOT NULL after backfill';
-END $$;
+COMMENT ON VIEW record_items_enriched IS 'Enriched view of record_items with product, category, and store info';
 
 COMMIT;
 
--- ============================================
--- Future: Make product_id required (after backfill)
--- ============================================
--- Once all record_items have product_id, run:
--- ALTER TABLE record_items ALTER COLUMN product_id SET NOT NULL;
+DO $$
+BEGIN
+  RAISE NOTICE 'Migration 017 completed: product_id/category_id added to record_items; record_items_enriched view created (final form)';
+END $$;

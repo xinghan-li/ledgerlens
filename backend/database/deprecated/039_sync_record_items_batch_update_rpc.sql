@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 030_increment_product_usage_rpc.sql
+-- Content: sync_record_items_batch_update() RPC function
+-- New databases: do NOT run this file (already in 030).

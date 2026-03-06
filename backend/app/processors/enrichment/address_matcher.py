@@ -24,9 +24,20 @@ _cache_populated = False
 
 
 def _normalize_address_for_compare(s: Optional[str]) -> str:
+    """Normalize for matching: strip Suite/Unit/Ste, trailing country, expand abbrevs (PK->park, RD->road, etc.)."""
     if not s or not isinstance(s, str):
         return ""
-    return " ".join(s.lower().replace("\n", " ").replace("\r", " ").split())
+    one = " ".join(s.lower().replace("\n", " ").replace("\r", " ").split())
+    one = re.sub(
+        r"[,]?\s*(?:suite|unit|ste|apt|#)\s*-?\s*[\d\w-]+",
+        " ",
+        one,
+        flags=re.IGNORECASE,
+    )
+    one = re.sub(r"\b(?:us|usa|ca|canada)\s*$", "", one, flags=re.IGNORECASE)
+    one = " ".join(one.split())
+    from .address_abbreviations import expand_address_abbreviations
+    return expand_address_abbreviations(one)
 
 
 def _fix_ocr_address(s: Optional[str]) -> Optional[str]:

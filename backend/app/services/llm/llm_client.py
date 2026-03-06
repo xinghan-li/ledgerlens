@@ -52,8 +52,8 @@ def parse_receipt_with_llm(
     model = model or settings.openai_model
     
     try:
-        logger.info(f"Calling OpenAI API with model: {model}")
-        
+        logger.info(f"OpenAI API call: model={model}")
+
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -65,8 +65,7 @@ def parse_receipt_with_llm(
         )
         
         content = response.choices[0].message.content
-        logger.info("OpenAI API call successful")
-        
+
         # Parse JSON
         try:
             parsed_data = json.loads(content)

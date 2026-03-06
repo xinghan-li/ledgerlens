@@ -27,6 +27,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+import re
 from .services.ocr.vision_client import ocr_document_bytes
 from .services.database.supabase_client import (
     get_test_user_id,
@@ -34,6 +35,9 @@ from .services.database.supabase_client import (
     get_receipt_detail_for_user,
     update_record_item_category,
     get_user_analytics_summary,
+    get_user_unclassified_items,
+    mark_item_idk,
+    get_idk_now_classified,
 )
 from .services.auth.jwt_auth import get_current_user, get_current_user_optional
 from .middleware.rate_limiter import check_workflow_rate_limit
@@ -48,6 +52,7 @@ from .services.ocr.documentai_client import parse_receipt_documentai
 from .services.ocr.textract_client import parse_receipt_textract
 from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_docai, process_receipt_with_llm_from_ocr
 from .core.workflow_processor import process_receipt_workflow, process_receipt_workflow_after_confirm
+from .core.workflow_processor_vision import process_receipt_workflow_vision
 from .core.bulk_processor import process_bulk_receipts
 from .models import DocumentAIResultRequest
 from .processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
@@ -57,6 +62,7 @@ from .processors.validation.coordinate_sum_checker import coordinate_based_sum_c
 from .processors.validation.pipeline import process_receipt_pipeline
 from .config import settings
 import logging
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -574,6 +580,60 @@ async def get_analytics_summary(
     return get_user_analytics_summary(user_id, period=period, value=value)
 
 
+@app.get("/api/me/unclassified", tags=["Receipts - Other"])
+async def get_my_unclassified(user_id: str = Depends(get_current_user)):
+    """List current user's unclassified line items (category_id IS NULL). For the Unclassified page. Auth required."""
+    try:
+        return get_user_unclassified_items(user_id)
+    except Exception as e:
+        logger.exception("get_user_unclassified_items failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/me/item/{record_item_id}/idk", tags=["Receipts - Other"])
+async def post_item_idk(
+    record_item_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Mark that the user said 'I don't know' for this line item. Auth required."""
+    ok = mark_item_idk(user_id, record_item_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Item not found or access denied")
+    return {"success": True}
+
+
+class DismissItemBody(BaseModel):
+    reason: str  # "incorrect_item" | "other"
+    comment: Optional[str] = None
+
+
+@app.post("/api/me/item/{record_item_id}/dismiss", tags=["Receipts - Other"])
+async def post_item_dismiss(
+    record_item_id: str,
+    body: DismissItemBody,
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Dismiss a record_item from the user's unclassified list.
+    reason=incorrect_item: marks item as dismissed (LLM extraction error).
+    reason=other: dismissed + escalates to classification_review with user comment.
+    Auth required.
+    """
+    from .services.database.supabase_client import dismiss_item
+    if body.reason not in ("incorrect_item", "other"):
+        raise HTTPException(status_code=422, detail="reason must be 'incorrect_item' or 'other'")
+    ok = dismiss_item(user_id, record_item_id, body.reason, body.comment)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Item not found or access denied")
+    return {"success": True}
+
+
+@app.get("/api/me/idk-now-classified", tags=["Receipts - Other"])
+async def get_idk_now_classified_route(user_id: str = Depends(get_current_user)):
+    """Returns record_item_ids that user had marked IDK and that now have a category (and clears those IDK flags). Auth required."""
+    return {"record_item_ids": get_idk_now_classified(user_id)}
+
+
 @app.post("/api/receipt/goog-ocr", response_model=ReceiptOCRResponse, tags=["Receipts - OCR Model"])
 async def ocr_receipt_google_vision(file: UploadFile = File(...)):
     """
@@ -947,6 +1007,76 @@ async def process_receipt_workflow_endpoint(
         )
 
 
+@app.post("/api/receipt/workflow-vision", tags=["Receipts - Vision"])
+async def process_receipt_workflow_vision_endpoint(
+    file: UploadFile = File(...),
+    user_id: str = Depends(check_workflow_rate_limit),
+):
+    """
+    Vision-First receipt processing pipeline (Route B).
+
+    Skips Google Document AI OCR entirely. Sends the raw image directly to
+    Gemini for structured JSON extraction, then validates with sum check and
+    item count check. Falls back to parallel Gemini escalation + OpenAI
+    escalation if the primary call fails validation.
+
+    Rate limits and duplicate detection are identical to /api/receipt/workflow.
+    """
+    if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only JPEG/PNG images are supported.",
+        )
+
+    contents = await file.read()
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(
+            status_code=400,
+            detail="File size exceeds 5MB limit.",
+        )
+
+    if not settings.vision_pipeline_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Vision pipeline is currently disabled. Please use /api/receipt/workflow.",
+        )
+
+    try:
+        mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
+        result = await process_receipt_workflow_vision(
+            image_bytes=contents,
+            filename=file.filename,
+            mime_type=mime_type,
+            user_id=user_id,
+        )
+
+        if result.get("needs_user_confirm"):
+            return result
+        if result.get("error") == "not_a_receipt":
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("message", "Uploaded image does not appear to be a receipt."),
+            )
+
+        logger.info(
+            f"[vision] Workflow completed for {file.filename}: "
+            f"status={result.get('status')}"
+        )
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"[vision] Workflow failed for {file.filename}: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Vision workflow processing failed: {str(exc)}",
+        )
+
+
 @app.get("/api/receipt/list", tags=["Receipts - Other"])
 async def list_my_receipts(
     limit: int = 50,
@@ -982,9 +1112,10 @@ async def get_receipt_processing_runs(
     user_res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
     if not user_res.data or user_res.data[0].get("user_class") not in ("admin", "super_admin"):
         raise HTTPException(status_code=403, detail="Admin or super_admin required")
-    rec = supabase.table("receipt_status").select("id, user_id").eq("id", receipt_id).limit(1).execute()
+    rec = supabase.table("receipt_status").select("id, user_id, pipeline_version").eq("id", receipt_id).limit(1).execute()
     if not rec.data or rec.data[0]["user_id"] != user_id:
         raise HTTPException(status_code=404, detail="Receipt not found or access denied")
+    pipeline_version = (rec.data[0].get("pipeline_version") or "legacy_a")
     from .services.database.supabase_client import get_receipt_workflow_steps
     runs_res = supabase.table("receipt_processing_runs").select(
         "id, stage, model_provider, model_name, model_version, status, error_message, validation_status, created_at, input_payload, output_payload"
@@ -1006,11 +1137,17 @@ async def get_receipt_processing_runs(
             else:
                 track = "general"
             break
+    if track == "unknown" and pipeline_version == "vision_b":
+        for r in runs:
+            if r.get("stage") in ("vision_primary", "vision_escalation") and r.get("status") == "pass":
+                track = "vision_primary"
+                break
     return {
         "track": track,
         "track_method": track_method,
         "runs": runs,
         "workflow_steps": steps,
+        "pipeline_version": pipeline_version,
     }
 
 
@@ -1083,6 +1220,25 @@ async def correct_my_receipt(
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/receipt/{receipt_id}/review-complete", tags=["Receipts - Other"])
+async def review_complete_my_receipt(
+    receipt_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Mark a needs_review receipt as reviewed and set status to success. Must be receipt owner and current_status must be needs_review."""
+    from .services.database.supabase_client import _get_client, update_receipt_status
+    supabase = _get_client()
+    rec = supabase.table("receipt_status").select("id, user_id, current_status, current_stage").eq("id", receipt_id).limit(1).execute()
+    if not rec.data or rec.data[0]["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
+    row = rec.data[0]
+    if row.get("current_status") != "needs_review":
+        raise HTTPException(status_code=400, detail="Receipt is not in needs_review status")
+    stage = row.get("current_stage") or "vision_primary"
+    update_receipt_status(receipt_id=receipt_id, current_status="success", current_stage=stage)
+    return {"success": True, "receipt_id": receipt_id, "status": "success"}
 
 
 @app.delete("/api/receipt/{receipt_id}", tags=["Receipts - Other"])
@@ -1645,6 +1801,21 @@ async def admin_reject_store_review(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@app.post("/api/admin/store-review/backfill-store-locations", tags=["Admin - Store Review"])
+async def admin_backfill_store_locations(
+    body: Optional[dict] = Body(None),
+    user_id: str = Depends(require_admin),
+):
+    """
+    Backfill record_summaries.store_location_id for receipts that match existing store_locations
+    by address (with Suite/Unit/Ste normalized). Optional body: { "location_id": "uuid" } to run for one location only.
+    """
+    from .services.database.supabase_client import run_backfill_store_locations
+    location_id = (body or {}).get("location_id") if isinstance(body, dict) else None
+    result = run_backfill_store_locations(location_id=location_id)
+    return result
+
+
 # ==================== Admin Failed Receipts (manual correct) ====================
 
 @app.get("/api/admin/failed-receipts", tags=["Admin - Failed Receipts"])
@@ -1802,6 +1973,34 @@ async def admin_delete_category(
         return {"message": "deleted"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/admin/categories/{cat_id}/hard-delete", tags=["Admin - Categories"])
+async def admin_hard_delete_category(
+    cat_id: str,
+    body: dict = Body(...),
+    user_id: str = Depends(require_admin),
+):
+    """
+    Hard delete category (and descendants). Body: action = "release" | "reassign";
+    if "reassign", target_category_id (L3 uuid) required.
+    Related record_items/classification_review (and rules/overrides when reassign) are updated then category removed.
+    """
+    from .services.admin.categories_admin_service import hard_delete_category
+    action = (body.get("action") or "").strip().lower()
+    if action not in ("release", "reassign"):
+        raise HTTPException(status_code=400, detail="action must be 'release' or 'reassign'")
+    target_category_id = body.get("target_category_id") or None
+    if action == "reassign" and not target_category_id:
+        raise HTTPException(status_code=400, detail="target_category_id required when action is reassign")
+    try:
+        result = hard_delete_category(cat_id, action=action, target_category_id=target_category_id)
+        return result
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
 
 
 # ==================== RAG Management Endpoints ====================
@@ -2104,3 +2303,141 @@ async def check_can_categorize(
     except Exception as e:
         logger.error(f"Error checking receipt {receipt_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Communications: articles + updates (content/articles, content/updates) ====================
+
+_CONTENT_ROOT = Path(__file__).resolve().parent.parent.parent / "content"
+_CONTENT_ARTICLES_DIR = _CONTENT_ROOT / "articles"
+_CONTENT_UPDATES_DIR = _CONTENT_ROOT / "updates"
+
+
+def _normalize_ledger_lens(s: str) -> str:
+    """Remove any space (including Unicode spaces) between 'Ledger' and 'Lens' so it renders as LedgerLens."""
+    if not s or "Ledger" not in s or "Lens" not in s:
+        return s
+    return re.sub(r"Ledger\s+Lens", "LedgerLens", s, flags=re.IGNORECASE)
+
+
+def _parse_blog_frontmatter(content: str) -> tuple[dict, str]:
+    """Parse --- delimited frontmatter; return (attrs, body)."""
+    if not content.strip().startswith("---"):
+        return {}, content
+    parts = content.strip().split("\n", 1)
+    rest = parts[1] if len(parts) > 1 else ""
+    if "---" not in rest:
+        return {}, content
+    fm, body = rest.split("---", 1)
+    attrs = {}
+    for line in fm.strip().split("\n"):
+        if ":" in line:
+            k, v = line.split(":", 1)
+            val = v.strip().strip('"').strip("'")
+            if k.strip().lower() in ("title", "subtitle"):
+                val = _normalize_ledger_lens(val)
+            attrs[k.strip().lower()] = val
+    return attrs, body.strip()
+
+
+def _list_blog_posts() -> List[dict]:
+    """List .md from content/articles (type=article) and content/updates (type=update); return sorted by date desc."""
+    out = []
+    for content_dir, post_type in [(_CONTENT_ARTICLES_DIR, "article"), (_CONTENT_UPDATES_DIR, "update")]:
+        if not content_dir.exists():
+            continue
+        for p in content_dir.glob("*.md"):
+            try:
+                raw = p.read_text(encoding="utf-8")
+                attrs, body = _parse_blog_frontmatter(raw)
+                slug = attrs.get("slug") or p.stem
+                title = attrs.get("title") or slug
+                subtitle = attrs.get("subtitle") or ""
+                date = attrs.get("date") or ""
+                excerpt = (attrs.get("excerpt") or body.split("\n\n")[0] if body else "")[:200]
+                out.append({"slug": slug, "title": title, "subtitle": subtitle, "date": date, "excerpt": excerpt, "type": post_type})
+            except Exception as e:
+                logger.warning(f"Skip content file {p}: {e}")
+                continue
+    out.sort(key=lambda x: x.get("date") or "", reverse=True)
+    return out
+
+
+def _get_blog_post(slug: str) -> Optional[dict]:
+    """Get one post by slug from content/articles or content/updates. Return { slug, title, subtitle, date, body } or None."""
+    for content_dir in (_CONTENT_ARTICLES_DIR, _CONTENT_UPDATES_DIR):
+        if not content_dir.exists():
+            continue
+        for p in content_dir.glob("*.md"):
+            try:
+                raw = p.read_text(encoding="utf-8")
+                attrs, body = _parse_blog_frontmatter(raw)
+                post_slug = attrs.get("slug") or p.stem
+                if post_slug != slug:
+                    continue
+                return {
+                    "slug": post_slug,
+                    "title": attrs.get("title") or post_slug,
+                    "subtitle": attrs.get("subtitle") or "",
+                    "date": attrs.get("date") or "",
+                    "body": body,
+                }
+            except Exception as e:
+                logger.warning(f"Skip content file {p}: {e}")
+                continue
+    return None
+
+
+@app.get("/api/public/home-stats", tags=["Public"])
+async def public_home_stats():
+    """
+    Single source for homepage: stores (by chain) and locations (by state/province).
+    Use this so store cards and map always show consistent data from one response.
+    """
+    from .services.database.supabase_client import (
+        get_store_chains_with_receipt_counts,
+        get_location_stats,
+    )
+    stores = get_store_chains_with_receipt_counts(active_only=True)
+    locations = get_location_stats()
+    return {"stores": stores, "locations": locations}
+
+
+@app.get("/api/public/store-stats", tags=["Public"])
+async def public_store_stats():
+    """
+    Public endpoint: list store chains with receipt counts for homepage.
+    Prefer /api/public/home-stats for homepage so store + map use same source.
+    """
+    from .services.database.supabase_client import get_store_chains_with_receipt_counts
+    stores = get_store_chains_with_receipt_counts(active_only=True)
+    return {"stores": stores}
+
+
+@app.get("/api/public/location-stats", tags=["Public"])
+async def public_location_stats():
+    """
+    Public endpoint: receipt counts per US state and Canadian province for the homepage map.
+    Prefer /api/public/home-stats for homepage so store + map use same source.
+    """
+    from .services.database.supabase_client import get_location_stats
+    locations = get_location_stats()
+    return {"locations": locations}
+
+
+@app.get("/api/blog", tags=["Blog"])
+async def list_blog_posts(type: Optional[str] = None):
+    """List blog posts (slug, title, date, excerpt, type) for the blog listing page.
+    Optional query: type=article|update to filter."""
+    posts = _list_blog_posts()
+    if type and type.strip().lower() in ("article", "update"):
+        posts = [p for p in posts if p.get("type") == type.strip().lower()]
+    return posts
+
+
+@app.get("/api/blog/{slug}", tags=["Blog"])
+async def get_blog_post(slug: str):
+    """Get a single blog post by slug. Returns title, date, body (markdown)."""
+    post = _get_blog_post(slug)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return post

@@ -250,29 +250,28 @@ def _get_user_class_cached(user_id: str) -> str:
 
 async def check_workflow_rate_limit(user_id: str = Depends(get_current_user)) -> str:
     """
-    FastAPI dependency: 检查 workflow API 的速率限制
-    
-    规则：
-    - super_admin 和 admin: 不限制
-    - 其他所有 user_class: 每分钟 10 次
-    
+    FastAPI dependency: check workflow API rate limit.
+
+    Rules:
+    - super_admin and admin: no limit
+    - all other user_class: 10 per minute
+
     Args:
-        user_id: 用户 ID（从 get_current_user 依赖注入）
-        
+        user_id: from get_current_user dependency
+
     Returns:
-        user_id（如果通过检查）
-        
+        user_id if check passes
+
     Raises:
-        HTTPException 429: 超过速率限制
-        HTTPException 500: 检查失败
-        
+        HTTPException 429: rate limit exceeded
+        HTTPException 500: rate limit check failed
+
     Usage:
         @app.post("/api/receipt/workflow")
         async def workflow(
             file: UploadFile = File(...),
             _rate_limit: str = Depends(check_workflow_rate_limit)
         ):
-            # user_id 会自动从 check_workflow_rate_limit 中获取
             ...
     """
     try:
@@ -351,11 +350,9 @@ async def check_workflow_rate_limit(user_id: str = Depends(get_current_user)) ->
         return user_id
         
     except HTTPException:
-        # 重新抛出 HTTPException（rate limit 或其他 HTTP 错误）
         raise
     except Exception as e:
         logger.error(f"Rate limit check failed for user {user_id}: {e}", exc_info=True)
-        # 发生错误时，为了安全起见，拒绝请求
         raise HTTPException(
             status_code=500,
             detail="Failed to check rate limit"

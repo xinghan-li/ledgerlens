@@ -1,65 +1,61 @@
 -- ============================================
--- Migration 012: Add record_items and record_summaries tables
--- ============================================
--- Purpose: Extract structured data from receipt_processing_runs.output_payload
--- into dedicated tables for efficient querying and aggregation.
+-- Migration 012: record_summaries + record_items（最终形态）
 --
--- This enables:
--- 1. User to query/analyze their spending by item, category, store
--- 2. Export API for external price aggregation apps (GasBuddy-like)
--- 3. Efficient cross-receipt item/price analysis
+-- 已合并以下迁移（新库直接建到最终形态，无需再单独运行）：
+--   024_simplify_receipt_items.sql          → 删除 brand/category_l*/ocr_* 列；所有金额改为整型（分）
+--   031_record_summaries_information_and_int_totals.sql → record_summaries 金额整型、information JSONB、删 uploaded_at
+--   051_category_source_and_user_categories.sql (部分) → record_items.category_source
+--   052_user_item_idk.sql                   → record_items.user_marked_idk
+--   053_record_items_user_feedback.sql      → record_items.user_feedback
 --
--- Note: receipt_processing_runs.output_payload remains as the source of truth.
--- These tables are derived/denormalized for performance.
+-- 注意：record_items 的 product_id / category_id FK 需等 015（categories）和 016（products）
+-- 建好后，在 017_link_receipt_items_to_products.sql 里添加。
 -- ============================================
 
 BEGIN;
 
--- Enable pg_trgm extension for fuzzy text search
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ============================================
--- 1. record_summaries - Receipt-level metadata
+-- 1. record_summaries（最终形态）
+--    - 金额全部为整型（分），来自 031
+--    - information JSONB，来自 031
+--    - 无 uploaded_at（031 已删）
 -- ============================================
 CREATE TABLE IF NOT EXISTS record_summaries (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   receipt_id UUID NOT NULL REFERENCES receipt_status(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  
-  -- Store information
+
   store_chain_id UUID REFERENCES store_chains(id),
   store_location_id UUID REFERENCES store_locations(id),
-  store_name TEXT, -- Store name from OCR/LLM (if not matched to store_chains)
-  store_address TEXT, -- Store address from OCR
-  
-  -- Financial totals
-  subtotal NUMERIC(10, 2),
-  tax NUMERIC(10, 2),
-  fees NUMERIC(10, 2) DEFAULT 0,
-  total NUMERIC(10, 2) NOT NULL,
+  store_name TEXT,
+  store_address TEXT,
+
+  -- 金额：整型（分）
+  subtotal INTEGER,
+  tax INTEGER,
+  fees INTEGER DEFAULT 0,
+  total INTEGER NOT NULL,
   currency TEXT DEFAULT 'USD',
-  
-  -- Payment information
-  payment_method TEXT, -- 'credit_card', 'debit', 'cash', 'membership', etc.
-  payment_last4 TEXT, -- Last 4 digits of card (if available)
-  
-  -- User annotations
+
+  payment_method TEXT,
+  payment_last4 TEXT,
+
+  -- 结构化附加信息（cashier、membership_card、merchant_phone、purchase_time 等）
+  information JSONB,
+
   user_note TEXT,
-  user_tags TEXT[], -- e.g., ['business', 'grocery', 'monthly']
-  
-  -- Dates
-  receipt_date DATE NOT NULL, -- Date on the receipt
-  uploaded_at TIMESTAMPTZ, -- When user uploaded (redundant with receipts table)
-  
-  -- Metadata
+  user_tags TEXT[],
+
+  receipt_date DATE NOT NULL,
+
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
-  
-  -- Constraints
+
   CONSTRAINT record_summaries_receipt_id_unique UNIQUE(receipt_id)
 );
 
--- Indexes for record_summaries
 CREATE INDEX IF NOT EXISTS record_summaries_user_id_idx ON record_summaries(user_id);
 CREATE INDEX IF NOT EXISTS record_summaries_receipt_date_idx ON record_summaries(receipt_date DESC);
 CREATE INDEX IF NOT EXISTS record_summaries_store_chain_idx ON record_summaries(store_chain_id) WHERE store_chain_id IS NOT NULL;
@@ -67,127 +63,86 @@ CREATE INDEX IF NOT EXISTS record_summaries_store_location_idx ON record_summari
 CREATE INDEX IF NOT EXISTS record_summaries_created_at_idx ON record_summaries(created_at DESC);
 CREATE INDEX IF NOT EXISTS record_summaries_user_date_idx ON record_summaries(user_id, receipt_date DESC);
 
--- Comments
-COMMENT ON TABLE record_summaries IS 'Denormalized receipt-level summary data for efficient querying and export';
-COMMENT ON COLUMN record_summaries.receipt_id IS 'Foreign key to receipt_status table (one-to-one)';
-COMMENT ON COLUMN record_summaries.store_name IS 'Store name from OCR if not matched to store_chains';
-COMMENT ON COLUMN record_summaries.receipt_date IS 'Date on the receipt (may differ from uploaded_at)';
-COMMENT ON COLUMN record_summaries.user_tags IS 'User-defined tags for categorization';
+CREATE TRIGGER record_summaries_updated_at
+  BEFORE UPDATE ON record_summaries
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+COMMENT ON TABLE record_summaries IS 'Denormalized receipt-level summary data for efficient querying';
+COMMENT ON COLUMN record_summaries.subtotal IS 'Subtotal in cents (integer)';
+COMMENT ON COLUMN record_summaries.tax IS 'Tax in cents (integer)';
+COMMENT ON COLUMN record_summaries.fees IS 'Fees in cents (integer)';
+COMMENT ON COLUMN record_summaries.total IS 'Total in cents (integer)';
+COMMENT ON COLUMN record_summaries.information IS 'Standardized payload: other_info (cashier, membership_card, merchant_phone, purchase_time) + items (section 2).';
 
 -- ============================================
--- 2. record_items - Individual line items
+-- 2. record_items（最终形态）
+--    - 无 brand、category_l1/2/3、ocr_coordinates、ocr_confidence（024 已删）
+--    - 所有金额/数量为整型（分 × 100），来自 024
+--    - product_id / category_id 在 017 里加（需要 015/016 先存在）
+--    - category_source，来自 051
+--    - user_marked_idk，来自 052
+--    - user_feedback，来自 053
 -- ============================================
 CREATE TABLE IF NOT EXISTS record_items (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   receipt_id UUID NOT NULL REFERENCES receipt_status(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  
-  -- Product information (from OCR/LLM)
-  product_name TEXT NOT NULL, -- Raw product name from OCR/LLM
-  product_name_clean TEXT, -- Cleaned/normalized version (optional)
-  brand TEXT, -- Brand name if extracted
-  
-  -- Pricing
-  quantity NUMERIC(10, 3), -- Support fractional quantities (e.g., 1.27 lb)
-  unit TEXT, -- 'lb', 'kg', 'gallon', 'pack', 'each', 'oz', etc.
-  unit_price NUMERIC(10, 2), -- Price per unit
-  line_total NUMERIC(10, 2) NOT NULL, -- Total for this line item
-  
-  -- Discount information
+
+  product_name TEXT NOT NULL,
+  product_name_clean TEXT,
+
+  -- quantity: 原值 × 100（如 1.5 → 150）
+  quantity BIGINT,
+  unit TEXT,
+  -- unit_price / line_total / original_price / discount_amount: 分（整型）
+  unit_price BIGINT,
+  line_total BIGINT NOT NULL,
   on_sale BOOLEAN DEFAULT FALSE,
-  original_price NUMERIC(10, 2), -- Original price before discount
-  discount_amount NUMERIC(10, 2), -- Discount amount if on sale
-  
-  -- User categorization (can be set by user or LLM)
-  category_l1 TEXT, -- Level 1: e.g., 'Grocery', 'Household', 'Personal Care'
-  category_l2 TEXT, -- Level 2: e.g., 'Dairy', 'Cleaning', 'Health'
-  category_l3 TEXT, -- Level 3: e.g., 'Milk', 'Detergent', 'Vitamins'
-  
-  -- OCR metadata (for debugging/verification)
-  ocr_coordinates JSONB, -- Original OCR bounding box coordinates
-  ocr_confidence NUMERIC(3, 2), -- OCR confidence score (0.00 - 1.00)
-  
-  -- Item sequence (order in the receipt)
-  item_index INT, -- Position in the receipt (0-based)
-  
-  -- Metadata
+  original_price BIGINT,
+  discount_amount BIGINT,
+
+  item_index INT,
+
+  -- 来自 051
+  category_source TEXT,
+
+  -- 来自 052
+  user_marked_idk BOOLEAN NOT NULL DEFAULT FALSE,
+
+  -- 来自 053（JSON: {dismissed, reason, comment, dismissed_at}）
+  user_feedback JSONB,
+
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  
-  -- Constraints
+
   CHECK (quantity IS NULL OR quantity >= 0),
   CHECK (unit_price IS NULL OR unit_price >= 0),
   CHECK (line_total >= 0),
-  CHECK (ocr_confidence IS NULL OR (ocr_confidence >= 0 AND ocr_confidence <= 1))
+  CHECK (category_source IS NULL OR category_source IN (
+    'rule_exact', 'rule_fuzzy', 'llm', 'user_override', 'crowd_assigned'
+  ))
 );
 
--- Indexes for record_items
 CREATE INDEX IF NOT EXISTS record_items_receipt_id_idx ON record_items(receipt_id);
 CREATE INDEX IF NOT EXISTS record_items_user_id_idx ON record_items(user_id);
 CREATE INDEX IF NOT EXISTS record_items_product_name_idx ON record_items(product_name);
-CREATE INDEX IF NOT EXISTS record_items_category_l1_idx ON record_items(category_l1) WHERE category_l1 IS NOT NULL;
-CREATE INDEX IF NOT EXISTS record_items_category_l2_idx ON record_items(category_l2) WHERE category_l2 IS NOT NULL;
-CREATE INDEX IF NOT EXISTS record_items_category_l3_idx ON record_items(category_l3) WHERE category_l3 IS NOT NULL;
 CREATE INDEX IF NOT EXISTS record_items_on_sale_idx ON record_items(on_sale) WHERE on_sale = TRUE;
 CREATE INDEX IF NOT EXISTS record_items_created_at_idx ON record_items(created_at DESC);
 CREATE INDEX IF NOT EXISTS record_items_user_created_idx ON record_items(user_id, created_at DESC);
-
--- Indexes for text search (product name)
 CREATE INDEX IF NOT EXISTS record_items_product_name_trgm_idx ON record_items USING gin(product_name gin_trgm_ops);
 
--- Comments
 COMMENT ON TABLE record_items IS 'Individual line items from receipts - denormalized for efficient querying';
-COMMENT ON COLUMN record_items.product_name IS 'Raw product name from OCR/LLM output';
-COMMENT ON COLUMN record_items.product_name_clean IS 'Cleaned/normalized product name (optional)';
-COMMENT ON COLUMN record_items.quantity IS 'Quantity purchased (supports fractional for weight-based items)';
-COMMENT ON COLUMN record_items.unit IS 'Unit of measurement (lb, kg, gallon, pack, each, etc.)';
-COMMENT ON COLUMN record_items.category_l1 IS 'Level 1 category (Grocery, Household, Personal Care, etc.)';
-COMMENT ON COLUMN record_items.category_l2 IS 'Level 2 category (Dairy, Cleaning, Health, etc.)';
-COMMENT ON COLUMN record_items.category_l3 IS 'Level 3 category (Milk, Detergent, Vitamins, etc.)';
-COMMENT ON COLUMN record_items.ocr_coordinates IS 'Original OCR bounding box for verification';
-COMMENT ON COLUMN record_items.item_index IS 'Position in the receipt (0-based)';
-
--- ============================================
--- 3. Enable pg_trgm extension for fuzzy text search
--- ============================================
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
--- ============================================
--- 4. Add trigger for updated_at on record_summaries
--- ============================================
-CREATE TRIGGER record_summaries_updated_at 
-  BEFORE UPDATE ON record_summaries
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-
--- ============================================
--- 5. Verification queries
--- ============================================
-DO $$
-BEGIN
-    RAISE NOTICE 'Migration 012 completed successfully.';
-    RAISE NOTICE 'Created tables: record_summaries, record_items';
-    RAISE NOTICE 'Next steps:';
-    RAISE NOTICE '1. Update receipt processing workflow to populate these tables';
-    RAISE NOTICE '2. Backfill existing receipts from receipt_processing_runs.output_payload';
-    RAISE NOTICE '3. Create export API endpoint for external apps';
-END $$;
+COMMENT ON COLUMN record_items.quantity IS 'Quantity × 100 (e.g. 1.5 → 150). No decimals.';
+COMMENT ON COLUMN record_items.unit_price IS 'Unit price in cents. No decimals.';
+COMMENT ON COLUMN record_items.line_total IS 'Line total in cents. No decimals.';
+COMMENT ON COLUMN record_items.original_price IS 'Original price before discount, in cents.';
+COMMENT ON COLUMN record_items.discount_amount IS 'Discount amount in cents.';
+COMMENT ON COLUMN record_items.category_source IS 'How this item got category_id: rule_exact, rule_fuzzy, llm, user_override, crowd_assigned. NULL = unset.';
+COMMENT ON COLUMN record_items.user_marked_idk IS 'User clicked "I don''t know" on this item. Cleared when backend assigns category_id.';
+COMMENT ON COLUMN record_items.user_feedback IS 'User dismissal feedback: {dismissed, reason: "incorrect_item"|"other", comment, dismissed_at}';
 
 COMMIT;
 
--- ============================================
--- Example queries for validation
--- ============================================
-
--- Check if tables were created
--- SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename IN ('record_summaries', 'record_items');
-
--- Check indexes
--- SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename IN ('record_summaries', 'record_items');
-
--- ============================================
--- Future enhancements (not in this migration)
--- ============================================
--- 1. Add materialized views for common aggregations (monthly spending by category)
--- 2. Add partitioning by date for record_items (when > 10M rows)
--- 3. Add full-text search indexes for product names
--- 4. Add product_id foreign key when products table is created
--- ============================================
+DO $$
+BEGIN
+  RAISE NOTICE 'Migration 012 completed: record_summaries + record_items (final schema, includes 024/031/051/052/053)';
+END $$;

@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 023_seed_prompt_library.sql (final prompt text used directly)
+-- Content: UPDATE prompt_library SET content = <updated package_price_discount text>
+-- New databases: do NOT run this file (023_seed already inserts the final text).

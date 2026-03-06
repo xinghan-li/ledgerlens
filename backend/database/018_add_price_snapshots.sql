@@ -1,5 +1,9 @@
 -- ============================================
 -- Migration 018: Add price_snapshots table (PricePeek)
+--
+-- 注意：aggregate_prices_for_date 函数已更新为 024 的最终版本（record_items 金额已是分，
+-- 无需 × 100），对应 024_simplify_receipt_items.sql 中的函数重写。
+-- 新库直接用此版本，无需再运行 024 中的函数更新。
 -- ============================================
 -- Purpose: Aggregated price data for PricePeek (GasBuddy for groceries)
 --
@@ -164,22 +168,22 @@ BEGIN
     ri.product_id,
     rs.store_location_id,
     
-    -- Latest price (from most recent receipt)
-    (ARRAY_AGG(ROUND(ri.unit_price * 100) ORDER BY rs.receipt_date DESC))[1]::INT as latest_price_cents,
+    -- Latest price (record_items.unit_price already in cents since 012)
+    (ARRAY_AGG(ri.unit_price::INT ORDER BY rs.receipt_date DESC))[1] AS latest_price_cents,
     
-    target_date as snapshot_date,
-    MAX(rs.receipt_date) as last_seen_date,
-    COUNT(*) as sample_count,
+    target_date AS snapshot_date,
+    MAX(rs.receipt_date) AS last_seen_date,
+    COUNT(*) AS sample_count,
     
-    -- Statistical aggregations
-    ROUND(AVG(ri.unit_price * 100))::INT as avg_price_cents,
-    ROUND(MIN(ri.unit_price * 100))::INT as min_price_cents,
-    ROUND(MAX(ri.unit_price * 100))::INT as max_price_cents,
+    -- Statistical aggregations (already in cents)
+    ROUND(AVG(ri.unit_price))::INT AS avg_price_cents,
+    MIN(ri.unit_price)::INT AS min_price_cents,
+    MAX(ri.unit_price)::INT AS max_price_cents,
     
     -- Sale information
-    BOOL_OR(ri.on_sale) as is_on_sale,
-    COUNT(*) FILTER (WHERE ri.on_sale) as sale_count,
-    ROUND(AVG(ri.discount_amount * 100) FILTER (WHERE ri.on_sale))::INT as avg_discount_cents,
+    BOOL_OR(ri.on_sale) AS is_on_sale,
+    COUNT(*) FILTER (WHERE ri.on_sale) AS sale_count,
+    ROUND(AVG(ri.discount_amount) FILTER (WHERE ri.on_sale))::INT AS avg_discount_cents,
     
     -- Contributors
     COUNT(DISTINCT ri.user_id) as contributor_count,
@@ -207,7 +211,7 @@ BEGIN
     AND rs.store_location_id IS NOT NULL
     AND rs.receipt_date = target_date
     AND ri.unit_price IS NOT NULL
-    AND ri.unit_price > 0
+    AND ri.unit_price > 0  -- unit_price in cents; > 0 means > $0.00
   GROUP BY ri.product_id, rs.store_location_id
   
   ON CONFLICT (product_id, store_location_id, snapshot_date) 

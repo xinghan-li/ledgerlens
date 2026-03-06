@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.services.database.supabase_client import (
     _get_client,
     get_store_chain,
+    create_store_candidate,
     save_receipt_summary,
     save_receipt_items,
     update_receipt_summary,
@@ -325,7 +326,8 @@ def submit_manual_correction(
     # Resolve store_chain_id / store_location_id when we have store name (for insert or update)
     chain_id = None
     location_id = None
-    store_name = receipt_data.get("merchant_name") or ""
+    match_result: Dict[str, Any] = {}
+    store_name = (receipt_data.get("merchant_name") or "").strip()
     store_address = receipt_data.get("merchant_address")
     if store_name:
         try:
@@ -403,6 +405,27 @@ def submit_manual_correction(
             logger.warning("[MANUAL_CORRECT_DEBUG] items_data empty, save_receipt_items NOT called")
 
     update_receipt_status(receipt_id, current_status="success", current_stage="manual")
+    # When corrected store name/address did not match a location, create store_candidate so admin can review (e.g. LLM was wrong, user fixed address)
+    if store_name and (not chain_id or not location_id):
+        try:
+            existing = supabase.table("store_candidates").select("id").eq("receipt_id", receipt_id).limit(1).execute()
+            if not (existing.data and len(existing.data) > 0):
+                candidate_id = create_store_candidate(
+                    chain_name=store_name,
+                    receipt_id=receipt_id,
+                    source="llm",
+                    llm_result={"receipt": receipt_data},
+                    suggested_chain_id=match_result.get("suggested_chain_id") or chain_id,
+                    suggested_location_id=match_result.get("suggested_location_id") or location_id,
+                    confidence_score=match_result.get("confidence_score"),
+                )
+                if candidate_id:
+                    logger.info(
+                        f"Manual correction: created store_candidate {candidate_id} for {store_name!r} (no match or new location) so admin can review"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to create store_candidate after manual correction: {e}")
+
     # Enqueue items without category (or universal-only) to classification_review so they get reviewed
     try:
         enqueued = enqueue_unmatched_items_to_classification_review(receipt_id)

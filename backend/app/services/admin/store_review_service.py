@@ -156,28 +156,35 @@ def approve_store_candidate(
         if not chain.data:
             raise ValueError("store_chain not found")
     else:
-        # Create new store_chain
+        # Create new store_chain: forbid if name or normalized_name already exists (admin may have meant "add to existing")
         name = (chain_name or row.get("raw_name") or "").strip()
         if not name:
             raise ValueError("chain_name is required when creating new chain")
         normalized = _normalize_chain_name(name)
         if not normalized:
             raise ValueError("chain_name is required")
-        # Avoid duplicate normalized_name
-        existing = supabase.table("store_chains").select("id").eq("normalized_name", normalized).limit(1).execute()
-        if existing.data:
-            chain_id = existing.data[0]["id"]
-            logger.info(f"Store candidate approved as existing chain: {normalized} -> {chain_id}")
-        else:
-            ins = supabase.table("store_chains").insert({
-                "name": name,
-                "normalized_name": normalized,
-                "is_active": True,
-            }).execute()
-            if not ins.data:
-                raise ValueError("Failed to create store_chain")
-            chain_id = ins.data[0]["id"]
-            logger.info(f"Created store_chain: {chain_id} ({name})")
+        existing_by_norm = supabase.table("store_chains").select("id, name").eq("normalized_name", normalized).limit(1).execute()
+        if existing_by_norm.data:
+            raise ValueError(
+                "A chain with this name already exists. Did you mean to add this as a location of the existing chain? Do not submit; wait for developer fix if unsure."
+            )
+        # Also block if display name (case-insensitive) already exists
+        all_chains = supabase.table("store_chains").select("id, name").execute()
+        name_lower = name.strip().lower()
+        for c in (all_chains.data or []):
+            if (c.get("name") or "").strip().lower() == name_lower:
+                raise ValueError(
+                    "A chain with this name already exists. Did you mean to add this as a location of the existing chain? Do not submit; wait for developer fix if unsure."
+                )
+        ins = supabase.table("store_chains").insert({
+            "name": name,
+            "normalized_name": normalized,
+            "is_active": True,
+        }).execute()
+        if not ins.data:
+            raise ValueError("Failed to create store_chain")
+        chain_id = ins.data[0]["id"]
+        logger.info(f"Created store_chain: {chain_id} ({name})")
 
     # Create store_location
     loc_name = (location_name or row.get("raw_name") or "").strip() or "Store"
@@ -230,9 +237,12 @@ def approve_store_candidate(
 
     # Backfill record_summaries: (1) set store_chain_id where store_name matches and chain_id was null
     try:
-        chain_row = supabase.table("store_chains").select("name").eq("id", chain_id).limit(1).execute()
+        chain_row = supabase.table("store_chains").select("name, normalized_name").eq("id", chain_id).limit(1).execute()
         if chain_row.data and chain_row.data[0].get("name"):
-            n = backfill_record_summaries_for_store_chain(chain_id, chain_row.data[0]["name"])
+            row = chain_row.data[0]
+            n = backfill_record_summaries_for_store_chain(
+                chain_id, row["name"], normalized_name=row.get("normalized_name")
+            )
             if n:
                 logger.info(f"Backfilled {n} record_summaries with new store_chain_id after approval")
     except Exception as e:

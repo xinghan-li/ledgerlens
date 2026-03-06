@@ -1,7 +1,10 @@
 -- ============================================
 -- Seed prompt_library and prompt_binding (run after 023_prompt_library_and_binding.sql)
--- ============================================
--- Migrates content from old prompt_tags/prompt_snippets (see temp/*.csv)
+--
+-- 已合并以下迁移（新库直接建到最终形态，无需再单独运行）：
+--   026_add_classification_prompt.sql              → classification 提示词
+--   035_prompt_is_on_sale_only_real_discounts.sql  → package_price_discount 最终文案（已更新）
+--   041_seed_prompt_library_debug_cascade.sql      → debug_ocr / debug_vision 提示词
 -- ============================================
 
 BEGIN;
@@ -47,7 +50,7 @@ VALUES (
   TRUE
 );
 
--- 1b. package_price_discount: Common discount patterns (from prompt_snippets.csv, package_price_discount tag)
+-- 1b. package_price_discount（最终文案，来自 035 更新）
 INSERT INTO prompt_library (key, category, content_role, content, version, is_active)
 VALUES (
   'package_price_discount',
@@ -59,7 +62,7 @@ When you see patterns like "2/$9.00", "3 for $10", "Buy 2 Get 1", or similar pac
 1. Extract the ACTUAL line_total from the receipt, NOT calculated quantity × unit_price
 2. Do NOT "correct" line_total for package discounts - use actual values from receipt
 3. If "2/$9.00" and two items sum to $9.00, this is CORRECT
-4. Mark is_on_sale = true for items in package deals
+4. Mark is_on_sale = true ONLY for items that are explicitly on sale (e.g. (SALE) label, or "was $X now $Y"). Do NOT set is_on_sale = true for simple quantity pricing like "5 at $0.23" or "2 lb @ $1.99" — those are normal prices, not discounts.
 5. Do NOT add items_with_inconsistent_price for package discounts - expected behavior
 
 Validation: If package pattern exists, verify line_totals sum to stated package price (tolerance ±0.03). If sum matches, extraction is correct even when line_total ≠ quantity × unit_price.',
@@ -172,6 +175,75 @@ FROM prompt_library
 WHERE key IN ('receipt_parse_base', 'package_price_discount', 'deposit_and_fee', 'membership_card', 'receipt_parse_user_template', 'receipt_parse_schema')
   AND is_active = TRUE;
 
+-- ============================================
+-- 3. Classification prompt（来自 026）
+-- ============================================
+INSERT INTO prompt_library (key, category, content_role, content, version, is_active)
+SELECT
+  'classification', 'classification', 'system',
+  'You are a product categorization expert. You receive a structural receipt with merchant/store context and a list of raw product names (as they appear on the receipt).
+
+Your task: For each raw_product_name, infer the most likely 3-level category (Category I / II / III) based on common merchant rules from Walmart, Costco, Target, and similar retailers. Use the store name and product name to infer category.
+
+Also infer size and unit_type if they appear in the product name (e.g. "Organic Milk 1 Gallon" -> size: "1 gallon", unit_type: "gallon"; "Eggs 12ct" -> size: "12ct", unit_type: "count"). If not clearly present, use null.
+
+Output valid JSON with this schema:
+{
+  "items": [
+    {
+      "raw_product_name": "exact string from input",
+      "category_i": "Level 1 name (e.g. Grocery)",
+      "category_ii": "Level 2 name (e.g. Dairy)",
+      "category_iii": "Level 3 name (e.g. Milk)",
+      "size": "string or null",
+      "unit_type": "string or null"
+    }
+  ]
+}
+
+Category names must match common retail taxonomies: Grocery (Produce, Dairy, Meat & Seafood, Bakery, Frozen, Pantry, Beverages, Snacks, Deli), Household (Cleaning, Paper Products, Kitchen, Storage), Personal Care, Pet Supplies, Health, Other. Use the most specific level 3 that fits.',
+  1, TRUE
+WHERE NOT EXISTS (SELECT 1 FROM prompt_library WHERE key = 'classification');
+
+INSERT INTO prompt_binding (prompt_key, library_id, scope, chain_id, location_id, priority, is_active)
+SELECT 'classification', id, 'default', NULL, NULL, 10, TRUE
+FROM prompt_library
+WHERE key = 'classification' AND is_active = TRUE
+  AND NOT EXISTS (SELECT 1 FROM prompt_binding WHERE prompt_key = 'classification' AND scope = 'default');
+
+-- ============================================
+-- 4. Debug cascade prompts（来自 041）
+-- ============================================
+INSERT INTO prompt_library (key, category, content_role, content, version, is_active)
+SELECT 'receipt_parse_debug_ocr', 'receipt', 'system',
+  'The previous answer had sum/total issues. Compare the original OCR JSON and the summarized JSON below. Can you see where the problem is?
+- If you can identify and fix the issue: correct the output and return the full receipt JSON.
+- If you do not have enough confidence: escalate by setting top-level "reason" to your finding and still output best-effort JSON. The next step will send you the receipt image to read from.',
+  1, TRUE
+WHERE NOT EXISTS (SELECT 1 FROM prompt_library WHERE key = 'receipt_parse_debug_ocr');
+
+INSERT INTO prompt_library (key, category, content_role, content, version, is_active)
+SELECT 'receipt_parse_debug_vision', 'receipt', 'system',
+  'You are now being given the receipt image to read from. Use the image together with the previous OCR and summarized JSON to produce the correct receipt JSON.
+- If you can extract correctly: output the full receipt JSON; set "reason" to null or omit.
+- If you cannot be confident: set top-level "reason" to your finding and output best-effort JSON. Do not output ambiguous or uncertain structural answers.',
+  1, TRUE
+WHERE NOT EXISTS (SELECT 1 FROM prompt_library WHERE key = 'receipt_parse_debug_vision');
+
+INSERT INTO prompt_binding (prompt_key, library_id, scope, priority, is_active)
+SELECT 'receipt_parse_debug_ocr', pl.id, 'default', 10, TRUE
+FROM prompt_library pl
+WHERE pl.key = 'receipt_parse_debug_ocr' AND pl.is_active = TRUE
+  AND NOT EXISTS (SELECT 1 FROM prompt_binding pb WHERE pb.library_id = pl.id AND pb.prompt_key = 'receipt_parse_debug_ocr')
+LIMIT 1;
+
+INSERT INTO prompt_binding (prompt_key, library_id, scope, priority, is_active)
+SELECT 'receipt_parse_debug_vision', pl.id, 'default', 10, TRUE
+FROM prompt_library pl
+WHERE pl.key = 'receipt_parse_debug_vision' AND pl.is_active = TRUE
+  AND NOT EXISTS (SELECT 1 FROM prompt_binding pb WHERE pb.library_id = pl.id AND pb.prompt_key = 'receipt_parse_debug_vision')
+LIMIT 1;
+
 COMMIT;
 
 DO $$
@@ -181,5 +253,5 @@ DECLARE
 BEGIN
   SELECT COUNT(*) INTO lib_count FROM prompt_library WHERE is_active = TRUE;
   SELECT COUNT(*) INTO bind_count FROM prompt_binding WHERE is_active = TRUE;
-  RAISE NOTICE '023_seed: Inserted % prompt_library entries, % prompt_binding entries', lib_count, bind_count;
+  RAISE NOTICE '023_seed: Inserted % prompt_library entries, % prompt_binding entries (incl. 026+035+041)', lib_count, bind_count;
 END $$;

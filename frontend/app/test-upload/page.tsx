@@ -2,8 +2,10 @@
 
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase'
+import { useApiUrl } from '@/lib/api-url-context'
 
 export default function TestUploadPage() {
+  const apiBaseUrl = useApiUrl()
   const [file, setFile] = useState<File | null>(null)
   const [result, setResult] = useState<string>('')
   const [loading, setLoading] = useState(false)
@@ -13,7 +15,7 @@ export default function TestUploadPage() {
     const selectedFile = e.target.files?.[0]
     if (selectedFile) {
       setFile(selectedFile)
-      console.log('文件选择:', selectedFile.name, selectedFile.type, selectedFile.size)
+      console.log('File selected:', selectedFile.name, selectedFile.type, selectedFile.size)
     }
   }
 
@@ -47,11 +49,10 @@ export default function TestUploadPage() {
         console.log(`  ${key}:`, value)
       }
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      console.log('请求 URL:', `${apiUrl}/api/receipt/workflow`)
+      console.log('Request URL:', `${apiBaseUrl}/api/receipt/workflow`)
 
       // 发送请求
-      const response = await fetch(`${apiUrl}/api/receipt/workflow`, {
+      const response = await fetch(`${apiBaseUrl}/api/receipt/workflow`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -60,11 +61,11 @@ export default function TestUploadPage() {
         body: formData,
       })
 
-      console.log('响应状态:', response.status, response.statusText)
-      console.log('响应头:', Object.fromEntries(response.headers.entries()))
+      console.log('Response status:', response.status, response.statusText)
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()))
 
       const text = await response.text()
-      console.log('响应体:', text)
+      console.log('Response body:', text)
 
       let resultData
       try {
@@ -80,7 +81,7 @@ export default function TestUploadPage() {
       }
 
     } catch (error) {
-      console.error('错误:', error)
+      console.error('Error:', error)
       setResult(`❌ Error: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setLoading(false)
@@ -88,30 +89,30 @@ export default function TestUploadPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
+    <div className="min-h-screen bg-theme-cream p-8">
       <div className="max-w-4xl mx-auto">
         <h1 className="text-3xl font-bold mb-8">Upload test</h1>
 
         <div className="bg-white rounded-xl shadow p-6 space-y-6">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
+            <label className="block text-sm font-medium text-theme-dark/90 mb-2">
               Select receipt file
             </label>
             <input
               type="file"
               accept="image/*,.pdf"
               onChange={handleFileChange}
-              className="block w-full text-sm text-gray-500
+              className="block w-full text-sm text-theme-mid
                 file:mr-4 file:py-2 file:px-4
                 file:rounded-lg file:border-0
                 file:text-sm file:font-semibold
-                file:bg-blue-50 file:text-blue-700
-                hover:file:bg-blue-100"
+                file:bg-theme-light-gray/50 file:text-theme-orange
+                hover:file:bg-theme-light-gray"
             />
           </div>
 
           {file && (
-            <div className="p-4 bg-gray-50 rounded-lg">
+            <div className="p-4 bg-theme-cream rounded-lg">
               <p className="text-sm">
                 <strong>File name:</strong> {file.name}
               </p>
@@ -127,22 +128,22 @@ export default function TestUploadPage() {
           <button
             onClick={handleUpload}
             disabled={!file || loading}
-            className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-semibold"
+            className="w-full px-6 py-3 btn-primary disabled:bg-theme-mid disabled:cursor-not-allowed font-semibold"
           >
             {loading ? 'Uploading…' : 'Upload'}
           </button>
 
           {result && (
-            <div className="p-4 bg-gray-900 rounded-lg">
-              <pre className="text-sm text-gray-100 whitespace-pre-wrap overflow-x-auto">
+            <div className="p-4 bg-theme-dark rounded-lg">
+              <pre className="text-sm text-theme-cream whitespace-pre-wrap overflow-x-auto">
                 {result}
               </pre>
             </div>
           )}
         </div>
 
-        <div className="mt-8 p-4 bg-blue-50 rounded-lg">
-          <p className="text-sm text-blue-800">
+        <div className="mt-8 p-4 bg-theme-light-gray/50 rounded-lg">
+          <p className="text-sm text-theme-dark">
             💡 <strong>Tip:</strong> Open browser console (F12) for detailed logs
           </p>
         </div>

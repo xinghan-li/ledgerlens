@@ -21,16 +21,34 @@ logger = logging.getLogger(__name__)
 
 
 def _store_name_to_title_case(name: Optional[str]) -> Optional[str]:
-    """Normalize store name: ALL CAPS -> Title Case (e.g. GOLD VALLEY SUPERMARKET -> Gold Valley Supermarket)."""
+    """
+    Normalize store name: Title Case but preserve T&T (second T) and US/UK etc.
+    E.g. "T&T Supermarket US" stays as-is; "t&t supermarket us" -> "T&T Supermarket US".
+    """
     if not name or not isinstance(name, str):
         return name
     s = name.strip()
     if not s:
         return name
-    return " ".join(
-        w[0].upper() + w[1:].lower() if len(w) > 0 else w
-        for w in s.split()
-    )
+
+    def title_word(w: str) -> str:
+        if not w:
+            return w
+        # 2-letter (US, UK) -> all caps
+        if len(w) == 2 and w.isalpha():
+            return w.upper()
+        # 3-letter (USA, UAE) -> all caps
+        if len(w) == 3 and w.isalpha():
+            return w.upper()
+        # Contains & (e.g. T&T): capitalize first letter of each part
+        if "&" in w:
+            parts = w.split("&")
+            return "&".join(
+                (p[0].upper() + p[1:].lower()) if len(p) > 0 else p for p in parts
+            )
+        return w[0].upper() + w[1:].lower() if len(w) > 0 else w
+
+    return " ".join(title_word(w) for w in s.split())
 
 
 def _purchase_time_to_24h(value: Optional[str]) -> Optional[str]:
@@ -67,10 +85,29 @@ def _normalize_card_last4(raw: Optional[str]) -> Optional[str]:
 
 
 def _normalize_address_for_backfill(s: Optional[str]) -> str:
-    """Normalize address string for fuzzy comparison (no dependency on address_matcher)."""
+    """
+    Normalize address for fuzzy comparison: strip Suite/Unit/Ste, trailing country,
+    then expand abbreviations (PK->park, RD->road, HWY->highway, etc.) so "FANSHAWE PK RD" matches "Fanshawe Park Rd".
+    """
     if not s or not isinstance(s, str):
         return ""
-    return " ".join(s.lower().replace("\n", " ").replace("\r", " ").split())
+    raw = s.replace("\n", " ").replace("\r", " ").strip()
+    if not raw:
+        return ""
+    one = " ".join(raw.lower().split())
+    # Remove unit/suite/ste/apt/# number
+    one = re.sub(
+        r"[,]?\s*(?:suite|unit|ste|apt|#)\s*-?\s*[\d\w-]+",
+        " ",
+        one,
+        flags=re.IGNORECASE,
+    )
+    # Strip trailing country tokens
+    one = re.sub(r"\b(?:us|usa|ca|canada)\s*$", "", one, flags=re.IGNORECASE)
+    one = " ".join(one.split())
+    # Expand abbreviations (PK->park, RD->road, HWY->highway, etc.) so receipt and DB match
+    from ...processors.enrichment.address_abbreviations import expand_address_abbreviations
+    return expand_address_abbreviations(one)
 
 # Singleton Supabase client
 _supabase: Optional[Client] = None
@@ -91,6 +128,279 @@ def _get_client() -> Client:
         logger.info("Supabase client initialized")
     
     return _supabase
+
+
+def get_store_chains_with_receipt_counts(active_only: bool = True) -> List[Dict[str, Any]]:
+    """
+    Return active store chains with receipt count for each.
+    Used by public homepage to show "samples we have" and tally per store.
+    Count = receipts already linked (store_chain_id = chain) + receipts not yet linked
+    but with store_name matching this chain (so the number reflects "receipts we have from this store").
+    """
+    supabase = _get_client()
+    q = supabase.table("store_chains").select("id, name, normalized_name").order("name")
+    if active_only:
+        q = q.eq("is_active", True)
+    res = q.execute()
+    chains = list(res.data or [])
+    # Count unlinked receipts by store_name (store_chain_id IS NULL); then assign to chain by prefix match
+    unlinked_by_name: Dict[str, int] = {}
+    try:
+        unlinked = (
+            supabase.table("record_summaries")
+            .select("store_name")
+            .is_("store_chain_id", "null")
+            .execute()
+        )
+        for row in unlinked.data or []:
+            name = (row.get("store_name") or "").strip().lower()
+            if name:
+                unlinked_by_name[name] = unlinked_by_name.get(name, 0) + 1
+    except Exception as e:
+        logger.warning(f"Failed to count unlinked receipts by store_name: {e}")
+
+    def _store_name_matches_chain(store_name_lower: str, norm: str, name_lower: str) -> bool:
+        if not store_name_lower:
+            return False
+        for key in (norm, name_lower):
+            if not key:
+                continue
+            if store_name_lower == key:
+                return True
+            if store_name_lower.startswith(key + " ") or store_name_lower.startswith(key + "#") or store_name_lower.startswith(key + "'"):
+                return True
+        return False
+
+    # Assign each unlinked (store_name, count) to the longest matching chain to avoid double-count
+    chain_unlinked: Dict[str, int] = {str(c.get("id")): 0 for c in chains if c.get("id")}
+    chains_by_norm_len = sorted(
+        [c for c in chains if c.get("id") and (c.get("normalized_name") or c.get("name"))],
+        key=lambda c: len((c.get("normalized_name") or c.get("name") or "").strip()),
+        reverse=True,
+    )
+    for store_name_lower, cnt in unlinked_by_name.items():
+        for c in chains_by_norm_len:
+            norm = (c.get("normalized_name") or "").strip().lower()
+            name_lower = (c.get("name") or "").strip().lower()
+            if _store_name_matches_chain(store_name_lower, norm, name_lower):
+                cid = str(c.get("id"))
+                chain_unlinked[cid] = chain_unlinked.get(cid, 0) + cnt
+                break
+
+    out: List[Dict[str, Any]] = []
+    for c in chains:
+        cid = c.get("id")
+        if not cid:
+            continue
+        try:
+            count_res = (
+                supabase.table("record_summaries")
+                .select("id", count="exact")
+                .eq("store_chain_id", cid)
+                .limit(1)
+                .execute()
+            )
+            linked = getattr(count_res, "count", None)
+            if linked is None:
+                linked = len(count_res.data) if count_res.data else 0
+            else:
+                linked = int(linked) if linked is not None else 0
+        except Exception as e:
+            logger.warning(f"Failed to count receipts for store_chain {cid}: {e}")
+            linked = 0
+        unlinked = chain_unlinked.get(str(cid), 0)
+        total = linked + unlinked
+        out.append({
+            "id": str(cid),
+            "name": c.get("name") or "",
+            "normalized_name": c.get("normalized_name") or "",
+            "receipt_count": total,
+        })
+    return out
+
+
+# US state full name -> 2-letter code (for normalizing store_locations.state)
+_US_STATE_TO_CODE: Dict[str, str] = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+    "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
+    "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+    "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV", "new hampshire": "NH",
+    "new jersey": "NJ", "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+    "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA",
+    "rhode island": "RI", "south carolina": "SC", "south dakota": "SD", "tennessee": "TN",
+    "texas": "TX", "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
+}
+# Canadian province/territory full name -> 2-letter code
+_CA_PROVINCE_TO_CODE: Dict[str, str] = {
+    "alberta": "AB", "british columbia": "BC", "manitoba": "MB", "new brunswick": "NB",
+    "newfoundland and labrador": "NL", "nl": "NL", "nova scotia": "NS", "nunavut": "NU",
+    "ontario": "ON", "prince edward island": "PE", "quebec": "QC", "saskatchewan": "SK",
+    "northwest territories": "NT", "yukon": "YT", "yukon territory": "YT",
+}
+
+# 2-letter code -> full name (single source of truth for location display names)
+US_CODE_TO_NAME: Dict[str, str] = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
+    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "DC": "District of Columbia",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois",
+    "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana",
+    "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
+    "MS": "Mississippi", "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon",
+    "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota",
+    "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia",
+    "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
+}
+CA_CODE_TO_NAME: Dict[str, str] = {
+    "AB": "Alberta", "BC": "British Columbia", "MB": "Manitoba", "NB": "New Brunswick",
+    "NL": "Newfoundland and Labrador", "NS": "Nova Scotia", "NT": "Northwest Territories",
+    "NU": "Nunavut", "ON": "Ontario", "PE": "Prince Edward Island", "QC": "Quebec",
+    "SK": "Saskatchewan", "YT": "Yukon",
+}
+
+
+def _parse_state_country_from_address(store_address: Optional[str]) -> Optional[Tuple[str, str]]:
+    """
+    Try to extract (country_code, state_code) from raw store_address for receipts without store_location_id.
+    Returns ("US", "WA") or ("CA", "BC") etc., or None if not detected.
+    """
+    if not store_address or not isinstance(store_address, str):
+        return None
+    s = store_address.replace("\n", " ").strip()
+    if not s:
+        return None
+    s_lower = s.lower()
+    # Full names (longer first to avoid "New" matching before "New Jersey")
+    full_names_ca = [
+        ("british columbia", "BC"), ("new brunswick", "NB"), ("newfoundland and labrador", "NL"),
+        ("nova scotia", "NS"), ("prince edward island", "PE"), ("northwest territories", "NT"),
+        ("yukon territory", "YT"), ("alberta", "AB"), ("manitoba", "MB"), ("ontario", "ON"),
+        ("quebec", "QC"), ("saskatchewan", "SK"), ("nunavut", "NU"), ("yukon", "YT"),
+    ]
+    for name, code in full_names_ca:
+        if name in s_lower:
+            return ("CA", code)
+    full_names_us = [
+        ("district of columbia", "DC"), ("new hampshire", "NH"), ("new jersey", "NJ"),
+        ("new mexico", "NM"), ("new york", "NY"), ("north carolina", "NC"), ("north dakota", "ND"),
+        ("rhode island", "RI"), ("south carolina", "SC"), ("south dakota", "SD"),
+        ("west virginia", "WV"), ("washington", "WA"), ("california", "CA"), ("texas", "TX"),
+    ]
+    for name, code in full_names_us:
+        if name in s_lower:
+            return ("US", code)
+    # Single-word state names (avoid "in" in "indiana")
+    for name, code in _US_STATE_TO_CODE.items():
+        if name in ("new", "north", "south", "west", "district", "rhode"):
+            continue
+        if len(name) <= 3:
+            continue
+        if name in s_lower:
+            return ("US", code)
+    # 2-letter codes with word boundary (e.g. ", WA 98101" or " Vancouver, BC")
+    for code in list(US_CODE_TO_NAME.keys()) + list(CA_CODE_TO_NAME.keys()):
+        if re.search(r"\b" + re.escape(code) + r"\b", s, re.I):
+            if code in US_CODE_TO_NAME:
+                return ("US", code)
+            if code in CA_CODE_TO_NAME:
+                return ("CA", code)
+    return None
+
+
+def _normalize_state_code(country_code: str, state_raw: Optional[str]) -> Optional[str]:
+    """Return 2-letter state/province code for US/CA, or None."""
+    if not state_raw or not isinstance(state_raw, str):
+        return None
+    s = state_raw.strip()
+    if not s:
+        return None
+    s_lower = s.lower()
+    if country_code == "US":
+        if len(s) == 2:
+            return s.upper()
+        return _US_STATE_TO_CODE.get(s_lower) or (s.upper() if len(s) == 2 else None)
+    if country_code == "CA":
+        if len(s) == 2:
+            return s.upper()
+        return _CA_PROVINCE_TO_CODE.get(s_lower) or (s.upper() if len(s) == 2 else None)
+    return s.upper() if len(s) == 2 else None
+
+
+def get_location_stats() -> List[Dict[str, Any]]:
+    """
+    Return receipt counts and distinct store counts per US state and Canadian province.
+    Same source as store stats: (1) receipts with store_location_id use store_locations state/country;
+    (2) receipts without store_location_id but with store_address get state/country parsed from address
+    so the map total matches the store section.
+    Returns: list of { country_code, state_code, state_display_name, receipt_count, store_count }.
+    """
+    supabase = _get_client()
+    receipt_agg: Dict[Tuple[str, str], int] = {}
+    store_agg: Dict[Tuple[str, str], set] = {}
+
+    # (1) Receipts with store_location_id — use store_locations state/country
+    try:
+        res = (
+            supabase.table("record_summaries")
+            .select("store_location_id, store_locations(state, country_code)")
+            .not_.is_("store_location_id", "null")
+            .execute()
+        )
+        for row in res.data or []:
+            loc = row.get("store_locations") or row.get("store_location")
+            if not isinstance(loc, dict):
+                continue
+            country = (loc.get("country_code") or "US").strip().upper()
+            if country not in ("US", "CA"):
+                continue
+            state_raw = loc.get("state")
+            code = _normalize_state_code(country, state_raw)
+            if not code:
+                continue
+            key = (country, code)
+            receipt_agg[key] = receipt_agg.get(key, 0) + 1
+            loc_id = row.get("store_location_id")
+            if loc_id:
+                if key not in store_agg:
+                    store_agg[key] = set()
+                store_agg[key].add(str(loc_id))
+    except Exception as e:
+        logger.warning(f"Failed to get location stats (linked): {e}")
+
+    # (2) Receipts without store_location_id but with store_address — parse address for state/country
+    try:
+        unlinked = (
+            supabase.table("record_summaries")
+            .select("id, store_address")
+            .is_("store_location_id", "null")
+            .execute()
+        )
+        for row in unlinked.data or []:
+            addr = row.get("store_address")
+            parsed = _parse_state_country_from_address(addr)
+            if not parsed:
+                continue
+            country, code = parsed
+            key = (country, code)
+            receipt_agg[key] = receipt_agg.get(key, 0) + 1
+    except Exception as e:
+        logger.warning(f"Failed to get location stats (unlinked by address): {e}")
+
+    out = []
+    for (c, s) in sorted(set(receipt_agg.keys()) | set(store_agg.keys())):
+        display_name = (US_CODE_TO_NAME.get(s) if c == "US" else CA_CODE_TO_NAME.get(s)) or s
+        out.append({
+            "country_code": c,
+            "state_code": s,
+            "state_display_name": display_name,
+            "receipt_count": receipt_agg.get((c, s), 0),
+            "store_count": len(store_agg.get((c, s), set())),
+        })
+    return out
 
 
 def _parse_rpc_count(res: Any, rpc_name: str, default: int = 0) -> int:
@@ -165,7 +475,12 @@ def check_duplicate_by_hash(
         return None
 
 
-def create_receipt(user_id: str, raw_file_url: Optional[str] = None, file_hash: Optional[str] = None) -> str:
+def create_receipt(
+    user_id: str,
+    raw_file_url: Optional[str] = None,
+    file_hash: Optional[str] = None,
+    pipeline_version: str = "legacy_a",
+) -> str:
     """
     Create a new receipt record in receipt_status table.
     
@@ -173,6 +488,7 @@ def create_receipt(user_id: str, raw_file_url: Optional[str] = None, file_hash: 
         user_id: User identifier (UUID string)
         raw_file_url: Optional URL to the uploaded file
         file_hash: Optional SHA256 hash of the file for duplicate detection
+        pipeline_version: Pipeline used ('legacy_a' or 'vision_b')
         
     Returns:
         receipt_id (UUID string)
@@ -188,6 +504,7 @@ def create_receipt(user_id: str, raw_file_url: Optional[str] = None, file_hash: 
         "current_stage": "ocr",  # Start with ocr, will be updated during processing
         "raw_file_url": raw_file_url,
         "file_hash": file_hash,
+        "pipeline_version": pipeline_version,
     }
     
     logger.info(f"[DEBUG] Attempting to insert receipt with payload: {payload}")
@@ -258,7 +575,10 @@ def save_processing_run(
     Returns:
         run_id (UUID string)
     """
-    if stage not in ('ocr', 'llm', 'manual', 'rule_based_cleaning'):
+    if stage not in (
+        'ocr', 'llm', 'manual', 'rule_based_cleaning',
+        'vision_primary', 'vision_escalation', 'shadow_legacy',
+    ):
         raise ValueError(f"Invalid stage: {stage}")
     if status not in ('pass', 'fail'):
         raise ValueError(f"Invalid status: {status}")
@@ -316,7 +636,11 @@ def update_receipt_status(
     """
     if current_status not in ('success', 'failed', 'needs_review'):
         raise ValueError(f"Invalid status: {current_status}")
-    if current_stage not in ('ocr', 'llm_primary', 'llm_fallback', 'manual', 'rejected_not_receipt', 'pending_receipt_confirm'):
+    if current_stage not in (
+        'ocr', 'llm_primary', 'llm_fallback', 'manual',
+        'rejected_not_receipt', 'pending_receipt_confirm',
+        'vision_primary', 'vision_escalation',
+    ):
         raise ValueError(f"Invalid stage: {current_stage}")
     
     supabase = _get_client()
@@ -1561,25 +1885,44 @@ def get_store_chain(
     return result
 
 
-def backfill_record_summaries_for_store_chain(chain_id: str, chain_name: str) -> int:
+def _store_name_matches_chain_for_backfill(store_name_lower: str, norm: str, name_lower: str) -> bool:
+    """True if unlinked store_name should be assigned to this chain (exact or prefix match)."""
+    if not store_name_lower:
+        return False
+    # Normalize spelling variants so "walmart supercentre" matches "walmart supercenter"
+    store_name_norm = store_name_lower.replace("supercentre", "supercenter")
+    for key in (norm, name_lower):
+        if not key:
+            continue
+        key_norm = key.replace("supercentre", "supercenter")
+        if store_name_norm == key_norm:
+            return True
+        if store_name_norm.startswith(key_norm + " ") or store_name_norm.startswith(key_norm + "#") or store_name_norm.startswith(key_norm + "'"):
+            return True
+    return False
+
+
+def backfill_record_summaries_for_store_chain(chain_id: str, chain_name: str, normalized_name: Optional[str] = None) -> int:
     """
-    After a new store_chain is approved, set store_chain_id and store_name (canonical) on record_summaries
-    that have matching store_name but currently store_chain_id is null. Cascade: raw name (e.g. WALMART) -> chain name (e.g. Walmart).
+    Set store_chain_id and store_name (canonical) on record_summaries that have store_chain_id null
+    and store_name matching this chain (exact or prefix: "Costco Wholesale" -> Costco).
+    Uses normalized_name if provided, else derives from chain_name.
     """
     if not chain_id or not (chain_name or "").strip():
         return 0
     supabase = _get_client()
     name_lower = (chain_name or "").strip().lower()
+    norm = (normalized_name or name_lower).strip().lower()
     try:
         res = (
             supabase.table("record_summaries")
-            .select("id")
+            .select("id, store_name")
             .is_("store_chain_id", "null")
             .execute()
         )
         ids_to_update = [
             r["id"] for r in (res.data or [])
-            if (r.get("store_name") or "").strip().lower() == name_lower
+            if _store_name_matches_chain_for_backfill((r.get("store_name") or "").strip().lower(), norm, name_lower)
         ]
         if not ids_to_update:
             return 0
@@ -1606,7 +1949,7 @@ def backfill_record_summaries_for_store_location(
     associated with that address. Finds record_summaries that have this chain_id but no
     store_location_id, and whose store_address fuzzy-matches the new location; then sets
     store_location_id, store_address (canonical multi-line), and store_name (canonical)
-    so those receipts display the correct分行 layout and chain name.
+    so those receipts display the correct multi-line layout and chain name.
     """
     if not chain_id or not location_id or not location_row:
         return 0
@@ -1650,6 +1993,125 @@ def backfill_record_summaries_for_store_location(
     except Exception as e:
         logger.warning(f"backfill_record_summaries_for_store_location failed: {e}")
         return 0
+
+
+def _backfill_unlinked_record_summaries_for_location(
+    chain_id: str,
+    location_id: str,
+    location_row: Dict[str, Any],
+    chain_name: str,
+    normalized_name: Optional[str],
+    address_match_threshold: float = 0.85,
+) -> int:
+    """
+    Find record_summaries with store_chain_id NULL but store_address matching this location
+    and store_name matching this chain; set store_chain_id, store_location_id, store_address, store_name.
+    Used so that receipts that never got chain_id at processing time (e.g. address abbrev mismatch)
+    still get linked after we add abbreviation normalization.
+    """
+    if not chain_id or not location_id or not location_row or not (chain_name or "").strip():
+        return 0
+    supabase = _get_client()
+    canonical_address = _store_address_from_location_row(location_row)
+    if not (canonical_address or "").strip():
+        return 0
+    canonical_norm = _normalize_address_for_backfill(canonical_address)
+    name_lower = (chain_name or "").strip().lower()
+    norm = (normalized_name or name_lower).replace(" ", "_").strip().lower()
+    try:
+        res = (
+            supabase.table("record_summaries")
+            .select("id, store_address, store_name")
+            .is_("store_chain_id", "null")
+            .execute()
+        )
+        ids_to_update = []
+        for r in (res.data or []):
+            rec_addr = (r.get("store_address") or "").strip()
+            if not rec_addr:
+                continue
+            rec_norm = _normalize_address_for_backfill(rec_addr)
+            if not rec_norm:
+                continue
+            if fuzz.ratio(rec_norm, canonical_norm) / 100.0 < address_match_threshold:
+                continue
+            store_name_lower = (r.get("store_name") or "").strip().lower()
+            if not _store_name_matches_chain_for_backfill(store_name_lower, norm, name_lower):
+                continue
+            ids_to_update.append(r["id"])
+        if not ids_to_update:
+            return 0
+        update_payload: Dict[str, Any] = {
+            "store_chain_id": chain_id,
+            "store_location_id": location_id,
+            "store_address": canonical_address,
+            "store_name": chain_name.strip(),
+        }
+        supabase.table("record_summaries").update(update_payload).in_("id", ids_to_update).execute()
+        logger.info(
+            f"Backfilled unlinked record_summaries: set chain_id={chain_id[:8]}..., location_id={location_id[:8]}... for {len(ids_to_update)} rows"
+        )
+        return len(ids_to_update)
+    except Exception as e:
+        logger.warning(f"_backfill_unlinked_record_summaries_for_location failed: {e}")
+        return 0
+
+
+def run_backfill_store_locations(location_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Backfill record_summaries.store_location_id (and store_address/store_name) for all
+    active store_locations, or for a single location if location_id is given.
+    Uses normalized address matching (Suite/Unit/Ste stripped) so receipts with
+    "Suite 101" vs "Unit 101" still match the same store_location.
+    Returns: { "total_updated": int, "per_location": [ { "location_id", "chain_id", "updated": int } ] }
+    """
+    supabase = _get_client()
+    # Fetch locations: all active or the one specified
+    loc_q = supabase.table("store_locations").select("*").eq("is_active", True)
+    if location_id:
+        loc_q = loc_q.eq("id", location_id)
+    loc_res = loc_q.execute()
+    locations = list(loc_res.data or [])
+    if not locations:
+        return {"total_updated": 0, "per_location": []}
+    chain_ids = {loc["chain_id"] for loc in locations if loc.get("chain_id")}
+    chains = {}
+    if chain_ids:
+        ch_res = supabase.table("store_chains").select("id, name").in_("id", list(chain_ids)).execute()
+        for c in ch_res.data or []:
+            chains[c["id"]] = (c.get("name") or "").strip()
+    total_updated = 0
+    per_location: List[Dict[str, Any]] = []
+    for loc in locations:
+        cid = loc.get("chain_id")
+        lid = loc.get("id")
+        if not cid or not lid:
+            continue
+        chain_name = chains.get(cid) or ""
+        n = backfill_record_summaries_for_store_location(
+            chain_id=cid,
+            location_id=lid,
+            location_row=loc,
+            address_match_threshold=0.85,
+            chain_name=chain_name or None,
+        )
+        # Also link record_summaries that have store_chain_id NULL but address+name match (e.g. Walmart Supercentre)
+        norm_name = None
+        if chain_name:
+            ch_res = supabase.table("store_chains").select("normalized_name").eq("id", cid).limit(1).execute()
+            if ch_res.data:
+                norm_name = (ch_res.data[0].get("normalized_name") or "").strip()
+        n2 = _backfill_unlinked_record_summaries_for_location(
+            chain_id=cid,
+            location_id=lid,
+            location_row=loc,
+            chain_name=chain_name,
+            normalized_name=norm_name,
+            address_match_threshold=0.85,
+        )
+        total_updated += n + n2
+        per_location.append({"location_id": lid, "chain_id": cid, "updated": n + n2})
+    return {"total_updated": total_updated, "per_location": per_location}
 
 
 def create_store_candidate(
@@ -1891,7 +2353,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
     )
     items = (
         supabase.table("record_items")
-        .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount, item_index, category_id")
+        .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount, item_index, category_id, category_source")
         .eq("receipt_id", receipt_id)
         .order("item_index")
         .execute()
@@ -1975,11 +2437,51 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
                 "discount_amount": _cents_to_dollars(it.get("discount_amount")),
                 "category_path": path,
                 "category_id": str(cid) if cid else None,
+                "category_source": it.get("category_source"),
             })
+    # When status is needs_review, attach LLM feedback and full metadata from latest pass run's _metadata
+    review_feedback: Optional[str] = None
+    review_metadata: Optional[Dict[str, Any]] = None
+    if status_row.get("current_status") == "needs_review":
+        try:
+            runs = (
+                supabase.table("receipt_processing_runs")
+                .select("output_payload")
+                .eq("receipt_id", receipt_id)
+                .in_("stage", ["vision_primary", "vision_escalation"])
+                .eq("status", "pass")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if runs.data and len(runs.data) > 0:
+                out = runs.data[0].get("output_payload") or {}
+                meta = out.get("_metadata") or {}
+                notes = (meta.get("sum_check_notes") or "").strip()
+                reasoning = (meta.get("reasoning") or "").strip()
+                if notes:
+                    review_feedback = notes
+                elif meta.get("validation_status") == "needs_review":
+                    review_feedback = "Model requested manual review."
+                # Expose structured metadata so the UI can show why AI flagged this receipt
+                review_metadata = {
+                    "validation_status": meta.get("validation_status"),
+                    "reasoning": reasoning or None,
+                    "sum_check_notes": notes or None,
+                    "item_count_on_receipt": meta.get("item_count_on_receipt"),
+                    "item_count_extracted": meta.get("item_count_extracted"),
+                    "confidence": meta.get("confidence"),
+                }
+                review_metadata = {k: v for k, v in review_metadata.items() if v is not None}
+        except Exception as e:
+            logger.debug("Could not load review_feedback for needs_review receipt: %s", e)
+
     return {
         "success": True,
         "receipt_id": receipt_id,
         "status": status_row.get("current_status") or "success",
+        "review_feedback": review_feedback,
+        "review_metadata": review_metadata,
         "data": {
             "receipt": receipt_data,
             "items": items_data,
@@ -2009,7 +2511,7 @@ def update_record_item_category(
         cat = supabase.table("categories").select("id").eq("id", category_id).limit(1).execute()
         if not cat.data:
             return False
-    payload: Dict[str, Any] = {"category_id": category_id if category_id else None}
+    payload: Dict[str, Any] = {"category_id": category_id if category_id else None, "category_source": "user_override"}
     supabase.table("record_items").update(payload).eq("id", item_id).eq("receipt_id", receipt_id).execute()
     return True
 
@@ -2084,6 +2586,8 @@ def get_user_analytics_summary(
             "by_category_l1": [],
             "by_category_l2": [],
             "by_category_l3": [],
+            "unclassified_count": 0,
+            "unclassified_amount_cents": 0,
         }
 
     start_date, end_date = _parse_analytics_period(period or "", value or "")
@@ -2147,11 +2651,13 @@ def get_user_analytics_summary(
     # By category: from record_items (line_total cents, category_id) — only receipts in selected period
     items_res = (
         supabase.table("record_items")
-        .select("line_total, category_id")
+        .select("line_total, category_id, user_feedback")
         .in_("receipt_id", receipt_ids_in_range)
         .execute()
     )
-    items = items_res.data or []
+    # Filter out items the user has dismissed (user_feedback->dismissed = true)
+    raw_items = items_res.data or []
+    items = [it for it in raw_items if not ((it.get("user_feedback") or {}).get("dismissed"))]
     cat_ids = list({str(it.get("category_id")) for it in items if it.get("category_id")})
     category_path_by_id: Dict[str, str] = {}
     if cat_ids:
@@ -2180,6 +2686,16 @@ def get_user_analytics_summary(
             l2_totals[l2] = l2_totals.get(l2, 0) + line_cents
             l3_totals[l3] = l3_totals.get(l3, 0) + line_cents
 
+    unclassified_count = 0
+    unclassified_amount_cents = 0
+    for it in items:
+        if it.get("category_id"):
+            continue
+        line_cents = it.get("line_total")
+        if line_cents is not None:
+            unclassified_amount_cents += int(line_cents)
+            unclassified_count += 1
+
     by_category_l1 = [
         {"name": k, "amount_cents": v} for k, v in sorted(l1_totals.items(), key=lambda x: -x[1])
     ]
@@ -2198,7 +2714,188 @@ def get_user_analytics_summary(
         "by_category_l1": by_category_l1,
         "by_category_l2": by_category_l2,
         "by_category_l3": by_category_l3,
+        "unclassified_count": unclassified_count,
+        "unclassified_amount_cents": unclassified_amount_cents,
     }
+
+
+def get_user_unclassified_items(user_id: str) -> List[Dict[str, Any]]:
+    """
+    Return list of unclassified line items (category_id IS NULL) for the user.
+    Each item: receipt_id, record_item_id, receipt_date, store_display_name, store_address, product_name, line_total_cents.
+    """
+    supabase = _get_client()
+    recs = (
+        supabase.table("receipt_status")
+        .select("id")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    receipt_ids = [r["id"] for r in (recs.data or [])]
+    if not receipt_ids:
+        return []
+    items = (
+        supabase.table("record_items")
+        .select("id, receipt_id, product_name, line_total, user_marked_idk, user_feedback")
+        .in_("receipt_id", receipt_ids)
+        .is_("category_id", "null")
+        .order("item_index")
+        .execute()
+    )
+    if not items.data:
+        return []
+    summary_ids = list({r["receipt_id"] for r in items.data})
+    summaries = (
+        supabase.table("record_summaries")
+        .select("receipt_id, receipt_date, store_name, store_chain_id, store_address")
+        .in_("receipt_id", summary_ids)
+        .execute()
+    )
+    summary_by_rid: Dict[str, Dict[str, Any]] = {}
+    chain_ids = set()
+    for s in (summaries.data or []):
+        summary_by_rid[str(s["receipt_id"])] = s
+        if s.get("store_chain_id"):
+            chain_ids.add(s["store_chain_id"])
+    chain_name_by_id: Dict[str, str] = {}
+    if chain_ids:
+        ch = supabase.table("store_chains").select("id, name").in_("id", list(chain_ids)).execute()
+        if ch.data:
+            chain_name_by_id = {str(c["id"]): c.get("name", "") for c in ch.data}
+
+    out: List[Dict[str, Any]] = []
+    for it in items.data:
+        # Skip items the user has dismissed
+        uf = it.get("user_feedback") or {}
+        if uf.get("dismissed"):
+            continue
+        rid = it.get("receipt_id")
+        s = summary_by_rid.get(str(rid)) if rid else {}
+        store_name = (s.get("store_name") or "").strip()
+        chain_id = s.get("store_chain_id")
+        display_name = (chain_name_by_id.get(str(chain_id)) or store_name or "Unknown").strip()
+        out.append({
+            "receipt_id": str(rid) if rid else None,
+            "record_item_id": str(it["id"]) if it.get("id") else None,
+            "receipt_date": s.get("receipt_date"),
+            "store_display_name": display_name,
+            "store_address": s.get("store_address"),
+            "product_name": it.get("product_name") or "",
+            "line_total_cents": it.get("line_total"),
+            "user_marked_idk": bool(it.get("user_marked_idk")),
+        })
+    return out
+
+
+def mark_item_idk(user_id: str, record_item_id: str) -> bool:
+    """Mark that user said 'I don't know' for this line item. Verifies item belongs to user. Returns True if updated."""
+    supabase = _get_client()
+    item = (
+        supabase.table("record_items")
+        .select("id, user_id")
+        .eq("id", record_item_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not item.data:
+        return False
+    try:
+        supabase.table("record_items").update({"user_marked_idk": True}).eq("id", record_item_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def dismiss_item(user_id: str, record_item_id: str, reason: str, comment: Optional[str]) -> bool:
+    """
+    Dismiss a record_item from the user's unclassified list.
+    - reason: "incorrect_item" | "other"
+    - comment: optional freetext; required (and used) when reason == "other"
+    - Writes user_feedback JSONB on the record_items row.
+    - If reason == "other": also inserts a row in classification_review for admin.
+    Returns True on success.
+    """
+    import datetime
+    supabase = _get_client()
+    item = (
+        supabase.table("record_items")
+        .select("id, user_id, product_name, receipt_id")
+        .eq("id", record_item_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if not item.data:
+        return False
+    row = item.data[0]
+
+    feedback = {
+        "dismissed": True,
+        "reason": reason,
+        "comment": comment or "",
+        "dismissed_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+    try:
+        supabase.table("record_items").update({"user_feedback": feedback}).eq("id", record_item_id).execute()
+    except Exception:
+        return False
+
+    # For "other" escalate to classification_review for admin
+    if reason == "other" and (comment or "").strip():
+        try:
+            # Get store_chain_id from record_summaries for this receipt
+            chain_id = None
+            try:
+                sm = (
+                    supabase.table("record_summaries")
+                    .select("store_chain_id")
+                    .eq("receipt_id", row.get("receipt_id"))
+                    .limit(1)
+                    .execute()
+                )
+                if sm.data:
+                    chain_id = sm.data[0].get("store_chain_id")
+            except Exception:
+                pass
+
+            note = f"[USER FEEDBACK] {(comment or '').strip()}"
+            supabase.table("classification_review").insert({
+                "raw_product_name": row.get("product_name") or "",
+                "source_record_item_id": record_item_id,
+                "store_chain_id": chain_id,
+                "status": "pending",
+                "normalized_name": note,
+                "category_id": None,
+                "match_type": None,
+            }).execute()
+        except Exception:
+            pass  # escalation failure is non-fatal
+
+    return True
+
+
+def get_idk_now_classified(user_id: str) -> List[str]:
+    """
+    Return record_item_ids that user had marked IDK and that now have category_id set.
+    Clears user_marked_idk on those items. Auth required.
+    """
+    supabase = _get_client()
+    items = (
+        supabase.table("record_items")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("user_marked_idk", True)
+        .not_.is_("category_id", "null")
+        .execute()
+    )
+    now_classified = [str(r["id"]) for r in (items.data or [])]
+    if now_classified:
+        try:
+            supabase.table("record_items").update({"user_marked_idk": False}).in_("id", now_classified).execute()
+        except Exception:
+            pass
+    return now_classified
 
 
 def _safe_float(val: Any) -> Optional[float]:

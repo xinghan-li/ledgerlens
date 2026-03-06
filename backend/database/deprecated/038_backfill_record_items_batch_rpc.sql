@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 030_increment_product_usage_rpc.sql
+-- Content: backfill_record_items_batch() RPC function
+-- New databases: do NOT run this file (already in 030).

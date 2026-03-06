@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 001_schema_v2.sql
+-- Content: receipt_status.pipeline_version column (default 'legacy_a')
+-- New databases: do NOT run this file (already in 001 schema).

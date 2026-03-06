@@ -1,0 +1,3 @@
+-- DEPRECATED - Merged into 013_auto_create_user_on_signup.sql
+-- Content: users.firebase_uid column + unique index; DROP CONSTRAINT users_id_fkey
+-- New databases: do NOT run this file (already in 013).

@@ -4,6 +4,14 @@
 
 ---
 
+## 🎨 前端颜色主题（必读）
+
+**做任何 UI / 样式 / 按钮 / 配色相关修改时，请先看：`frontend/COLOR_THEME.md`**
+
+该文档定义了 15 色 Anthropic/Geist 风格色板（含 hex、用途、Tailwind 用法）。按钮与强调色应与此主题一致，避免随意使用 Tailwind 默认红/蓝等。
+
+---
+
 ## 🎯 核心原则
 
 **避免在 `backend/` 根目录创建临时文件和文档！**
@@ -292,6 +300,7 @@ backend/
 
 ## 📚 相关规则
 
+- **前端颜色主题**：`frontend/COLOR_THEME.md`（15 色色板，UI/按钮必读）
 - Cursor 规则：`.cursor/rules/file-management.mdc`
 - Backend 脚本说明：`backend/scripts/README.md`
 - 数据库 Migration 指南：`backend/database/MIGRATIONS_README.md`

@@ -36,8 +36,8 @@ loadEnv()
 const userId = process.argv[2]
 
 if (!userId) {
-  console.error('用法: node login.mjs <super_admin_user_id>')
-  console.error('示例: node login.mjs 41a37ceb-e65c-4cd3-adc4-78b8fbc6dd51')
+  console.error('Usage: node login.mjs <super_admin_user_id>')
+  console.error('Example: node login.mjs 41a37ceb-e65c-4cd3-adc4-78b8fbc6dd51')
   process.exit(1)
 }
 
@@ -53,7 +53,7 @@ const res = await fetch(`${apiUrl}/api/auth/authorization`, {
 
 if (!res.ok) {
   const text = await res.text()
-  console.error('获取 token 失败:', res.status, text)
+  console.error('Failed to get token:', res.status, text)
   process.exit(1)
 }
 
@@ -61,14 +61,14 @@ const data = await res.json()
 const token = data.token
 
 if (!token) {
-  console.error('响应中缺少 token:', data)
+  console.error('Response missing token:', data)
   process.exit(1)
 }
 
 const loginUrl = `${origin}/dev-login?access_token=${encodeURIComponent(token)}`
 
 console.log('')
-console.log('复制下面 URL 到浏览器打开即可登录（7 天有效）：')
+console.log('Copy the URL below and open in browser to sign in (valid 7 days):')
 console.log('')
 console.log(loginUrl)
 console.log('')
