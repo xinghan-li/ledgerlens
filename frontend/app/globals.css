@@ -50,6 +50,7 @@
 
 /* ─── CSS custom properties (kept for plain CSS rules below) ──────────── */
 :root {
+  color-scheme: light;  /* 固定浅色，避免浏览器强制深色模式 */
   --theme-dark:         #141413;
   --theme-cream:        #faf9f5;
   --theme-mid:          #b0aea5;
