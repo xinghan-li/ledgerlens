@@ -1,11 +1,13 @@
 """
 Firebase Authentication: verify ID tokens and map Firebase UID to our internal user id.
 
-When FIREBASE_SERVICE_ACCOUNT_PATH (or GOOGLE_APPLICATION_CREDENTIALS) is set, the backend
-accepts Firebase ID tokens. For each valid token we find or create a row in public.users
-by firebase_uid and return that user's id for use as user_id in API dependencies.
+Credential loading priority:
+  1. FIREBASE_SERVICE_ACCOUNT_JSON  — JSON string (for Cloud Run / Secret Manager)
+  2. FIREBASE_SERVICE_ACCOUNT_PATH  — file path (for local dev)
+  3. GOOGLE_APPLICATION_CREDENTIALS — file path fallback
 """
 from typing import Optional, Tuple
+import json
 import logging
 import os
 import uuid
@@ -28,17 +30,34 @@ def _get_firebase_app():
         raise ValueError(
             "firebase-admin is not installed. pip install firebase-admin"
         )
+
+    # Priority 1: JSON string from environment (Cloud Run / Secret Manager)
+    sa_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+    if sa_json:
+        try:
+            sa_dict = json.loads(sa_json)
+            cred = credentials.Certificate(sa_dict)
+            _firebase_app = firebase_admin.initialize_app(cred)
+            logger.info("Firebase Admin SDK initialized from FIREBASE_SERVICE_ACCOUNT_JSON")
+            return _firebase_app
+        except Exception as e:
+            raise ValueError(f"Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON: {e}")
+
+    # Priority 2: file path (local dev)
     cred_path = (
         getattr(settings, "firebase_service_account_path", None) or ""
     ).strip() or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if not cred_path or not os.path.isfile(cred_path):
-        raise ValueError(
-            "Firebase credentials not found. Set FIREBASE_SERVICE_ACCOUNT_PATH or GOOGLE_APPLICATION_CREDENTIALS to the service account JSON path."
-        )
-    cred = credentials.Certificate(cred_path)
-    _firebase_app = firebase_admin.initialize_app(cred)
-    logger.info("Firebase Admin SDK initialized")
-    return _firebase_app
+    if cred_path and os.path.isfile(cred_path):
+        cred = credentials.Certificate(cred_path)
+        _firebase_app = firebase_admin.initialize_app(cred)
+        logger.info("Firebase Admin SDK initialized from file: %s", cred_path)
+        return _firebase_app
+
+    raise ValueError(
+        "Firebase credentials not found. "
+        "Set FIREBASE_SERVICE_ACCOUNT_JSON (JSON string) "
+        "or FIREBASE_SERVICE_ACCOUNT_PATH / GOOGLE_APPLICATION_CREDENTIALS (file path)."
+    )
 
 
 def verify_firebase_token(id_token: str) -> Optional[Tuple[str, str]]:

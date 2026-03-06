@@ -1,0 +1,34 @@
+# 敏感文件 - 绝不打包进镜像
+.env
+.env.*
+keys/
+service_account/
+
+# Python 虚拟环境和缓存
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# 开发/测试文件
+tests/
+scripts/
+agent-tbd/
+docs/
+data/
+output/
+input/
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# 临时文件
+*.log
+*.tmp

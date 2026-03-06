@@ -245,7 +245,6 @@ Admin review queue for unclassified items. Final column structure:
 ```
 backend/database/
 ├── MIGRATIONS_README.md          ← this file
-├── analysis.md                   ← consolidation analysis (2026-03-05)
 ├── DB_DEFINITIONS.md             ← full schema reference
 │
 ├── Active Migrations (run these in order):

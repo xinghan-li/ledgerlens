@@ -2,8 +2,8 @@
 Google Cloud Vision API client wrapper for OCR document text detection.
 """
 from google.cloud import vision
-from google.oauth2 import service_account
 from ...config import settings
+from .gcp_credentials import get_gcp_credentials
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,14 +16,7 @@ def _get_client():
     """Get or create the Vision API client."""
     global _client
     if _client is None:
-        if not settings.gcp_credentials_path:
-            raise ValueError(
-                "GOOGLE_APPLICATION_CREDENTIALS environment variable must be set"
-            )
-        
-        credentials = service_account.Credentials.from_service_account_file(
-            settings.gcp_credentials_path
-        )
+        credentials = get_gcp_credentials()
         _client = vision.ImageAnnotatorClient(credentials=credentials)
         logger.info("Google Cloud Vision client initialized")
     

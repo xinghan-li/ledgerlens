@@ -3,8 +3,8 @@ Google Cloud Document AI client for parsing receipts.
 
 Uses Expense Parser processor to extract structured receipt information.
 """
-from google.oauth2 import service_account
 from ...config import settings
+from .gcp_credentials import get_gcp_credentials
 import logging
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 
@@ -31,14 +31,7 @@ def _get_client():
                 "Please install it with: pip install google-cloud-documentai"
             ) from e
         
-        if not settings.gcp_credentials_path:
-            raise ValueError(
-                "GOOGLE_APPLICATION_CREDENTIALS environment variable must be set"
-            )
-        
-        credentials = service_account.Credentials.from_service_account_file(
-            settings.gcp_credentials_path
-        )
+        credentials = get_gcp_credentials()
         _client = documentai.DocumentProcessorServiceClient(credentials=credentials)
         logger.info("Google Cloud Document AI client initialized")
     
