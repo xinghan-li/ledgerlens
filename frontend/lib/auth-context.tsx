@@ -53,6 +53,8 @@ export function useAuth() {
 /**
  * Fetch with Bearer token; on 401, refresh token and retry once. Returns the response.
  * Use this so that after idle expiry the user can succeed on next action (or we auto-retry).
+ * Security: Authorization header is only sent when the request goes to our trusted baseUrl.
+ * Absolute URLs (path.startsWith('http')) are never sent the token to avoid token leakage.
  */
 export async function authFetch(
   baseUrl: string,
@@ -60,23 +62,23 @@ export async function authFetch(
   init: RequestInit & { headers?: Record<string, string> },
   ctx: { token: string | null; refreshToken: () => Promise<string | null> }
 ): Promise<Response> {
-  const url = path.startsWith('http') ? path : `${baseUrl.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`
-  const token = ctx.token
-  if (!token) {
-    return fetch(url, { ...init, headers: { ...init.headers } })
-  }
-  let res = await fetch(url, {
-    ...init,
-    headers: { ...init.headers, Authorization: `Bearer ${token}` },
-  })
-  if (res.status === 401) {
+  const isAbsoluteUrl = path.startsWith('http')
+  const url = isAbsoluteUrl ? path : `${baseUrl.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`
+
+  const doFetch = (bearerToken: string | null) =>
+    fetch(url, {
+      ...init,
+      headers: {
+        ...init.headers,
+        ...(bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}),
+      },
+    })
+
+  const token = isAbsoluteUrl ? null : ctx.token
+  let res = await doFetch(token)
+  if (res.status === 401 && !isAbsoluteUrl) {
     const newToken = await ctx.refreshToken()
-    if (newToken) {
-      res = await fetch(url, {
-        ...init,
-        headers: { ...init.headers, Authorization: `Bearer ${newToken}` },
-      })
-    }
+    if (newToken) res = await doFetch(newToken)
   }
   return res
 }
