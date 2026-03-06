@@ -83,6 +83,12 @@ export default function AdminLayout({
           </h1>
           <nav className="flex items-center gap-2 lg:gap-4">
             <Link
+              href="/admin/user-management"
+              className={`${navItemClass} ${pathname?.includes('user-management') ? 'text-theme-dark underline' : ''}`}
+            >
+              User Management
+            </Link>
+            <Link
               href="/admin/classification-review"
               className={`${navItemClass} ${pathname?.includes('classification-review') ? 'text-theme-dark underline' : ''}`}
             >

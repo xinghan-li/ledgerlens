@@ -7,10 +7,13 @@ JWT (RS256/HS256) is verified and sub is used as user_id.
 """
 from fastapi import Depends, HTTPException, Header, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from typing import Optional
+from typing import Dict, Optional, Tuple
+import hashlib
 import jwt  # PyJWT library
 from jwt import PyJWKClient
 import logging
+import time
+from threading import Lock
 from ...config import settings
 
 try:
@@ -34,6 +37,36 @@ _supabase_jwt_secret: Optional[str] = None
 
 # JWKS client for RS256 token verification (Supabase Auth tokens)
 _jwks_client: Optional[PyJWKClient] = None
+
+# Short-TTL token → user_id cache: avoids repeated Firebase verify + Supabase get_or_create per request
+_token_cache: Dict[str, Tuple[str, float]] = {}  # sha256(token) → (user_id, expire_at)
+_token_cache_lock = Lock()
+_TOKEN_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_cached_user_id(token: str) -> Optional[str]:
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    now = time.time()
+    with _token_cache_lock:
+        entry = _token_cache.get(token_hash)
+        if entry and entry[1] > now:
+            return entry[0]
+        if token_hash in _token_cache:
+            del _token_cache[token_hash]
+    return None
+
+
+def _cache_user_id(token: str, user_id: str) -> None:
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    expire_at = time.time() + _TOKEN_CACHE_TTL
+    with _token_cache_lock:
+        _token_cache[token_hash] = (user_id, expire_at)
+        # Periodically evict expired entries to prevent unbounded growth
+        if len(_token_cache) > 5000:
+            now = time.time()
+            expired = [k for k, v in _token_cache.items() if v[1] <= now]
+            for k in expired:
+                del _token_cache[k]
 
 
 def get_supabase_jwt_secret() -> str:
@@ -122,54 +155,42 @@ async def get_current_user(
     Raises:
         HTTPException: 401 if token is missing or invalid
     """
-    # Debug: Print all relevant information
-    logger.warning(f"[DEBUG] ========== Authorization Debug ==========")
-    logger.warning(f"[DEBUG] credentials object: {credentials}")
-    logger.warning(f"[DEBUG] credentials type: {type(credentials)}")
-    logger.warning(f"[DEBUG] authorization header (raw): {authorization}")
-    logger.warning(f"[DEBUG] authorization header type: {type(authorization)}")
-    
-    if credentials:
-        logger.warning(f"[DEBUG] credentials.credentials: {credentials.credentials}")
-        logger.warning(f"[DEBUG] credentials.credentials length: {len(credentials.credentials) if credentials.credentials else 0}")
-    else:
-        logger.warning(f"[DEBUG] credentials is None or empty")
-    
     if not credentials:
-        logger.warning("[DEBUG] No credentials provided from HTTPBearer")
-        logger.warning(f"[DEBUG] But raw Authorization header is: {authorization}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Authorization header is required. HTTPBearer got: {credentials}, Raw header: {authorization}",
+            detail="Authorization header is required",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     token = credentials.credentials
-    
+
     if not token:
-        logger.warning("[DEBUG] Token is empty")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token is missing",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    logger.debug(f"[DEBUG] Token received (length: {len(token)})")
+
+    # Fast path: token already resolved recently
+    cached_user_id = _get_cached_user_id(token)
+    if cached_user_id:
+        logger.debug("Auth cache hit, user_id=%s", cached_user_id)
+        return cached_user_id
 
     # Decode token header first to detect Firebase vs Supabase tokens
     try:
         header = jwt.get_unverified_header(token)
         token_alg = header.get('alg', 'unknown')
         token_kid = header.get('kid', '')
-        logger.info(f"[DEBUG] Token algorithm from header: {token_alg}, kid: {token_kid}")
+        logger.debug("Token alg=%s kid=%s", token_alg, token_kid)
     except Exception as e:
-        logger.warning(f"[DEBUG] Failed to decode token header: {e}")
+        logger.warning("Failed to decode token header: %s", e)
         token_alg = 'unknown'
         token_kid = ''
 
     # Try Firebase first if available (Firebase ID tokens use RS256 with Google kid)
     if verify_firebase_token is not None and get_or_create_user_id is not None:
-        logger.info("[Auth] Trying Firebase verification")
+        logger.debug("[Auth] Trying Firebase verification")
         fb = verify_firebase_token(token)
         if fb is not None:
             firebase_uid, email = fb
@@ -177,6 +198,7 @@ async def get_current_user(
                 user_id = get_or_create_user_id(firebase_uid, email)
                 if user_id:
                     logger.info("Authenticated via Firebase: user_id=%s", user_id)
+                    _cache_user_id(token, user_id)
                     return user_id
             except Exception as e:
                 logger.warning("Firebase get_or_create_user_id failed: %s", e)
@@ -200,9 +222,7 @@ async def get_current_user(
     if token_alg == 'HS256':
         # Try HS256 first
         try:
-            logger.debug("[DEBUG] Trying HS256 verification with JWT Secret...")
             jwt_secret = get_supabase_jwt_secret()
-            
             payload = jwt.decode(
                 token,
                 jwt_secret,
@@ -214,43 +234,34 @@ async def get_current_user(
                     "verify_aud": False
                 }
             )
-            logger.info("[DEBUG] Token verified successfully with HS256")
-            
+            logger.debug("Token verified with HS256")
         except Exception as e:
             verification_errors.append(f"HS256: {str(e)}")
-            logger.warning(f"[DEBUG] HS256 verification failed: {e}")
+            logger.debug("HS256 verification failed: %s", e)
     else:
         # Try JWKS-based verification (supports RS256, ES256, etc.)
         try:
-            logger.debug(f"[DEBUG] Trying {token_alg} verification with JWKS...")
             jwks_client = get_jwks_client()
-            
-            # Get signing key from JWKS
             signing_key = jwks_client.get_signing_key_from_jwt(token)
-            
-            # Verify and decode token - let PyJWT auto-detect algorithm
             payload = jwt.decode(
                 token,
                 signing_key.key,
-                algorithms=["RS256", "ES256", "ES384", "ES512"],  # Support multiple algorithms
+                algorithms=["RS256", "ES256", "ES384", "ES512"],
                 options={
                     "verify_signature": True,
                     "verify_exp": True,
                     "verify_iat": True,
-                    "verify_aud": False  # Disable audience verification
+                    "verify_aud": False
                 }
             )
-            logger.info(f"[DEBUG] Token verified successfully with {token_alg}")
-            
+            logger.debug("Token verified with %s", token_alg)
         except Exception as e:
             verification_errors.append(f"{token_alg}: {str(e)}")
-            logger.warning(f"[DEBUG] {token_alg} verification failed: {e}")
-            
+            logger.debug("%s verification failed: %s", token_alg, e)
+
             # Fallback to HS256
             try:
-                logger.debug("[DEBUG] Trying HS256 verification with JWT Secret (fallback)...")
                 jwt_secret = get_supabase_jwt_secret()
-                
                 payload = jwt.decode(
                     token,
                     jwt_secret,
@@ -262,18 +273,15 @@ async def get_current_user(
                         "verify_aud": False
                     }
                 )
-                logger.info("[DEBUG] Token verified successfully with HS256 (fallback)")
-                
+                logger.debug("Token verified with HS256 (fallback)")
             except Exception as e2:
                 verification_errors.append(f"HS256: {str(e2)}")
-                logger.warning(f"[DEBUG] HS256 verification failed: {e2}")
-    
+                logger.debug("HS256 fallback verification failed: %s", e2)
+
     # If both methods failed, raise error
     if payload is None:
         error_msg = "Token verification failed. Tried: " + "; ".join(verification_errors)
-        logger.warning(f"[DEBUG] {error_msg}")
-        
-        # Check for specific error types
+        logger.warning("Token verification failed for all methods: %s", error_msg)
         if any("expired" in err.lower() for err in verification_errors):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -286,27 +294,18 @@ async def get_current_user(
                 detail=error_msg,
                 headers={"WWW-Authenticate": "Bearer"},
             )
-    
-    # Extract user_id from payload
-    # Supabase JWT payload structure:
-    # {
-    #   "sub": "user-uuid",  # This is the user_id
-    #   "email": "user@example.com",
-    #   "aud": "authenticated",
-    #   "role": "authenticated",
-    #   "exp": 1234567890,
-    #   "iat": 1234567890
-    # }
+
     user_id = payload.get("sub")
-    
+
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token does not contain user_id (sub)",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    logger.debug(f"Authenticated user: {user_id}")
+
+    logger.debug("Authenticated via Supabase JWT: user_id=%s", user_id)
+    _cache_user_id(token, user_id)
     return user_id
 
 

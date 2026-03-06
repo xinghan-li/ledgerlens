@@ -50,7 +50,7 @@ async def init_deposit_fee_rag():
             from app.services.database.supabase_client import _get_client
             supabase = _get_client()
             # Try to get admin or super_admin user first
-            admin_res = supabase.table("users").select("id, user_class, user_name, email").in_("user_class", ["super_admin", "admin"]).limit(1).execute()
+            admin_res = supabase.table("users").select("id, user_class, user_name, email").in_("user_class", [9, 7]).limit(1).execute()
             if admin_res.data and len(admin_res.data) > 0:
                 test_user_id = admin_res.data[0]["id"]
                 user_class = admin_res.data[0].get("user_class", "N/A")

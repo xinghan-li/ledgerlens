@@ -408,20 +408,13 @@ async def get_authorization_token(request: AuthorizationRequest):
                         )
                     
                     # Check user class to determine token expiration
-                    # super_admin gets 7 days, others get 1 hour
-                    from .services.database.supabase_client import _get_client
-                    supabase = _get_client()
-                    user_class = None
-                    try:
-                        user_response = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
-                        if user_response.data and len(user_response.data) > 0:
-                            user_class = user_response.data[0].get("user_class")
-                            logger.info(f"[DEBUG] User class: {user_class}")
-                    except Exception as e:
-                        logger.warning(f"[DEBUG] Failed to get user class: {e}, defaulting to 1 hour")
+                    # super_admin (9) gets 7 days, others get 1 hour
+                    from .services.database.supabase_client import get_user_class, USER_CLASS_SUPER_ADMIN
+                    user_class = get_user_class(user_id)
+                    logger.info(f"[DEBUG] User class: {user_class}")
                     
                     # Set expiration based on user class
-                    if user_class == "super_admin":
+                    if user_class == USER_CLASS_SUPER_ADMIN:
                         expiration_hours = 24 * 7  # 7 days
                         expiration_note = "7 days"
                     else:
@@ -498,10 +491,11 @@ async def get_current_user_info(user_id: str = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="User not found")
     row = res.data[0]
     reg_no = row.get("registration_no")
+    uc = row.get("user_class")
     return {
         "user_id": row.get("id"),
         "email": row.get("email") or "",
-        "user_class": row.get("user_class") or "free",
+        "user_class": int(uc) if uc is not None else 0,
         "registration_no": reg_no,
         "registration_no_display": f"{int(reg_no):09d}" if reg_no is not None else None,
         "username": row.get("user_name"),
@@ -1106,12 +1100,11 @@ async def get_receipt_processing_runs(
     user_id: str = Depends(get_current_user),
 ):
     """Get processing runs (workflow log) for a receipt. Admin/super_admin only; receipt must belong to current user."""
+    from .services.database.supabase_client import get_user_class, USER_CLASS_ADMIN
+    if get_user_class(user_id) < USER_CLASS_ADMIN:
+        raise HTTPException(status_code=403, detail="Admin or super_admin required")
     from .services.database.supabase_client import _get_client
     supabase = _get_client()
-    # Require admin or super_admin
-    user_res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
-    if not user_res.data or user_res.data[0].get("user_class") not in ("admin", "super_admin"):
-        raise HTTPException(status_code=403, detail="Admin or super_admin required")
     rec = supabase.table("receipt_status").select("id, user_id, pipeline_version").eq("id", receipt_id).limit(1).execute()
     if not rec.data or rec.data[0]["user_id"] != user_id:
         raise HTTPException(status_code=404, detail="Receipt not found or access denied")
@@ -1544,28 +1537,77 @@ async def process_receipt_workflow_bulk_endpoint(
 
 def require_admin(user_id: str = Depends(get_current_user)) -> str:
     """
-    Dependency to require admin or super_admin user class.
+    Dependency to require admin (7) or super_admin (9) user class.
     """
-    from .services.database.supabase_client import _get_client
+    from .services.database.supabase_client import get_user_class, USER_CLASS_ADMIN
     try:
-        supabase = _get_client()
-        res = supabase.table("users").select("user_class").eq("id", user_id).limit(1).execute()
-        if res.data:
-            user_class = res.data[0].get("user_class", "free")
-            if user_class in ("super_admin", "admin"):
-                return user_id
-            else:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Access denied. Required: admin or super_admin, got: {user_class}"
-                )
-        else:
-            raise HTTPException(status_code=404, detail="User not found in database")
+        user_class = get_user_class(user_id)
+        if user_class >= USER_CLASS_ADMIN:
+            return user_id
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied. Required: admin or super_admin, got tier: {user_class}"
+        )
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to check user class: {e}")
         raise HTTPException(status_code=500, detail="Failed to verify user permissions")
+
+
+# ==================== Admin User Management (list / update user_class) ====================
+
+@app.get("/api/admin/users", tags=["Admin - User Management"])
+async def admin_list_users(
+    limit: int = 100,
+    offset: int = 0,
+    user_id: str = Depends(require_admin),
+):
+    """List users (id, email, user_class, user_name, registration_no, status). Admin/super_admin only. Returns current_user_class so frontend can restrict editable tiers."""
+    from .services.database.supabase_client import _get_client, get_user_class
+    supabase = _get_client()
+    res = supabase.table("users").select("id, email, user_class, user_name, registration_no, status, created_at", count="exact").order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+    current_user_class = get_user_class(user_id)
+    return {"data": res.data or [], "total": res.count or 0, "limit": limit, "offset": offset, "current_user_class": current_user_class}
+
+
+@app.patch("/api/admin/users/{target_user_id}", tags=["Admin - User Management"])
+async def admin_patch_user(
+    target_user_id: str,
+    body: dict = Body(default_factory=dict),
+    user_id: str = Depends(require_admin),
+):
+    """Update a user (e.g. user_class). Admin/super_admin only. You may only set user_class to a value strictly lower than your own (e.g. 9 can set up to 7, 7 can set up to 2). Body: { \"user_class\": 0|2|7|9 }."""
+    from .services.database.supabase_client import _get_client, get_user_class, USER_CLASS_FREE, USER_CLASS_PREMIUM, USER_CLASS_ADMIN, USER_CLASS_SUPER_ADMIN
+    uc = body.get("user_class")
+    if uc is None:
+        raise HTTPException(status_code=400, detail="Missing user_class")
+    try:
+        uc = int(uc)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="user_class must be an integer")
+    allowed = {USER_CLASS_FREE, USER_CLASS_PREMIUM, USER_CLASS_ADMIN, USER_CLASS_SUPER_ADMIN}
+    if uc not in allowed:
+        raise HTTPException(status_code=400, detail=f"user_class must be one of {sorted(allowed)}")
+    current_class = get_user_class(user_id)
+    if uc >= current_class:
+        raise HTTPException(
+            status_code=403,
+            detail=f"You may only set users to a tier lower than your own (yours={current_class}). Cannot set to {uc}."
+        )
+    target_current_class = get_user_class(target_user_id)
+    if target_current_class >= current_class:
+        raise HTTPException(
+            status_code=403,
+            detail="You cannot change the tier of a user whose tier is same or higher than yours."
+        )
+    supabase = _get_client()
+    res = supabase.table("users").update({"user_class": uc}).eq("id", target_user_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="User not found")
+    from .middleware.rate_limiter import clear_user_class_cache
+    clear_user_class_cache(target_user_id)
+    return {"ok": True, "user_id": target_user_id, "user_class": uc}
 
 
 # ==================== Admin Classification Review Endpoints ====================

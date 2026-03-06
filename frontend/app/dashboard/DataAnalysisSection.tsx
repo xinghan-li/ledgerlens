@@ -6,6 +6,20 @@ import { useApiUrl } from '@/lib/api-url-context'
 
 type PeriodType = '' | 'month' | 'quarter' | 'year'
 
+/** Inline SVG circles for Top 3 rank — same look on all platforms (no emoji) */
+function RankCircle({ rank }: { rank: 0 | 1 | 2 }) {
+  const colors = ['#FFD700', '#9CA3AF', '#B87333'] as const // gold (emoji-style), silver, bronze
+  const fill = colors[rank]
+  const size = 18
+  return (
+    <span className="inline-flex shrink-0 items-center justify-center" aria-hidden style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" className="block">
+        <circle cx="9" cy="9" r="8" fill={fill} stroke="#fff" strokeWidth="1.5" />
+      </svg>
+    </span>
+  )
+}
+
 function buildMonthOptions(): { value: string; label: string }[] {
   const out: { value: string; label: string }[] = []
   const now = new Date()
@@ -450,17 +464,16 @@ export default function DataAnalysisSection({ token }: { token: string | null })
               <div className="col-span-2">
                 <span className="text-theme-mid block">Top 3 Spending</span>
                 {summary.by_category_l1.length > 0 ? (
-                  <div className="grid grid-cols-[auto_1fr_5.5rem_2.5rem] gap-x-2 items-baseline font-medium text-theme-dark tabular-nums">
+                  <div className="grid grid-cols-[auto_1fr_5.5rem_2.5rem] gap-x-2 items-center font-medium text-theme-dark tabular-nums">
                     {[...summary.by_category_l1]
                       .sort((a, b) => b.amount_cents - a.amount_cents)
                       .slice(0, 3)
                       .map((r, i) => {
                         const total = summary.by_category_l1.reduce((s, x) => s + x.amount_cents, 0) || summary.total_amount_cents || 1
                         const pct = ((r.amount_cents / total) * 100).toFixed(1)
-                        const medal = ['🪙', '🔘', '🟠'][i]
                         return (
                           <span key={i} className="contents">
-                            <span aria-hidden className="shrink-0">{medal}</span>
+                            <RankCircle rank={i as 0 | 1 | 2} />
                             <span className="truncate min-w-0" title={r.name}>{r.name}</span>
                             <span className="text-right">{formatDollars(r.amount_cents)}</span>
                             <span className="text-right text-theme-dark/90">{pct}%</span>
@@ -488,17 +501,16 @@ export default function DataAnalysisSection({ token }: { token: string | null })
               <div>
                 <span className="text-theme-mid block mb-1">Top 3 Spending</span>
                 {summary.by_category_l1.length > 0 ? (
-                  <div className="grid grid-cols-[auto_1fr_auto_auto] gap-x-2 items-baseline font-medium text-theme-dark tabular-nums">
+                  <div className="grid grid-cols-[auto_1fr_auto_auto] gap-x-2 items-center font-medium text-theme-dark tabular-nums">
                     {[...summary.by_category_l1]
                       .sort((a, b) => b.amount_cents - a.amount_cents)
                       .slice(0, 3)
                       .map((r, i) => {
                         const total = summary.by_category_l1.reduce((s, x) => s + x.amount_cents, 0) || summary.total_amount_cents || 1
                         const pct = ((r.amount_cents / total) * 100).toFixed(1)
-                        const medal = ['🪙', '🔘', '🟠'][i]
                         return (
                           <span key={i} className="contents">
-                            <span aria-hidden className="shrink-0">{medal}</span>
+                            <RankCircle rank={i as 0 | 1 | 2} />
                             <span className="truncate min-w-0" title={r.name}>{r.name}</span>
                             <span className="text-right shrink-0">{formatDollars(r.amount_cents)}</span>
                             <span className="text-right shrink-0 text-theme-dark/90">{pct}%</span>

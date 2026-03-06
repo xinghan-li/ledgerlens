@@ -9,6 +9,16 @@ import DataAnalysisSection from '../DataAnalysisSection'
 import { CameraCaptureButton } from '../camera'
 import { useApiUrl } from '@/lib/api-url-context'
 
+const MAX_PROCESSING = 5
+
+async function sha256Hex(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer()
+  const hash = await crypto.subtle.digest('SHA-256', buf)
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
 type ReceiptListItem = {
   id: string
   uploaded_at: string
@@ -26,15 +36,15 @@ export default function DeveloperDashboardPage() {
   const [userUid, setUserUid] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [developerAllowed, setDeveloperAllowed] = useState<boolean | null>(null)
-  const [uploading, setUploading] = useState(false)
-  const [uploadSource, setUploadSource] = useState<'file' | 'camera' | null>(null)
+  const [processingCount, setProcessingCount] = useState(0)
   const [uploadWorkingHard, setUploadWorkingHard] = useState(false)
   const [uploadResult, setUploadResult] = useState<any>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const workingHardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const uploadAbortRef = useRef<AbortController | null>(null)
-  const uploadCancelledByUserRef = useRef(false)
-  const uploadCleanupRef = useRef<{ timeoutId: ReturnType<typeof setTimeout> | null } | null>(null)
+  const inFlightKeysRef = useRef<Set<string>>(new Set())
+  const uploadControllersRef = useRef<Map<string, AbortController>>(new Map())
+  const processingCountRef = useRef(0)
+  const cancelledKeysRef = useRef<Set<string>>(new Set())
   const cameraUploadTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const [receiptList, setReceiptList] = useState<ReceiptListItem[]>([])
   const [receiptListLoading, setReceiptListLoading] = useState(false)
@@ -239,39 +249,65 @@ export default function DeveloperDashboardPage() {
     if (token) fetchReceiptList()
   }, [token, fetchReceiptList])
 
+  useEffect(() => {
+    processingCountRef.current = processingCount
+  }, [processingCount])
+
   const clearCameraUploadTimers = useCallback(() => {
     cameraUploadTimersRef.current.forEach((id) => clearTimeout(id))
     cameraUploadTimersRef.current = []
   }, [])
 
-  const handleCameraUploadStart = useCallback(() => {
-    setUploading(true)
-    setUploadSource('camera')
-    setUploadError(null)
-    setUploadResult(null)
-    setUploadWorkingHard(false)
-    clearCameraUploadTimers()
-    cameraUploadTimersRef.current = [setTimeout(() => setUploadWorkingHard(true), 30000)]
-  }, [clearCameraUploadTimers])
+  const addToQueue = useCallback((key: string): boolean => {
+    if (processingCountRef.current >= MAX_PROCESSING) return false
+    if (inFlightKeysRef.current.has(key)) return false
+    inFlightKeysRef.current.add(key)
+    setProcessingCount((prev) => {
+      const next = prev + 1
+      if (next === 1)
+        workingHardTimerRef.current = setTimeout(() => setUploadWorkingHard(true), 30000)
+      return next
+    })
+    return true
+  }, [])
+
+  const removeFromQueue = useCallback((key: string) => {
+    inFlightKeysRef.current.delete(key)
+    uploadControllersRef.current.delete(key)
+    cancelledKeysRef.current.delete(key)
+    setProcessingCount((prev) => {
+      const next = prev - 1
+      if (next <= 0) {
+        if (workingHardTimerRef.current) {
+          clearTimeout(workingHardTimerRef.current)
+          workingHardTimerRef.current = null
+        }
+        setUploadWorkingHard(false)
+      }
+      return Math.max(0, next)
+    })
+  }, [])
+
+  const checkAndStartUpload = useCallback(
+    async (blob: Blob): Promise<{ allowed: boolean; key?: string }> => {
+      if (processingCountRef.current >= MAX_PROCESSING)
+        return { allowed: false }
+      const key = await sha256Hex(blob)
+      if (!addToQueue(key)) return { allowed: false }
+      return { allowed: true, key }
+    },
+    [addToQueue]
+  )
 
   const handleCameraUploadSuccess = useCallback(() => {
     clearCameraUploadTimers()
-    setUploading(false)
-    setUploadSource(null)
-    setUploadWorkingHard(false)
     fetchReceiptList()
   }, [clearCameraUploadTimers, fetchReceiptList])
 
-  const handleCameraUploadError = useCallback(
-    (message: string) => {
-      clearCameraUploadTimers()
-      setUploading(false)
-      setUploadSource(null)
-      setUploadWorkingHard(false)
-      setUploadError(message)
-    },
-    [clearCameraUploadTimers]
-  )
+  const handleCameraUploadError = useCallback((message: string) => {
+    clearCameraUploadTimers()
+    setUploadError(message)
+  }, [clearCameraUploadTimers])
 
   useEffect(() => {
     if (!token) return
@@ -281,11 +317,8 @@ export default function DeveloperDashboardPage() {
       .then((data) => {
         if (cancelled) return
         setUserClass(data?.user_class ?? null)
-        if (data?.user_class === 'super_admin') {
-          setDeveloperAllowed(true)
-        } else {
-          setDeveloperAllowed(false)
-        }
+        const uc = data?.user_class
+        setDeveloperAllowed(uc === 9 || uc === 'super_admin')
       })
       .catch(() => {
         if (!cancelled) setDeveloperAllowed(false)
@@ -327,128 +360,89 @@ export default function DeveloperDashboardPage() {
       e.target.value = ''
       return
     }
-
-    // 重置状态
-    uploadCancelledByUserRef.current = false
-    setUploading(true)
-    setUploadSource('file')
-    setUploadResult(null)
-    setUploadError(null)
-
+    if (processingCountRef.current >= MAX_PROCESSING) {
+      setUploadError(`Up to ${MAX_PROCESSING} receipts can be processing at once. Please wait.`)
+      e.target.value = ''
+      return
+    }
+    let key: string
+    try {
+      key = await sha256Hex(file)
+    } catch {
+      setUploadError('Could not read file. Please try again.')
+      e.target.value = ''
+      return
+    }
+    if (!addToQueue(key)) {
+      setUploadError(inFlightKeysRef.current.has(key) ? 'This image is already being uploaded.' : `Up to ${MAX_PROCESSING} receipts can be processing at once. Please wait.`)
+      e.target.value = ''
+      return
+    }
     const formData = new FormData()
     formData.append('file', file)
-
+    const controller = new AbortController()
+    uploadControllersRef.current.set(key, controller)
+    const timeoutId = setTimeout(() => controller.abort(), 180000)
     try {
-      console.log('Upload to:', `${apiBaseUrl}/api/receipt/workflow-vision`)
-      console.log('Token:', token?.substring(0, 50) + '...')
-      console.log('File:', file.name, file.type, file.size)
-      
-      // 3 分钟超时；30s 后显示 “working hard” 提示
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 180000)
-      workingHardTimerRef.current = setTimeout(() => setUploadWorkingHard(true), 30000)
-      uploadAbortRef.current = controller
-      uploadCleanupRef.current = { timeoutId }
-
-      try {
-        const response = await fetch(`${apiBaseUrl}/api/receipt/workflow-vision`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-          body: formData,
-          signal: controller.signal,
-        })
-
-        clearTimeout(timeoutId)
-        if (workingHardTimerRef.current) {
-          clearTimeout(workingHardTimerRef.current)
-          workingHardTimerRef.current = null
-        }
-        console.log('Response status:', response.status, response.statusText)
-
+      const response = await fetch(`${apiBaseUrl}/api/receipt/workflow-vision`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
       if (response.ok) {
         const data = await response.json()
-        console.log('✅ Upload success:', data)
         setUploadResult(data)
         setUploadError(null)
         fetchReceiptList()
       } else {
-        // 尝试解析错误响应
         let errorMessage = `HTTP ${response.status}: ${response.statusText}`
         try {
           const errorData = await response.json()
-          console.error('❌ Error response:', errorData)
-          
-          // 提取错误信息
-          if (typeof errorData.detail === 'string') {
-            errorMessage = errorData.detail
-          } else if (typeof errorData.detail === 'object') {
-            errorMessage = JSON.stringify(errorData.detail)
-          } else if (errorData.message) {
-            errorMessage = errorData.message
-          }
-        } catch (parseError) {
+          if (typeof errorData.detail === 'string') errorMessage = errorData.detail
+          else if (typeof errorData.detail === 'object') errorMessage = JSON.stringify(errorData.detail)
+          else if (errorData.message) errorMessage = errorData.message
+        } catch {
           const text = await response.text()
-          console.error('Raw error response:', text)
-          errorMessage = text || errorMessage
+          if (text) errorMessage = text
         }
-        
         setUploadError(errorMessage)
-        }
-      } catch (fetchError) {
-        clearTimeout(timeoutId)
-        if (workingHardTimerRef.current) {
-          clearTimeout(workingHardTimerRef.current)
-          workingHardTimerRef.current = null
-        }
-        throw fetchError
       }
     } catch (error) {
-      console.error('❌ Upload error:', error)
-      if (workingHardTimerRef.current) {
-        clearTimeout(workingHardTimerRef.current)
-        workingHardTimerRef.current = null
-      }
-      if (error instanceof Error && error.name === 'AbortError' && uploadCancelledByUserRef.current) {
-        setUploadError(null)
-        setUploadResult(null)
-        return
-      }
-      if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
-        } else if (error.message.includes('Failed to fetch')) {
-          setUploadError('Cannot connect to backend. Check:\n1. Backend is running at ' + apiBaseUrl + '\n2. Firewall\n3. CORS')
+      clearTimeout(timeoutId)
+      if (!(error instanceof Error && error.name === 'AbortError' && cancelledKeysRef.current.has(key))) {
+        if (error instanceof Error) {
+          if (error.name === 'AbortError') {
+            setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
+          } else if (error.message.includes('Failed to fetch')) {
+            setUploadError('Cannot connect to backend. Check:\n1. Backend is running at ' + apiBaseUrl + '\n2. Firewall\n3. CORS')
+          } else {
+            setUploadError(error.message)
+          }
         } else {
-          setUploadError(error.message)
+          setUploadError('Network error. Please retry.')
         }
-      } else {
-        setUploadError('Network error. Please retry.')
       }
     } finally {
-      setUploading(false)
-      setUploadSource(null)
-      setUploadWorkingHard(false)
-      if (workingHardTimerRef.current) {
-        clearTimeout(workingHardTimerRef.current)
-        workingHardTimerRef.current = null
-      }
-      uploadAbortRef.current = null
-      uploadCleanupRef.current = null
+      removeFromQueue(key)
       e.target.value = ''
     }
   }
 
-  const handleCancelUpload = (): void => {
-    uploadCancelledByUserRef.current = true
-    if (uploadCleanupRef.current?.timeoutId != null) clearTimeout(uploadCleanupRef.current.timeoutId)
+  const handleCancelAllUploads = useCallback(() => {
+    const keys = Array.from(uploadControllersRef.current.keys())
+    keys.forEach((k) => cancelledKeysRef.current.add(k))
+    uploadControllersRef.current.forEach((c) => c.abort())
+    uploadControllersRef.current.clear()
+    inFlightKeysRef.current.clear()
     if (workingHardTimerRef.current) {
       clearTimeout(workingHardTimerRef.current)
       workingHardTimerRef.current = null
     }
-    uploadAbortRef.current?.abort()
-  }
+    setUploadWorkingHard(false)
+    setProcessingCount(0)
+  }, [])
 
   useEffect(() => {
     if (developerAllowed === false) {
@@ -503,57 +497,52 @@ export default function DeveloperDashboardPage() {
                 onChange={handleUpload}
                 className="hidden"
                 id="receipt-upload"
-                disabled={uploading}
+                disabled={processingCount >= MAX_PROCESSING}
               />
-              {uploading && uploadSource === 'file' ? (
-              <div
-                className="group flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-500 cursor-wait select-none min-h-[44px] sm:min-h-0"
-                title="Hover to show Stop"
-              >
-                <span className="inline-block animate-spin text-lg">⏳</span>
-                <span>Processing…</span>
-                <button
-                  type="button"
-                  onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); handleCancelUpload() }}
-                  className="ml-2 px-2.5 py-1 rounded bg-theme-red hover:bg-theme-red/90 text-white text-sm font-medium opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 focus:outline-none"
-                  aria-label="Stop and cancel upload"
-                >
-                  Stop
-                </button>
-              </div>
-            ) : uploading && uploadSource === 'camera' ? (
-              <div
-                className="flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-theme-gray-919 bg-theme-ivory-dark cursor-not-allowed select-none min-h-[44px] sm:min-h-0"
-                aria-hidden
-              >
-                <span aria-hidden>🧾</span>
-                <span className="hidden sm:inline">Upload Receipt</span>
-              </div>
-            ) : (
               <label
                 htmlFor="receipt-upload"
-                className="flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 cursor-pointer transition select-none min-h-[44px] sm:min-h-0"
+                className={`flex items-center justify-center gap-2 px-4 py-2.5 sm:px-5 sm:py-2.5 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 transition select-none min-h-[44px] sm:min-h-0 ${processingCount >= MAX_PROCESSING ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
               >
                 <span aria-hidden>🧾</span>
                 <span>Upload Receipt</span>
               </label>
-            )}
             </div>
             <CameraCaptureButton
               token={token}
-              disabled={uploading}
-              showAsProcessing={uploading && uploadSource === 'camera'}
-              onUploadStart={handleCameraUploadStart}
+              disabled={processingCount >= MAX_PROCESSING}
+              showAsProcessing={false}
+              onCheckQueue={checkAndStartUpload}
+              onRemoveFromQueue={removeFromQueue}
               onSuccess={handleCameraUploadSuccess}
               onError={handleCameraUploadError}
             />
           </div>
         </div>
 
-        {uploading && uploadWorkingHard && (
-          <div className="mb-4 p-4 sm:p-5 bg-theme-blue/10 border border-theme-blue/30 rounded-lg text-center animate-pulse">
-            <p className="text-theme-blue font-medium text-base sm:text-lg mb-1">Your Smart AI Accountant is Working Hard.</p>
-            <p className="text-theme-blue text-sm">Feel free to come back later — this may take 2–3 minutes.</p>
+        {processingCount > 0 && (
+          <div className="mb-4 p-4 sm:p-5 bg-theme-blue/10 border border-theme-blue/30 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 animate-processing-pulse">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <span className="inline-block text-xl sm:text-2xl animate-sandglass-tilt select-none" aria-hidden>
+                ⏳
+              </span>
+              <div>
+                <p className="text-theme-blue font-medium text-base sm:text-lg mb-0.5">
+                  {processingCount} receipt{processingCount !== 1 ? 's' : ''} still processing.
+                </p>
+                <p className="text-theme-blue text-sm">
+                  You can upload more (up to {MAX_PROCESSING} at a time).
+                  {uploadWorkingHard && ' This may take a minute.'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleCancelAllUploads}
+              className="px-3 py-1.5 rounded bg-theme-red/90 hover:bg-theme-red text-white text-sm font-medium shrink-0"
+              aria-label="Cancel all uploads"
+            >
+              Cancel all
+            </button>
           </div>
         )}
         {/* Upload success/error toasts */}
