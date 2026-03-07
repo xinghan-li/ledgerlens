@@ -1,68 +1,145 @@
 # Changelog — 2026-03-06
 
-准备合并到 production 的改动摘要（基于 fix/frontend-features 与当前工作区 diff）。
+今日工作记录（三个 commit：`beb07f8`、`66ea9d9`、`466ae4b`）。
 
 ---
 
-## 前端（主要改动）
+## 前端
 
-- **Dashboard**
-  - `dashboard/layout.tsx`：布局与鉴权加载逻辑调整
-  - `dashboard/page.tsx`：列表展示、操作流程与状态管理优化（约 500+ 行变动）
-- **数据分析**
-  - `DataAnalysisSection.tsx`：数据拉取与展示逻辑更新
-- **相机**
-  - `CameraCaptureButton.tsx`：拍照/上传交互与错误处理改进
-- **开发者页**
-  - `developer/page.tsx`：页面结构重构与功能整理（约 300 行变动）
-- **管理端**
-  - `admin/layout.tsx`：管理布局小调整
-  - 新增 `admin/user-management/`：用户管理相关页面
-- **样式与配置**
-  - `globals.css`、`tailwind.config.js`：主题与样式微调
+### 多张小票上传 & 上传状态体验
+
+- **多张上传进度提示**：`processingCount > 0` 时顶部横幅文案改为 "Bookkeeper is working hard on reviewing your receipt(s)"，并补充说明 "For Costco we may run an extra check or escalate to a senior processor"。
+- **⏳ 动画**：处理中的沙漏图标由自定义 `animate-sandglass-tilt` 改为标准 `animate-spin`，效果更流畅。
+- **上传结果 toast 细化**：
+  - 普通成功 → "Success."
+  - 门店定制二次校验通过 → "Success after secondary check."
+  - 升级处理后通过 → "Success after escalation."
+- **needs_review 提示文案**：上传结果为 `needs_review` 时显示 "Unfortunately, the senior processor couldn't resolve all questions. Please review the result and make any adjustments."，其余情况仍保留旧提示。
+
+### 手机端 UIUX Bug 修复
+
+- **手机端 Processing 骨架**：在手机端月份列表顶部新增 Processing 分组，每张处理中的小票显示带 `animate-spin` ⏳ 的占位卡片，用户上传后即可看到进度而不是空白。
+- **展开 loading spinner**：手机端点击展开一条小票、数据还未加载时，先显示旋转圈圈（`border-t-transparent` spinner），避免空白闪烁。
+- **状态标签文字优化**：小票列表里的状态标签由原始字段值（如 `needs_review`）改为友好文字（`Needs review` / `Success after secondary check` / `Success after escalation`）。
+- **日期时区 Bug 修复**：引入 `parseDateLocal`，把 `"2026-01-07"` 字符串解析为本地时间（`new Date(year, month-1, day)`），避免 `new Date("2026-01-07")` 当作 UTC 午夜导致在 PST 显示成 1 月 6 日的问题。
+
+### 手机端 needs_review 小票可编辑
+
+- **手机端展开可编辑**：`needs_review` 状态的小票在手机端展开后，LLM reasoning 置顶显示在橙色提示框内，用户可看到原因后直接在手机上修改并提交 Review complete。
+- **Reasoning 可折叠**：reasoning 旁边有折叠/展开按钮（`▶` / `▼`），默认展开，可收起节省空间，`collapsedReviewReasoningReceiptIds` 管理折叠状态。
+
+### 相机 Layout 修改
+
+- **按钮顺序调整**：拍照预览状态下，按钮排列由 "Retake · Upload · Cancel" 改为 "Upload · Retake"（取消 Cancel 按钮，Retake 换色为红色背景），减少误触。
+- **按钮尺寸统一**：所有底部按钮改为 `flex-1 min-w-0`，保证手机全宽等分排列。
+- **"Take photo" 改为 "Take"**：按钮文字缩短，适配小屏幕。
+- **拍照后自动上传 Bug 修复（幽灵点击保护）**：拍照成功后 Canvas 截图 → blob 生成 → 界面切换到预览，此时移动端的 ghost click 会恰好落在新出现的 Upload 按钮上触发自动上传。新增 `captureGuardRef`，拍照后 **400ms** 内忽略 `handleUpload` 调用，彻底修复该 Bug。
+
+### 后端端口自动探测
+
+- 新增 `frontend/app/api/backend-port/route.ts`：前端启动时探测 `:8000` / `:8081`，将可用端口写入 `backend-port.json`；`lib/api-url.ts` 读取该文件，优先使用已探测端口，兼容后端因端口占用切换到 8081 的场景。
+- 连接失败的错误提示本地化：区分 localhost 与非 localhost 访问，给出不同的排查建议（中文）。
+
+### Admin 用户管理页
+
+- 新增 `frontend/app/admin/user-management/page.tsx`：管理员可查看用户列表、查看 `user_class` 整型值，并在界面上修改用户权限等级。
+- `admin/layout.tsx` 补充 admin 路由鉴权保护。
 
 ---
 
 ## 后端
 
-### 多一轮 LLM + Prompt 调整
+### 第二轮 Gemini LLM 校验逻辑（vision_store_specific 阶段）
 
-- **Vision 流程**（`workflow_processor_vision.py`）：在首轮识别后，对匹配到门店的小票增加**第二轮 LLM**，使用校正后的信息 + 门店定制 prompt 做精修（如 Costco 折扣行合并等）
-- **Prompt**
-  - `prompt_loader.py`：支持从 DB 加载 second-round / 门店定制 prompt（如 `receipt_parse_second_common`、Costco 第二轮）
-  - `prompt_manager.py`：与 prompt_loader 的集成与 key 使用方式更新
-- **数据库**
-  - **052_costco_discount_line_prompt.sql**：Costco 第二轮 prompt（折扣行合并到上一行、original_price、is_on_sale、sum check）
-  - **053_user_class_integer.sql**：`users.user_class` 由 TEXT 改为 SMALLINT（0=free, 2=premium, 7=admin, 9=super_admin）
-  - 文档：`STORE_SPECIFIC_PROMPTS.md` 说明门店定制与第二轮 prompt 的用法
+**新增完整的 Costco 第二轮 LLM pass**，专门处理折扣行合并问题：
 
-### 性能优化（后端即可生效）
+- **触发条件**：识别为 Costco USA 小票 AND items 中存在负数 `line_total`（折扣行）。
+- **函数**：`receipt_llm_processor.run_costco_second_round` — 用 `costco_second_round` prompt 对第一轮结果做精修，将每条负数折扣行合并到紧邻上方的商品行（减价、标记 `is_on_sale=true`）。
+- **流程集成**（`workflow_processor_vision.py`）：
+  - `_resolve_costco_store_ids`：优先从第一轮 address_correction metadata 取 `chain_id`/`location_id`，避免重复 DB 查询。
+  - `_run_and_save_costco_second_round`：执行 LLM 调用并将结果保存为 `vision_store_specific` processing run，附到 workflow steps。
+  - 第一轮正常 pass、escalation pass、需要人工 review 三条路径均可触发第二轮。
+- **数据库**：
+  - `055_receipt_processing_runs_stage_store_specific.sql`：为 `receipt_processing_runs.stage` 字段的 CHECK 约束添加 `vision_store_specific` 合法值。
+  - `supabase_client.py`：`save_processing_run` / `update_receipt_status` 同步支持 `vision_store_specific` stage。
 
-- **鉴权**
-  - `jwt_auth.py`：增加 **token → user_id 短 TTL 缓存**（5 分钟），同一 token 在 TTL 内不再重复走 Firebase 校验 + Supabase get_or_create，减轻刷新/列表/删除等接口延迟；并去掉每请求的 warning 级调试日志
-- **列表**
-  - `supabase_client.py`：`list_receipts_by_user` 中 **record_summaries 与 fallback LLM merchant name 查询改为并行**（ThreadPoolExecutor），减少一次 Supabase 往返
-- **删除**
-  - `failed_receipts_service.py`：删除小票时 **api_calls 与 store_candidates 的清理 update 改为并行**，再执行 receipt_status delete，少一次串行往返
+### Costco 小票 Process Debug
 
-### 其他后端
+- **Prompt 规则更新**（Vision Primary & Escalation 两套 prompt）：
+  - 新增 **Rule 6a**：明确说明如何识别并合并 Costco 折扣行（负数行代码全数字、紧跟上方商品），"Bottom of Basket" 行不算商品。
+  - **Rule 7a**：CC Rewards 场景 — 只取第一个 SUBTOTAL/TOTAL，不使用 CC Rewards 后的第二个总计；`payment_method` 写成 "Visa / CC Rewards"。
+  - **user-facing notes 规则**：`_metadata.reasoning` 和 `sum_check_notes` 中一律用 dollar（`$198.59`）而非 cents（`19859`），提升用户可读性。
+  - `054_notes_in_dollars_prompt.sql`：将 dollar 格式要求写入数据库 prompt 备注。
+  - `address_line1/2/city/state/zip_code` 结构化字段加入 OUTPUT SCHEMA，要求 LLM 分字段输出地址（不再混入 `merchant_address`）。
+- **`_items_has_negative_line_total`**：工具函数，判断 items 是否含负数行，用于触发第二轮。
+- **`_is_costco_usa_receipt`**：Costco 识别函数（已有）集成进 vision workflow。
 
-- `workflow_processor.py`：与 prompt/initial-parse 等的小幅调整
-- `address_matcher.py`：地址匹配逻辑更新
-- `rate_limiter.py`：与 user_class 整型化及 admin 豁免规则一致
-- `main.py`：路由与依赖的小幅修改
-- `firebase_auth.py`、`init_deposit_fee_rag.py`：小改动
+### 数据库锁 & 展开慢优化
+
+**核心问题**：上传处理小票时，同一进程的 event loop 被 Supabase 阻塞型 I/O 占满，导致 list / detail / delete 接口也排队等待，前端打开小票极慢或转圈。
+
+**修复方案**：
+- **`asyncio.to_thread` 包裹所有 Supabase 同步调用**（`main.py`）：
+  - `process_receipt_workflow_endpoint`（legacy）和 `process_receipt_workflow_vision_endpoint`（vision）均改为在独立线程（`_run_legacy/vision_workflow_in_thread` + 新建独立 event loop）中运行，主 event loop 不再被长任务占用。
+  - `list_my_receipts` → `asyncio.to_thread(list_receipts_by_user, ...)`
+  - `get_my_receipt` → `asyncio.to_thread(get_receipt_detail_for_user, ...)`
+- **`get_receipt_detail_for_user` 并行查询**（`supabase_client.py`）：
+  - 第一批：`record_summaries` + `record_items` 并行拉取（`ThreadPoolExecutor`）
+  - 第二批：`store_chains` + `store_locations` + `categories` + `processing_runs` 并行拉取
+  - 相比串行查询减少约 3–4 次 Supabase 往返延迟。
+- **`list_receipts_by_user` 并行优化**（已在 `beb07f8` 中完成）：`record_summaries` 与 fallback LLM merchant name 查询并行。
+- **JWT token 缓存**：5 分钟内同一 token 不重复走 Firebase 校验 + Supabase get_or_create，降低每个请求的鉴权开销。
+- **删除并行**：`failed_receipts_service.py` 中 `api_calls` 与 `store_candidates` 清理改为并行 update，再执行 receipt_status delete。
+- **分析文档**：`backend/agent-tbd/PRODUCTION_SLOW_LOADING_ANALYSIS_20260306.md`（可归档或删除）。
+
+### 地址截取优化
+
+**问题**：LLM 输出地址混入 `merchant_address` 单字段，DB 匹配后写回时没有覆盖结构化字段，导致后续 `build_merchant_address_from_structured` 又用 LLM 原始（可能错误的）地址重组。
+
+**修复**：
+- **Prompt 输出结构化字段**：要求 LLM 分别输出 `address_line1`（仅街道）、`address_line2`（仅门牌号，无 Suite/Unit/# 前缀）、`city`、`state`、`zip_code`、`country`。
+- **`address_matcher.correct_address` 写回结构化字段**：匹配到 canonical DB 地址后，同时覆盖 `address_line1/2/city/state/zip_code`，防止后续步骤用旧值重组。同时把 `chain_id` / `location_id` 写入 `_metadata.address_correction`，供后续 Costco 第二轮直接复用。
+- **`build_address_string` 格式统一**（`address_matcher.py`）：地址第一行改为 `"unit-street"` 格式（如 `"101-19715 Highway 99"`），与 `_store_address_from_location_row` / `_assemble_address_parts` 逻辑一致。
+- **新函数 `build_merchant_address_from_structured`**（`supabase_client.py`）：从 receipt dict 的结构化字段组装 `merchant_address`，供 `categorize_receipt` 等调用，避免重复解析逻辑。
+- **`create_store_candidate` 字段对齐**：优先使用 `address_line1/2`（prompt 输出），兼容 `address1/2`（旧字段），`zip_code` / `zipcode` 双写。
+- **`receipt_llm_processor.py` 地址组装**：构建传给 `get_store_chain` 的地址字符串时，优先用 `address_line1/2` + `zip_code`（新字段），兼容旧字段。
+
+### User Class 整型化（migration 053）
+
+- `053_user_class_integer.sql`：`users.user_class` 由 TEXT 改为 SMALLINT。
+  - `0` = free（默认）
+  - `2` = premium
+  - `7` = admin
+  - `9` = super_admin
+- `rate_limiter.py` / `supabase_client.py` / `jwt_auth.py` 同步适配整型 user_class，admin 豁免规则保持一致。
+
+### Gemini 建议：合并两个 Helper
+
+- `466ae4b`：根据 Gemini code review 建议，将 `workflow_processor_vision.py` 中两个重复 helper 合并为统一实现，减少代码冗余；`supabase_client.py` 同步优化。
 
 ---
 
-## 未跟踪 / 可选
+## 数据库 Migrations（今日新增）
 
-- `backend/agent-tbd/PRODUCTION_SLOW_LOADING_ANALYSIS_20260306.md`：生产环境 Loading/Deleting 慢的分析与建议（可归档或删除）
-- `backend/database/scripts/VERIFY_*.sql`：Schema/系统数据校验脚本，按需运行
+| 文件 | 内容 |
+|------|------|
+| `052_costco_discount_line_prompt.sql` | Costco 第二轮 prompt：折扣行合并、CC Rewards、sum check |
+| `053_user_class_integer.sql` | `users.user_class` TEXT → SMALLINT |
+| `054_notes_in_dollars_prompt.sql` | reasoning/sum_check_notes 金额用 dollar 格式的 prompt 备注 |
+| `055_receipt_processing_runs_stage_store_specific.sql` | `receipt_processing_runs.stage` 约束新增 `vision_store_specific` |
 
 ---
 
-## 部署前提醒
+## 待处理 / 建议
 
-1. 若上线 053，需先执行 **053_user_class_integer.sql**（或已纳入迁移流程）；052 若未跑过需执行 **052_costco_discount_line_prompt.sql**。
-2. 生产环境建议在合并后做一次短回归：登录 → 列表加载 → 删除一条 → 上传/相机一条，确认无报错且体感延迟改善。
+- `backend/agent-tbd/PRODUCTION_SLOW_LOADING_ANALYSIS_20260306.md`：生产延迟分析，已实施优化；可归档到 `docs/` 或删除。
+- `backend/database/scripts/VERIFY_SCHEMA.sql` / `VERIFY_SYSTEM_DATA.sql`：校验脚本，按需运行。
+- `backend/database/documents/STORE_SPECIFIC_PROMPTS.md`：门店定制与第二轮 prompt 使用说明，建议保留。
+
+---
+
+## 部署提醒
+
+1. **Migration 顺序**：依次执行 052 → 053 → 054 → 055（若尚未在目标环境执行）。
+2. **回归测试建议**：登录 → 列表加载（验证延迟改善）→ 手机端展开一条 needs_review 小票 → 上传一张 Costco 小票（验证折扣行合并）→ 删除一条（验证无报错）。
+3. `vision_store_specific` stage 已在 DB 约束和代码中同步支持，部署后无需手动处理数据。

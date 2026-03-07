@@ -2047,8 +2047,12 @@ export default function DashboardPage() {
                           <>Specific rule (method: <code className="bg-white px-1 rounded">{processingRunsData.track_method ?? '—'}</code>)</>
                         ) : processingRunsData.track === 'general' ? (
                           <>General track (no store-specific rule matched)</>
+                        ) : processingRunsData.track === 'vision_store_specific' ? (
+                          <>Vision store-specific (e.g. Costco second round) — pipeline: <code className="bg-white px-1 rounded">{(processingRunsData as { pipeline_version?: string }).pipeline_version ?? 'vision_b'}</code></>
+                        ) : processingRunsData.track === 'vision_escalation' ? (
+                          <>Vision escalation — pipeline: <code className="bg-white px-1 rounded">{(processingRunsData as { pipeline_version?: string }).pipeline_version ?? 'vision_b'}</code></>
                         ) : processingRunsData.track === 'vision_primary' ? (
-                          <>Vision primary (pipeline: <code className="bg-white px-1 rounded">{(processingRunsData as { pipeline_version?: string }).pipeline_version ?? 'vision_b'}</code>)</>
+                          <>Vision primary — pipeline: <code className="bg-white px-1 rounded">{(processingRunsData as { pipeline_version?: string }).pipeline_version ?? 'vision_b'}</code></>
                         ) : (
                           <>
                             Unknown (no rule_based_cleaning or vision run recorded).
