@@ -115,7 +115,7 @@ create table receipt_status (
   check (current_stage in (
     'ocr', 'llm_primary', 'llm_fallback', 'manual',
     'rejected_not_receipt', 'pending_receipt_confirm',
-    'vision_primary', 'vision_escalation'
+    'vision_primary', 'vision_escalation', 'vision_store_specific'
   )),
   check (current_status in ('success', 'failed', 'needs_review', 'pending'))
 );
@@ -128,7 +128,7 @@ create index receipt_status_file_hash_idx on receipt_status(file_hash);
 create unique index receipt_status_user_file_hash_idx on receipt_status(user_id, file_hash) where file_hash is not null;
 
 comment on table receipt_status is 'Receipt upload records - tracks current status and stage';
-comment on column receipt_status.current_stage is 'Current processing stage: ocr, llm_primary, llm_fallback, manual, rejected_not_receipt, pending_receipt_confirm, vision_primary, vision_escalation';
+comment on column receipt_status.current_stage is 'Current processing stage: ocr, llm_primary, llm_fallback, manual, rejected_not_receipt, pending_receipt_confirm, vision_primary, vision_escalation, vision_store_specific';
 comment on column receipt_status.pipeline_version is 'Pipeline used: legacy_a (OCR→LLM cascade) or vision_b (Vision-First)';
 comment on column receipt_status.file_hash is 'SHA256 hash of the uploaded file for duplicate detection';
 
