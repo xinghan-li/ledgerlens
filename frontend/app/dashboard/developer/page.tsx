@@ -527,11 +527,13 @@ export default function DeveloperDashboardPage() {
               </span>
               <div>
                 <p className="text-theme-blue font-medium text-base sm:text-lg mb-0.5">
-                  {processingCount} receipt{processingCount !== 1 ? 's' : ''} still processing.
+                  {processingCount === 1
+                    ? 'Bookkeeper is working hard on reviewing your receipt.'
+                    : `Bookkeeper is working hard on reviewing your ${processingCount} receipts.`}
                 </p>
                 <p className="text-theme-blue text-sm">
                   You can upload more (up to {MAX_PROCESSING} at a time).
-                  {uploadWorkingHard && ' This may take a minute.'}
+                  For Costco we may run an extra check or escalate to a senior processor — sit tight, this may take a minute.
                 </p>
               </div>
             </div>
@@ -548,7 +550,13 @@ export default function DeveloperDashboardPage() {
         {/* Upload success/error toasts */}
         {uploadResult?.success === true && (
           <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between">
-            <span className="text-green-800">✅ Processed. Status: {uploadResult.status || 'passed'}</span>
+            <span className="text-green-800">
+              ✅ {uploadResult.current_stage === 'vision_store_specific'
+                ? 'Success after secondary check.'
+                : uploadResult.current_stage === 'vision_escalation' || uploadResult.status === 'escalation_success'
+                  ? 'Success after escalation.'
+                  : 'Success.'}
+            </span>
             <button
               onClick={() => { setUploadResult(null); setUploadError(null) }}
               className="text-sm text-green-700 hover:underline"
@@ -674,6 +682,11 @@ export default function DeveloperDashboardPage() {
                               </div>
                               <span className="text-theme-gray-919">{expandedReceiptIds.has(r.id) ? '▼' : '▶'}</span>
                             </button>
+                            {expandedReceiptIds.has(r.id) && !expandedReceiptData[r.id] && (
+                              <div className="border-t border-theme-light-gray bg-white p-6 flex items-center justify-center min-h-[120px]">
+                                <div className="animate-spin w-8 h-8 border-2 border-theme-mid border-t-transparent rounded-full" aria-hidden />
+                              </div>
+                            )}
                             {expandedReceiptIds.has(r.id) && expandedReceiptData[r.id] && expandedReceiptData[r.id].error && (
                               <div className="border-t border-theme-ivory-dark bg-theme-red/10 p-4 text-sm text-theme-red">
                                 {String(expandedReceiptData[r.id].error)}

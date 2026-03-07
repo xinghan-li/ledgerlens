@@ -207,10 +207,13 @@ def check_receipt_sums(llm_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]
         product_line_total_sum = line_total_sum - deposit_fee_sum - reward_credit_sum  # = sum of positive product items
     else:
         product_line_total_sum = line_total_sum - deposit_fee_sum
+    # Programmatic totals from items only (for UI to show "computed sum" vs "model subtotal/total" — never trust model numbers alone).
+    tax_float = float(tax)
+    check_details["subtotal_computed_from_items"] = round(product_line_total_sum, 2)
+    check_details["total_expected_from_items_plus_tax"] = round(product_line_total_sum + tax_float, 2)
     if subtotal is None:
         if total is not None:
             total_float = float(total)
-            tax_float = float(tax)
             tol = _effective_tolerance(subtotal, total, line_total_sum)
             # When subtotal is null, total usually includes tax: check line_total_sum + tax ≈ total
             line_total_plus_tax = line_total_sum + tax_float

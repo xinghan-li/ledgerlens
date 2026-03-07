@@ -87,8 +87,18 @@ export default function DashboardPage() {
   const [processingRunsLoading, setProcessingRunsLoading] = useState(false)
   const [deleteConfirmReceiptId, setDeleteConfirmReceiptId] = useState<string | null>(null)
   const [deleteConfirmLoading, setDeleteConfirmLoading] = useState(false)
-  const [dismissedReviewFeedbackReceiptIds, setDismissedReviewFeedbackReceiptIds] = useState<Set<string>>(new Set())
+  /** needs_review 小票的 LLM reasoning 是否折叠（可再展开），不隐藏 */
+  const [collapsedReviewReasoningReceiptIds, setCollapsedReviewReasoningReceiptIds] = useState<Set<string>>(new Set())
   const [reviewCompleteLoading, setReviewCompleteLoading] = useState<string | null>(null)
+
+  const toggleReviewReasoningCollapsed = useCallback((receiptId: string) => {
+    setCollapsedReviewReasoningReceiptIds((prev) => {
+      const s = new Set(prev)
+      if (s.has(receiptId)) s.delete(receiptId)
+      else s.add(receiptId)
+      return s
+    })
+  }, [])
   const [mobileReceiptViewMode, setMobileReceiptViewMode] = useState<'receipt' | 'classification'>('receipt')
   const [mobileReceiptVisibleCount, setMobileReceiptVisibleCount] = useState(5)
   const router = useRouter()
@@ -512,7 +522,10 @@ export default function DashboardPage() {
           if (error.name === 'AbortError') {
             setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
           } else if (error.message.includes('Failed to fetch') || error.message === 'Load failed' || error.message === 'Load failed.') {
-            setUploadError('Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current API: ' + apiBaseUrl)
+            const tip = typeof window !== 'undefined' && (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+              ? '当前是从其他地址访问前端的（非 localhost），浏览器里的 localhost 指向的是当前设备而非后端所在电脑。请把 .env.local 的 NEXT_PUBLIC_API_URL 设为后端真实地址（例如 ngrok 或 http://后端电脑IP:8000），重启前端后再试。'
+              : '请确认：(1) 后端在 ' + apiBaseUrl + ' 运行 (2) 在新标签页打开 ' + apiBaseUrl + '/health 应看到 {"status":"ok"} (3) 若后端因端口占用改到 8081，前端会自动读 backend-port.json 使用正确端口。当前 API: ' + apiBaseUrl
+            setUploadError('无法连接后端。' + tip)
           } else {
             setUploadError(error.message)
           }
@@ -611,20 +624,22 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* 上传中：显示还有几张在处理，允许继续上传（最多 5 张） */}
+        {/* Processing: bookkeeper / Costco check / escalation messaging */}
         {processingCount > 0 && (
           <div className="mb-4 p-4 sm:p-5 bg-theme-light-gray/50 border border-theme-orange/30 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 animate-processing-pulse">
             <div className="flex items-center gap-2 sm:gap-3">
-              <span className="inline-block text-xl sm:text-2xl animate-sandglass-tilt select-none" aria-hidden>
+              <span className="inline-block text-xl sm:text-2xl animate-spin select-none" aria-hidden>
                 ⏳
               </span>
               <div>
                 <p className="text-theme-dark font-medium text-base sm:text-lg mb-0.5">
-                  {processingCount} receipt{processingCount !== 1 ? 's' : ''} still processing.
+                  {processingCount === 1
+                    ? 'Bookkeeper is working hard on reviewing your receipt.'
+                    : `Bookkeeper is working hard on reviewing your ${processingCount} receipts.`}
                 </p>
                 <p className="text-theme-orange text-sm">
                   You can upload more (up to {MAX_PROCESSING} at a time).
-                  {uploadWorkingHard && ' This may take a minute.'}
+                  For Costco we may run an extra check or escalate to a senior processor — sit tight, this may take a minute.
                 </p>
               </div>
             </div>
@@ -638,14 +653,15 @@ export default function DashboardPage() {
             </button>
           </div>
         )}
-        {/* Upload success/error toasts */}
+        {/* Upload success toast: Success / Success after secondary check / Success after escalation */}
         {uploadResult?.success === true && (
           <div className="mb-4 p-3 sm:p-4 bg-green-50 border border-green-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <span className="text-green-800 text-sm sm:text-base min-w-0">
-              ✅ Processed.
-              {(uploadResult.status === 'passed_after_fallback' || uploadResult.status === 'passed_after_vision_retry')
-                ? ' Final check complete.'
-                : ` Status: ${uploadResult.status || 'passed'}`}
+              ✅ {uploadResult.current_stage === 'vision_store_specific'
+                ? 'Success after secondary check.'
+                : uploadResult.current_stage === 'vision_escalation' || uploadResult.status === 'escalation_success'
+                  ? 'Success after escalation.'
+                  : 'Success.'}
             </span>
             <button
               onClick={() => { setUploadResult(null); setUploadError(null) }}
@@ -673,8 +689,14 @@ export default function DashboardPage() {
         {(uploadError || (uploadResult && uploadResult.success === false && uploadResult.error !== 'duplicate_receipt')) && (
           <div className="mb-4 p-3 sm:p-4 bg-amber-50 border border-amber-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
-              <p className="text-amber-900 font-medium text-sm sm:text-base mb-1">The bookkeeper had questions and escalated.</p>
+              <p className="text-amber-900 font-medium text-sm sm:text-base mb-1">
+                {uploadResult?.status === 'needs_review'
+                  ? "Unfortunately, the senior processor couldn't resolve all questions. Please review the result and make any adjustments. Thank you."
+                  : 'The bookkeeper had questions.'}
+              </p>
+              {uploadResult?.status !== 'needs_review' && (
               <p className="text-amber-800 text-sm">You can close this page and come back later — we’ll have it ready when they’re done.</p>
+              )}
             </div>
             <button
               type="button"
@@ -726,16 +748,33 @@ export default function DashboardPage() {
             <p className="py-6 text-theme-mid text-center">No receipts yet. Upload one using the button above.</p>
           ) : (
             (() => {
+              // Parse a date string as LOCAL time to avoid UTC-midnight → timezone-shift bug.
+              // new Date("2026-01-07") is treated as UTC midnight → shows Jan 6 in PST.
+              const parseDateLocal = (d: string): Date => {
+                const m = d.match(/^(\d{4})-(\d{2})-(\d{2})/)
+                if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+                return new Date(d)
+              }
+              const getStatusLabel = (r: ReceiptListItem): string => {
+                if (r.current_status === 'success') {
+                  if (r.current_stage === 'vision_store_specific') return 'Success after secondary check'
+                  if (r.current_stage === 'vision_escalation') return 'Success after escalation'
+                  return 'Success'
+                }
+                if (r.current_status === 'needs_review') return 'Needs review'
+                if (r.current_status === 'failed') return 'Failed'
+                return r.current_status || 'Processing'
+              }
               const getDateKey = (r: ReceiptListItem) => {
                 const d = r.receipt_date || r.uploaded_at
                 if (!d) return 'Unknown'
-                const date = new Date(d)
+                const date = parseDateLocal(d)
                 return isNaN(date.getTime()) ? 'Unknown' : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
               }
               const formatDisplayDate = (r: ReceiptListItem) => {
                 const d = r.receipt_date || r.uploaded_at
                 if (!d) return r.id.slice(0, 8)
-                const date = new Date(d)
+                const date = parseDateLocal(d)
                 if (isNaN(date.getTime())) return r.id.slice(0, 8)
                 return date.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })
               }
@@ -743,7 +782,7 @@ export default function DashboardPage() {
               const byMonth = receiptList.reduce<Record<string, ReceiptListItem[]>>((acc, r) => {
                 const key = getDateKey(r)
                 if (!monthLabels[key] && key !== 'Unknown') {
-                  const date = new Date(r.receipt_date || r.uploaded_at || '')
+                  const date = parseDateLocal(r.receipt_date || r.uploaded_at || '')
                   monthLabels[key] = date.toLocaleDateString('en-US', { year: 'numeric', month: 'long' })
                 } else if (key === 'Unknown') monthLabels[key] = 'Unknown'
                 if (!acc[key]) acc[key] = []
@@ -769,6 +808,22 @@ export default function DashboardPage() {
                 <div className="space-y-6">
                   {/* 手机端：按月份分组，带分割线，仅展示最近 N 条，每次展开 5 个 */}
                   <div className="block md:hidden space-y-6">
+                    {processingCount > 0 && (
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3 mb-2">
+                          <span className="text-sm font-semibold text-theme-dark/90">Processing</span>
+                          <div className="flex-1 h-px bg-theme-light-gray" />
+                        </div>
+                        {Array.from({ length: processingCount }, (_, i) => (
+                          <div key={`processing-${i}`} className="border border-theme-light-gray rounded-lg overflow-hidden">
+                            <div className="w-full px-4 py-3 flex items-center gap-3 text-left" style={{ backgroundColor: '#F0F0EB' }}>
+                              <span className="inline-block animate-spin text-lg shrink-0" aria-hidden>⏳</span>
+                              <span className="text-theme-mid font-medium">Processing…</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {visibleMonths.map((monthKey) => (
                       <div key={monthKey} className="space-y-3">
                         <div className="flex items-center gap-3 mb-2">
@@ -812,12 +867,17 @@ export default function DashboardPage() {
                             <span className="text-xs text-theme-mid">
                               {formatDisplayDate(r)}
                               <span className={`ml-1.5 px-1.5 py-0.5 rounded ${r.current_status === 'success' ? 'bg-green-100 text-green-800' : r.current_status === 'failed' || r.current_status === 'needs_review' ? 'bg-amber-100 text-amber-800' : 'bg-theme-light-gray/50 text-theme-dark/90'}`}>
-                                {r.current_status}
+                                {getStatusLabel(r)}
                               </span>
                             </span>
                           </div>
                             <span className="text-theme-mid shrink-0">{expandedReceiptIds.has(r.id) ? '▼' : '▶'}</span>
                         </button>
+                        {expandedReceiptIds.has(r.id) && !expandedReceiptData[r.id] && (
+                          <div className="border-t border-theme-light-gray bg-white p-6 flex items-center justify-center min-h-[120px]">
+                            <div className="animate-spin w-8 h-8 border-2 border-theme-mid border-t-transparent rounded-full" aria-hidden />
+                          </div>
+                        )}
                         {expandedReceiptIds.has(r.id) && expandedReceiptData[r.id] && expandedReceiptData[r.id].error && (
                           <div className="border-t border-theme-ivory-dark bg-theme-red/10 p-4 text-sm text-theme-red">
                             {String(expandedReceiptData[r.id].error)}
@@ -844,6 +904,34 @@ export default function DashboardPage() {
                                     const address = formatAddressForDisplay(rawAddress || '')
                                     return (
                                       <React.Fragment>
+                                      {/* 手机端：needs_review 时 reasoning 置顶，可折叠，右侧 Review complete */}
+                                      {r.current_status === 'needs_review' && (
+                                        <div className="mx-4 mt-4 mb-2 p-4 rounded-lg border border-amber-200 bg-amber-50 flex flex-col gap-3">
+                                          <p className="text-sm text-amber-900">Unfortunately, the senior processor couldn&apos;t resolve all questions. Please review the result and make any adjustments. Thank you.</p>
+                                          <div className="flex items-center justify-between gap-2">
+                                            <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-left flex-1 min-w-0 flex items-center gap-2 text-sm font-medium text-amber-800">
+                                              {collapsedReviewReasoningReceiptIds.has(r.id) ? (
+                                                <span aria-hidden>▶</span>
+                                              ) : (
+                                                <span aria-hidden>▼</span>
+                                              )}
+                                              <span>LLM reasoning</span>
+                                            </button>
+                                            <button type="button" disabled={reviewCompleteLoading === r.id} onClick={async (e) => { e.stopPropagation(); if (!r.id || !token || reviewCompleteLoading) return; setReviewCompleteLoading(r.id); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { await refetchReceiptDetail(r.id); fetchReceiptList() } else alert(data.detail || data.message || 'Failed to complete review'); } catch { alert('Network error'); } finally { setReviewCompleteLoading(null); } }} className="shrink-0 text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1.5 rounded border border-amber-300 disabled:opacity-50">{reviewCompleteLoading === r.id ? '…' : 'Review complete'}</button>
+                                          </div>
+                                          {!collapsedReviewReasoningReceiptIds.has(r.id) && (
+                                            <div className="text-sm text-amber-900 space-y-1.5">
+                                              {expandedReceiptData[r.id]?.review_metadata?.reasoning && <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>}
+                                              {expandedReceiptData[r.id]?.review_metadata?.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>}
+                                              {(expandedReceiptData[r.id]?.review_metadata?.item_count_on_receipt != null || expandedReceiptData[r.id]?.review_metadata?.item_count_extracted != null) && <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>}
+                                              {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && <p className="whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>}
+                                            </div>
+                                          )}
+                                          {!collapsedReviewReasoningReceiptIds.has(r.id) && (
+                                            <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-xs text-amber-700 hover:text-amber-900 underline self-start">Collapse</button>
+                                          )}
+                                        </div>
+                                      )}
                                       <div className="p-4">
                                         <div className="bg-white rounded-lg text-sm text-theme-dark overflow-hidden p-4 space-y-4" style={{ fontFamily: "'Space Mono', 'Courier New', monospace" }}>
                                           <div className="flex items-start gap-2">
@@ -927,6 +1015,36 @@ export default function DashboardPage() {
                                           {rec && (
                                             <>
                                               <div className="border-t border-dashed border-theme-mid pt-2 space-y-0.5">
+                                                {items.length > 0 && (() => {
+                                                  const toCents = (v: any): number => { const n = Number(v); if (!Number.isFinite(n)) return 0; return (Number.isInteger(n) && n >= 100) ? n : Math.round(n * 100) }
+                                                  const itemsSumCents = items.reduce((s: number, i: any) => s + toCents(i.line_total), 0)
+                                                  const subNum = rec.subtotal != null ? Number(rec.subtotal) : NaN
+                                                  const subtotalCents = (subNum >= 100 && Number.isInteger(subNum)) ? subNum : (Number.isFinite(subNum) ? Math.round(subNum * 100) : NaN)
+                                                  const mismatch = Number.isFinite(subtotalCents) && Math.abs(itemsSumCents - subtotalCents) > 3
+                                                  const showRedSumRow = r.current_status === 'needs_review' && mismatch
+                                                  return (
+                                                    <>
+                                                      {showRedSumRow && (
+                                                        <div className="text-sm font-medium text-red-600 tabular-nums space-y-0.5">
+                                                          <div className="flex justify-between">
+                                                            <span>sum</span>
+                                                            <span>${money(itemsSumCents)}</span>
+                                                          </div>
+                                                          <div className="flex justify-between">
+                                                            <span>diff</span>
+                                                            <span>{itemsSumCents - subtotalCents >= 0 ? '+' : ''}${((itemsSumCents - subtotalCents) / 100).toFixed(2)}</span>
+                                                          </div>
+                                                        </div>
+                                                      )}
+                                                      {!showRedSumRow && (
+                                                        <div className={`flex justify-between text-xs ${mismatch ? 'text-amber-700' : 'text-theme-mid'}`}>
+                                                          <span>Items sum (computed)</span>
+                                                          <span className="tabular-nums">${money(itemsSumCents)}</span>
+                                                        </div>
+                                                      )}
+                                                    </>
+                                                  )
+                                                })()}
                                                 <div className="flex justify-between"><span>Subtotal</span><span className="tabular-nums">{rec.subtotal != null ? `$${money(rec.subtotal)}` : ''}</span></div>
                                                 <div className="flex justify-between"><span>Tax</span><span className="tabular-nums">{rec.tax != null ? `$${money(rec.tax)}` : ''}</span></div>
                                                 <div className="flex justify-between font-medium"><span>Total</span><span className="tabular-nums">{rec.total != null ? `$${money(rec.total)}` : ''}</span></div>
@@ -943,23 +1061,6 @@ export default function DashboardPage() {
                                               <p className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage?.startsWith?.('Updated')) ? 'text-green-600' : 'text-theme-red'}`}>{categoryUpdateMessage || smartCategorizeMessage}</p>
                                             )}
                                           </div>
-                                          {r.current_status === 'needs_review' && !dismissedReviewFeedbackReceiptIds.has(r.id) && (
-                                            <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 flex flex-col gap-3">
-                                              <p className="text-sm font-medium text-amber-800">Review Feedback</p>
-                                              {expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0 && (
-                                                <div className="text-sm text-amber-900 space-y-1.5">
-                                                  {expandedReceiptData[r.id].review_metadata.reasoning && <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>}
-                                                  {expandedReceiptData[r.id].review_metadata.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>}
-                                                  {(expandedReceiptData[r.id].review_metadata.item_count_on_receipt != null || expandedReceiptData[r.id].review_metadata.item_count_extracted != null) && <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>}
-                                                </div>
-                                              )}
-                                              {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && <p className="text-sm text-amber-900 whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>}
-                                              <div className="flex flex-wrap gap-2 justify-end">
-                                                <button type="button" onClick={(e) => { e.stopPropagation(); setDismissedReviewFeedbackReceiptIds((prev) => new Set(prev).add(r.id)) }} className="text-xs text-amber-700 hover:text-amber-900 underline">Dismiss</button>
-                                                <button type="button" disabled={reviewCompleteLoading === r.id} onClick={async (e) => { e.stopPropagation(); if (!r.id || !token || reviewCompleteLoading) return; setReviewCompleteLoading(r.id); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { setDismissedReviewFeedbackReceiptIds((prev) => { const s = new Set(prev); s.add(r.id); return s }); await refetchReceiptDetail(r.id); fetchReceiptList() } else alert(data.detail || data.message || 'Failed to complete review'); } catch { alert('Network error'); } finally { setReviewCompleteLoading(null); } }} className="text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1 rounded border border-amber-300 disabled:opacity-50">{reviewCompleteLoading === r.id ? '…' : 'Review complete'}</button>
-                                              </div>
-                                            </div>
-                                          )}
                                         </div>
                                       </div>
                                       {/* 手机列表展开时也渲染 Edit 面板与底部操作，与桌面共用同一 state */}
@@ -1167,6 +1268,24 @@ export default function DashboardPage() {
 
                   {/* 桌面端：按月份分组 */}
                   <div className="hidden md:block space-y-6">
+                  {processingCount > 0 && (
+                    <div>
+                      <div className="flex items-center gap-3 mb-3">
+                        <span className="text-sm font-semibold text-theme-dark/90">Processing</span>
+                        <div className="flex-1 h-px bg-theme-light-gray" />
+                      </div>
+                      <div className="space-y-3">
+                        {Array.from({ length: processingCount }, (_, i) => (
+                          <div key={`processing-${i}`} className="border border-theme-light-gray rounded-lg overflow-hidden">
+                            <div className="w-full px-4 py-3 flex items-center gap-3 text-left" style={{ backgroundColor: '#FAFAF7' }}>
+                              <span className="inline-block animate-spin text-lg shrink-0" aria-hidden>⏳</span>
+                              <span className="text-theme-mid font-medium">Processing…</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {orderedMonths.map((monthKey) => (
                     <div key={monthKey}>
                       <div className="flex items-center gap-3 mb-3">
@@ -1218,11 +1337,16 @@ export default function DashboardPage() {
                                   r.current_status === 'success' ? 'bg-green-100 text-green-800' :
                                   r.current_status === 'failed' || r.current_status === 'needs_review' ? 'bg-amber-100 text-amber-800' : 'bg-theme-light-gray/50 text-theme-dark/90'
                                 }`}>
-                                  {r.current_status}
+                                  {getStatusLabel(r)}
                                 </span>
                               </div>
                               <span className="text-theme-mid">{expandedReceiptIds.has(r.id) ? '▼' : '▶'}</span>
                             </button>
+                            {expandedReceiptIds.has(r.id) && !expandedReceiptData[r.id] && (
+                              <div className="border-t border-theme-light-gray bg-white p-6 flex items-center justify-center min-h-[120px]">
+                                <div className="animate-spin w-8 h-8 border-2 border-theme-mid border-t-transparent rounded-full" aria-hidden />
+                              </div>
+                            )}
                             {expandedReceiptIds.has(r.id) && expandedReceiptData[r.id] && expandedReceiptData[r.id].error && (
                               <div className="border-t border-theme-ivory-dark bg-theme-red/10 p-4 text-sm text-theme-red">
                                 {String(expandedReceiptData[r.id].error)}
@@ -1250,209 +1374,6 @@ export default function DashboardPage() {
                                     const address = formatAddressForDisplay(rawAddress || '')
                                     return (
                                       <React.Fragment>
-                                      {/* 手机端：无灰色层，外层之后直接白底 receipt */}
-                                      <div className="block md:hidden p-4">
-                                        <div className="bg-white rounded-lg text-sm text-theme-dark overflow-hidden p-4 space-y-4" style={{ fontFamily: "'Space Mono', 'Courier New', monospace" }}>
-                                          <div className="flex items-start gap-2">
-                                            <div className="flex-1 min-w-0 text-theme-dark/90 text-sm whitespace-pre-line leading-5">
-                                              {address && <span>{address}</span>}
-                                              {(address && (rec?.merchant_phone)) && '\n'}
-                                              {rec?.merchant_phone && <span>Tel: {rec.merchant_phone}</span>}
-                                              {!address && !rec?.merchant_phone && <span className="text-theme-mid">No address or phone</span>}
-                                            </div>
-                                            <button
-                                              type="button"
-                                              className="shrink-0 relative z-10 min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 text-theme-dark/90 hover:bg-theme-light-gray rounded touch-manipulation"
-                                              onClick={(e) => {
-                                                e.preventDefault()
-                                                e.stopPropagation()
-                                                if (correctionOpenReceiptId === r.id) setCorrectionOpenReceiptId(null)
-                                                else { setCorrectionOpenReceiptId(r.id); initEditFormFromJson(expandedReceiptData[r.id]) }
-                                              }}
-                                              aria-label={mobileReceiptViewMode === 'classification' ? 'Edit I/II/III category' : 'Edit fields'}
-                                              title={mobileReceiptViewMode === 'classification' ? 'Edit category (I/II/III)' : 'Edit receipt fields'}
-                                            >
-                                              ✏️
-                                            </button>
-                                          </div>
-                                          <div className="flex flex-col gap-1">
-                                            <div className="flex rounded-lg border border-theme-mid p-0.5 bg-theme-light-gray/50">
-                                              <button
-                                                type="button"
-                                                className={`flex-1 py-1.5 text-sm font-medium rounded-md transition ${mobileReceiptViewMode === 'receipt' ? 'bg-white shadow text-theme-dark' : 'text-theme-dark/90'}`}
-                                                onClick={() => setMobileReceiptViewMode('receipt')}
-                                              >
-                                                Receipt
-                                              </button>
-                                              <button
-                                                type="button"
-                                                className={`flex-1 py-1.5 text-sm font-medium rounded-md transition ${mobileReceiptViewMode === 'classification' ? 'bg-white shadow text-theme-dark' : 'text-theme-dark/90'}`}
-                                                onClick={() => setMobileReceiptViewMode('classification')}
-                                              >
-                                                Classification
-                                              </button>
-                                            </div>
-                                          </div>
-                                          <div className="space-y-2">
-                                            {items.length === 0 && <p className="text-theme-mid text-sm">No items</p>}
-                                            {items.map((it: any, i: number) => {
-                                              const name = it.product_name ?? it.original_product_name ?? ''
-                                              const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
-                                              const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
-                                              const unit = (it.unit ?? '').trim() || 'each'
-                                              const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
-                                              const path = (it.category_path ?? '').trim()
-                                              const parts = path ? path.split(/\s*[\/>]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
-                                              const catLine = parts.length ? parts.join(' / ') : '—'
-                                              const catL1L2 = parts.length >= 2 ? parts.slice(0, 2).join(' / ') : catLine
-                                              const catL3 = parts.length >= 3 ? parts[2] : ''
-                                              const showQtyUnit = Number.isFinite(qty) && qty > 1 && (u && u !== '');
-                                              return (
-                                                <div key={it.id ?? i} className="border-b border-theme-light-gray/50 pb-2 last:border-0">
-                                                  {mobileReceiptViewMode === 'receipt' ? (
-                                                    <>
-                                                      <div className="flex justify-between items-baseline gap-2">
-                                                        <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
-                                                        {!showQtyUnit && <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>}
-                                                      </div>
-                                                      {showQtyUnit && (
-                                                        <div className="flex justify-between items-baseline gap-2 mt-0.5 text-sm text-theme-dark/90">
-                                                          <span>{qty} @ ${u} / {unit}</span>
-                                                          <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>
-                                                        </div>
-                                                      )}
-                                                    </>
-                                                  ) : (
-                                                    <>
-                                                      <div className="flex justify-between items-baseline gap-2">
-                                                        <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
-                                                        <span className="shrink-0 flex items-center gap-1">
-                                                          {it.category_source === 'llm' && (
-                                                            <span className="inline-flex items-center justify-center rounded bg-black text-white text-[10px] font-bold px-1 py-0.5" title="AI guessed">AI</span>
-                                                          )}
-                                                          <span className="tabular-nums">{p ? `$${p}` : ''}</span>
-                                                        </span>
-                                                      </div>
-                                                      <div className="mt-0.5 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-0.5 text-xs text-theme-mid">
-                                                        <span className="sm:flex-1">{catL1L2}</span>
-                                                        <span className="sm:shrink-0">{catL3}</span>
-                                                      </div>
-                                                    </>
-                                                  )}
-                                                </div>
-                                              )
-                                            })}
-                                          </div>
-                                          {rec && (
-                                            <>
-                                              <div className="border-t border-dashed border-theme-mid pt-2 space-y-0.5">
-                                                <div className="flex justify-between"><span>Subtotal</span><span className="tabular-nums">{rec.subtotal != null ? `$${money(rec.subtotal)}` : ''}</span></div>
-                                                <div className="flex justify-between"><span>Tax</span><span className="tabular-nums">{rec.tax != null ? `$${money(rec.tax)}` : ''}</span></div>
-                                                <div className="flex justify-between font-medium"><span>Total</span><span className="tabular-nums">{rec.total != null ? `$${money(rec.total)}` : ''}</span></div>
-                                              </div>
-                                            </>
-                                          )}
-                                          <div className="border-t border-theme-ivory-dark pt-3 flex flex-col gap-2">
-                                            <p className="text-xs font-medium text-theme-mid uppercase tracking-wide">Smart Categorization</p>
-                                            <div className="flex flex-col gap-1.5 w-full">
-                                              <button
-                                                type="button"
-                                                disabled={smartCategorizeLoading}
-                                                onClick={async () => {
-                                                  if (!r.id || !token) return
-                                                  setSmartCategorizeLoading(true); setSmartCategorizeMessage(null)
-                                                  try {
-                                                    const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, {
-                                                      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                      body: JSON.stringify({}),
-                                                    })
-                                                    const data = await res.json().catch(() => ({}))
-                                                    if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); await refetchReceiptDetail(r.id) }
-                                                    else setSmartCategorizeMessage(data.detail || 'Failed')
-                                                  } catch { setSmartCategorizeMessage('Network error') }
-                                                  finally { setSmartCategorizeLoading(false) }
-                                                }}
-                                                className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed"
-                                              >
-                                                {smartCategorizeLoading ? 'Running…' : 'All'}
-                                              </button>
-                                              <button
-                                                type="button"
-                                                disabled={smartCategorizeLoading || selectedIdsForReceipt(r.id).size === 0}
-                                                onClick={async () => {
-                                                  if (!r.id || !token || selectedIdsForReceipt(r.id).size === 0) return
-                                                  setSmartCategorizeLoading(true); setSmartCategorizeMessage(null)
-                                                  try {
-                                                    const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, {
-                                                      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                      body: JSON.stringify({ item_ids: Array.from(selectedIdsForReceipt(r.id)) }),
-                                                    })
-                                                    const data = await res.json().catch(() => ({}))
-                                                    if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); setSmartCategorizeSelectedIds((prev) => ({ ...prev, [r.id]: new Set() })); await refetchReceiptDetail(r.id) }
-                                                    else setSmartCategorizeMessage(data.detail || 'Failed')
-                                                  } catch { setSmartCategorizeMessage('Network error') }
-                                                  finally { setSmartCategorizeLoading(false) }
-                                                }}
-                                                className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed"
-                                              >
-                                                {smartCategorizeLoading ? 'Running…' : 'Selected Only'}
-                                              </button>
-                                            </div>
-                                            {(categoryUpdateMessage || smartCategorizeMessage) && (
-                                              <p className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage?.startsWith?.('Updated')) ? 'text-green-600' : 'text-theme-red'}`}>
-                                                {categoryUpdateMessage || smartCategorizeMessage}
-                                              </p>
-                                            )}
-                                          </div>
-                                          {r.current_status === 'needs_review' && !dismissedReviewFeedbackReceiptIds.has(r.id) && (
-                                            <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 flex flex-col gap-3">
-                                              <p className="text-sm font-medium text-amber-800">Review Feedback</p>
-                                              {expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0 && (
-                                                <div className="text-sm text-amber-900 space-y-1.5">
-                                                  {expandedReceiptData[r.id].review_metadata.reasoning && (
-                                                    <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>
-                                                  )}
-                                                  {expandedReceiptData[r.id].review_metadata.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && (
-                                                    <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>
-                                                  )}
-                                                  {(expandedReceiptData[r.id].review_metadata.item_count_on_receipt != null || expandedReceiptData[r.id].review_metadata.item_count_extracted != null) && (
-                                                    <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>
-                                                  )}
-                                                </div>
-                                              )}
-                                              {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && (
-                                                <p className="text-sm text-amber-900 whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>
-                                              )}
-                                              <div className="flex flex-wrap gap-2 justify-end">
-                                                <button type="button" onClick={(e) => { e.stopPropagation(); setDismissedReviewFeedbackReceiptIds((prev) => new Set(prev).add(r.id)) }} className="text-xs text-amber-700 hover:text-amber-900 underline">Dismiss</button>
-                                                <button
-                                                  type="button"
-                                                  disabled={reviewCompleteLoading === r.id}
-                                                  onClick={async (e) => {
-                                                    e.stopPropagation()
-                                                    if (!r.id || !token || reviewCompleteLoading) return
-                                                    setReviewCompleteLoading(r.id)
-                                                    try {
-                                                      const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
-                                                      const data = await res.json().catch(() => ({}))
-                                                      if (res.ok && data.success) {
-                                                        setDismissedReviewFeedbackReceiptIds((prev) => { const s = new Set(prev); s.add(r.id); return s })
-                                                        await refetchReceiptDetail(r.id)
-                                                        fetchReceiptList()
-                                                      } else alert(data.detail || data.message || 'Failed to complete review')
-                                                    } catch { alert('Network error') }
-                                                    finally { setReviewCompleteLoading(null) }
-                                                  }}
-                                                  className="text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1 rounded border border-amber-300 disabled:opacity-50"
-                                                >
-                                                  {reviewCompleteLoading === r.id ? '…' : 'Review complete'}
-                                                </button>
-                                              </div>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-
                                       {/* 桌面端：灰色层 + 白底双栏 */}
                                       <div className="hidden md:block border-t border-theme-ivory-dark bg-theme-cream p-4">
                                         <div className="relative bg-white border border-theme-light-gray rounded-lg overflow-hidden flex flex-col min-h-0">
@@ -1687,6 +1608,22 @@ export default function DashboardPage() {
                                             {rec && (
                                               <>
                                                 {/* 用与左侧4列相同的列宽做子网格，让数字对齐 $ Amount 列 */}
+                                                {items.length > 0 && (() => {
+                                                  const toCents = (v: any): number => { const n = Number(v); if (!Number.isFinite(n)) return 0; return (Number.isInteger(n) && n >= 100) ? n : Math.round(n * 100) }
+                                                  const itemsSumCents = items.reduce((s: number, i: any) => s + toCents(i.line_total), 0)
+                                                  const subNum = rec.subtotal != null ? Number(rec.subtotal) : NaN
+                                                  const subtotalCents = (subNum >= 100 && Number.isInteger(subNum)) ? subNum : (Number.isFinite(subNum) ? Math.round(subNum * 100) : NaN)
+                                                  const mismatch = Number.isFinite(subtotalCents) && Math.abs(itemsSumCents - subtotalCents) > 3
+                                                  const showRedSumRow = r.current_status === 'needs_review' && mismatch
+                                                  return showRedSumRow ? (
+                                                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.5fr) 3rem 4rem 5.5rem' }} className="text-sm font-medium text-red-600 tabular-nums mb-1">
+                                                      <div>sum</div><div /><div />
+                                                      <div className="text-right">${money(itemsSumCents)}</div>
+                                                      <div>diff</div><div /><div />
+                                                      <div className="text-right">{itemsSumCents - subtotalCents >= 0 ? '+' : ''}${((itemsSumCents - subtotalCents) / 100).toFixed(2)}</div>
+                                                    </div>
+                                                  ) : null
+                                                })()}
                                                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.5fr) 3rem 4rem 5.5rem' }}>
                                                   <div>Subtotal</div><div /><div />
                                                   <div className="text-right tabular-nums">{rec.subtotal != null ? `$${money(rec.subtotal) ?? rec.subtotal}` : ''}</div>
@@ -1719,64 +1656,25 @@ export default function DashboardPage() {
                                                 {categoryUpdateMessage || smartCategorizeMessage}
                                               </div>
                                             )}
-                                            {r.current_status === 'needs_review' && !dismissedReviewFeedbackReceiptIds.has(r.id) && (
+                                            {r.current_status === 'needs_review' && (
                                               <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 flex flex-col gap-3">
-                                                <p className="text-sm font-medium text-amber-800">Review Feedback</p>
-                                                {expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0 && (
+                                                <p className="text-sm text-amber-900">Unfortunately, the senior processor couldn&apos;t resolve all questions. Please review the result and make any adjustments. Thank you.</p>
+                                                <div className="flex items-center justify-between gap-2">
+                                                  <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-left flex-1 min-w-0 flex items-center gap-2 text-sm font-medium text-amber-800">
+                                                    {collapsedReviewReasoningReceiptIds.has(r.id) ? <span aria-hidden>▶</span> : <span aria-hidden>▼</span>}
+                                                    <span>LLM reasoning</span>
+                                                  </button>
+                                                  <button type="button" disabled={reviewCompleteLoading === r.id} onClick={async (e) => { e.stopPropagation(); if (!r.id || !token || reviewCompleteLoading) return; setReviewCompleteLoading(r.id); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { await refetchReceiptDetail(r.id); fetchReceiptList() } else alert(data.detail || data.message || 'Failed to complete review'); } catch { alert('Network error'); } finally { setReviewCompleteLoading(null); } }} className="shrink-0 text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1.5 rounded border border-amber-300 disabled:opacity-50">{reviewCompleteLoading === r.id ? '…' : 'Review complete'}</button>
+                                                </div>
+                                                {!collapsedReviewReasoningReceiptIds.has(r.id) && (
                                                   <div className="text-sm text-amber-900 space-y-1.5">
-                                                    {expandedReceiptData[r.id].review_metadata.reasoning && (
-                                                      <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>
-                                                    )}
-                                                    {expandedReceiptData[r.id].review_metadata.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && (
-                                                      <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>
-                                                    )}
-                                                    {(expandedReceiptData[r.id].review_metadata.item_count_on_receipt != null || expandedReceiptData[r.id].review_metadata.item_count_extracted != null) && (
-                                                      <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>
-                                                    )}
+                                                    {expandedReceiptData[r.id]?.review_metadata?.reasoning && <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>}
+                                                    {expandedReceiptData[r.id]?.review_metadata?.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>}
+                                                    {(expandedReceiptData[r.id]?.review_metadata?.item_count_on_receipt != null || expandedReceiptData[r.id]?.review_metadata?.item_count_extracted != null) && <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>}
+                                                    {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && <p className="whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>}
                                                   </div>
                                                 )}
-                                                {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && (
-                                                  <p className="text-sm text-amber-900 whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>
-                                                )}
-                                                <div className="flex flex-wrap gap-2 justify-end">
-                                                  <button
-                                                    type="button"
-                                                    onClick={(e) => { e.stopPropagation(); setDismissedReviewFeedbackReceiptIds((prev) => new Set(prev).add(r.id)) }}
-                                                    className="text-xs text-amber-700 hover:text-amber-900 underline"
-                                                  >
-                                                    Dismiss
-                                                  </button>
-                                                  <button
-                                                    type="button"
-                                                    disabled={reviewCompleteLoading === r.id}
-                                                    onClick={async (e) => {
-                                                      e.stopPropagation()
-                                                      if (!r.id || !token || reviewCompleteLoading) return
-                                                      setReviewCompleteLoading(r.id)
-                                                      try {
-                                                        const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, {
-                                                          method: 'POST',
-                                                          headers: { Authorization: `Bearer ${token}` },
-                                                        })
-                                                        const data = await res.json().catch(() => ({}))
-                                                        if (res.ok && data.success) {
-                                                          setDismissedReviewFeedbackReceiptIds((prev) => { const s = new Set(prev); s.add(r.id); return s })
-                                                          await refetchReceiptDetail(r.id)
-                                                          fetchReceiptList()
-                                                        } else {
-                                                          alert(data.detail || data.message || 'Failed to complete review')
-                                                        }
-                                                      } catch {
-                                                        alert('Network error')
-                                                      } finally {
-                                                        setReviewCompleteLoading(null)
-                                                      }
-                                                    }}
-                                                    className="text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1 rounded border border-amber-300 disabled:opacity-50"
-                                                  >
-                                                    {reviewCompleteLoading === r.id ? '…' : 'Review complete'}
-                                                  </button>
-                                                </div>
+                                                {!collapsedReviewReasoningReceiptIds.has(r.id) && <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-xs text-amber-700 hover:text-amber-900 underline self-start">Collapse</button>}
                                               </div>
                                             )}
                                           </div>

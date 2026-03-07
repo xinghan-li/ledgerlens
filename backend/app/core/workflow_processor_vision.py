@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import settings
 from ..processors.core.sum_checker import check_receipt_sums
+from ..processors.enrichment.address_matcher import correct_address
 from ..services.categorization.receipt_categorizer import categorize_receipt
 from ..services.database.supabase_client import (
     USER_CLASS_ADMIN,
@@ -32,6 +33,7 @@ from ..services.database.supabase_client import (
     check_duplicate_by_hash,
     check_user_locked,
     create_receipt,
+    get_store_chain,
     get_test_user_id,
     get_user_class,
     save_processing_run,
@@ -45,7 +47,13 @@ from ..services.llm.gemini_client import (
 )
 from ..services.llm.llm_client import parse_receipt_with_openai_vision
 from ..services.ocr.documentai_client import parse_receipt_documentai
-from ..services.llm.receipt_llm_processor import process_receipt_with_llm_from_docai
+from ..services.llm.receipt_llm_processor import (
+    process_receipt_with_llm_from_docai,
+    _is_costco_usa_receipt,
+    _items_has_negative_line_total,
+    _detect_cc_rewards_and_fix_totals,
+    run_costco_second_round,
+)
 from .workflow_processor import (
     TimelineRecorder,
     _fail_output_payload,
@@ -103,11 +111,15 @@ RULES:
    b) receipt.subtotal + receipt.tax + receipt.fees must equal receipt.total (within 3 cents or 1%).
    If either check fails after honest extraction, set _metadata.sum_check_passed=false and document in _metadata.sum_check_notes.
 
-8. If your sum check (Rule 7) fails after best effort:
-   Set _metadata.validation_status="needs_review".
-   Do NOT fabricate numbers to force the sum to balance.
+7a. Costco USA only: If the receipt shows a first SUBTOTAL/TOTAL block and later a "CC Rewards" or "Credit Card Rewards" line and then a second total (amount charged to card), record receipt.subtotal and receipt.total from the FIRST block only (e.g. SUBTOTAL $198.59 → 19859, TOTAL $198.59 → 19859). Do NOT use the second total (e.g. $114.07). The amount after CC Rewards is what was charged to the card, not the receipt total for our records. Set payment_method to the card type plus " / CC Rewards" (e.g. "Visa / CC Rewards").
 
-9. Set _metadata.validation_status and _metadata.confidence with detailed reasoning:
+8. If your sum check (Rule 7) fails after best effort:
+   Set _metadata.validation_status="needs_review" and _metadata.sum_check_passed=false; document in _metadata.sum_check_notes.
+   Do NOT fabricate numbers to force the sum to balance. Do NOT invent line items (e.g. extra products) or reassign prices so that sum(items) matches the receipt. The backend computes the sum of all line_totals and shows it to the user; if you change numbers to make the equation pass, the user will see "items sum ≠ subtotal/total" and the receipt will be flagged. Extract exactly what you see; if the numbers do not add up, report that in sum_check_notes.
+
+9. User-facing notes (reasoning, sum_check_notes): Our database stores amounts in CENTS. In _metadata.reasoning and _metadata.sum_check_notes, always write monetary amounts in DOLLARS with a $ sign (e.g. $198.59, $114.07, $84.52). Never write raw cents (e.g. 19859, 11407) in these text fields — they are shown to the user and must be in dollars.
+
+10. Set _metadata.validation_status and _metadata.confidence with detailed reasoning:
    - Start with validation_status="pass" and confidence="high".
    - Downgrade to confidence="medium" if:
      * Any item has a price discrepancy ≤ 3% (Rule 6 soft warning)
@@ -117,12 +129,12 @@ RULES:
      * Image is blurry or partially obscured for any section
    - Set validation_status="needs_review" if:
      * Sum check cannot pass after honest re-examination (Rule 8)
-     * Item count on receipt does not match items extracted (see Rule 10)
+     * Item count on receipt does not match items extracted (see Rule 11)
      * confidence="low" AND sum_check_passed=false
    - Set _metadata.reasoning to a plain-English explanation of your validation_status
-     and confidence decisions. Be specific: name which items or fields caused issues.
+     and confidence decisions. Be specific: name which items or fields caused issues. Use dollar amounts in reasoning (e.g. $198.59), not cents.
 
-10. Item count check:
+11. Item count check:
     If the receipt shows "Item count: N", "Iten count: N", or similar:
     - Set _metadata.item_count_on_receipt = N
     - Set _metadata.item_count_extracted = len(items)
@@ -132,31 +144,38 @@ RULES:
     This does not trigger escalation: the backend only escalates when sum check fails (numbers don't add up) or the image is unclear. Item count mismatch (e.g. 9 vs 10) is often a counting difference or a deposit/fee line; we save as needs_review for the user to confirm, without calling stronger models.
     If no item count is printed: set _metadata.item_count_on_receipt=null.
 
-11. payment_method must be one of these exact values (case-sensitive):
+12. payment_method must be one of these exact values (case-sensitive):
     "Visa", "Mastercard", "AmEx", "Discover", "Cash", "Gift Card", "Other"
     If two payment methods are used (e.g. Gift Card + Visa):
     output as an array: ["Gift Card", "Visa"]
     If only one method: output as a string: "Visa"
     If unknown: "Other"
 
-12. purchase_date: Use the date EXACTLY as printed on the receipt, in YYYY-MM-DD format.
+13. purchase_date: Use the date EXACTLY as printed on the receipt, in YYYY-MM-DD format.
     Do NOT substitute or "correct" the year: if the receipt shows 2026, output 2026; if it shows 2025, output 2025.
     Never change the year to the current year or assume a typo. Null if not visible.
 
-13. purchase_time: output as HH:MM in 24-hour format. Drop seconds. Null if not visible.
+14. purchase_time: output as HH:MM in 24-hour format. Drop seconds. Null if not visible.
 
-14. fees: extract any environmental fee, bottle deposit, bag fee, CRF, etc. as a
+15. fees: extract any environmental fee, bottle deposit, bag fee, CRF, etc. as a
     receipt-level total (sum of all such charges in cents). Null or 0 if none present.
     These are also included as individual line items in the items array.
 
-15. Output only valid JSON — no markdown fences, no extra text.
+16. Output only valid JSON — no markdown fences, no extra text.
+
+Address: output separate fields for DB — address_line1 (street only), address_line2 (unit/plaza number only, e.g. 101 or 200 — no Suite/Unit/# prefix), city, state, zip_code, country. Do NOT put everything in merchant_address.
 
 OUTPUT SCHEMA (all amounts in cents):
 {
   "receipt": {
     "merchant_name": "T&T Supermarket US",
     "merchant_phone": "425-640-2648 or null",
-    "merchant_address": "19630 Hwy 99, Lynnwood, WA 98036 or null",
+    "merchant_address": "null or full string fallback",
+    "address_line1": "19630 Hwy 99 or null",
+    "address_line2": "101 or null (number only, no Suite/Unit/#)",
+    "city": "Lynnwood or null",
+    "state": "WA or null",
+    "zip_code": "98036 or null",
     "country": "US or null",
     "currency": "USD",
     "purchase_date": "2026-03-02 or null",
@@ -249,12 +268,29 @@ RULES:
      → Add to tbd.items_with_inconsistent_price with discrepancy details.
      → Lower confidence by one tier.
 
+6a. Costco USA discount lines (CRITICAL — do NOT skip this rule for Costco receipts):
+   Costco prints instant savings as a separate negative-amount line immediately below the discounted item.
+   These discount lines have item codes that are all-numeric (often starting with "0000..."), e.g.:
+     "350329  DAWN PLATINM   11.99 A"
+     "0000369398 / 990929    -2.40 A"   ← discount for DAWN PLATINM above it
+   You MUST:
+   a) Merge each discount line into the item IMMEDIATELY ABOVE it:
+      - Subtract the discount from that item's line_total (e.g. 1199 - 240 = 959)
+      - Set is_on_sale=true on that item
+   b) Do NOT include the discount line itself as a separate item in the items array.
+   c) "Bottom of Basket" / "* * * BOB Count N * * *" lines are section separators — NOT products.
+      Do not add them to the items array.
+   Result: after merging, sum(items[*].line_total) should equal the printed SUBTOTAL (after instant savings).
+
 7. Receipt-level numbers and sum check (CRITICAL — previous attempt had wrong numbers):
    - Every amount must be read from the image or calculated; if you cannot compute it, use null. Do NOT invent or copy wrong numbers.
    - receipt.subtotal MUST be the sum of all items' line_total whenever that sum + tax + fees equals the printed total. If the receipt has no subtotal line, set receipt.subtotal = sum(items[*].line_total). If a printed subtotal disagrees with sum(items), use sum(items) as receipt.subtotal so the backend sum check passes. Never output a subtotal that is not equal to sum(items) when the items sum is correct.
    a) sum(items[*].line_total) must equal receipt.subtotal (within 3 cents or 1%).
    b) receipt.subtotal + receipt.tax + receipt.fees must equal receipt.total (within 3 cents or 1%).
-   If checks fail after honest extraction, report in _metadata.sum_check_notes. Do NOT fabricate numbers.
+   If checks fail after honest extraction, report in _metadata.sum_check_notes. Do NOT fabricate numbers. Do NOT invent items or reassign prices to make the sum match; the backend always shows the computed sum of items to the user and will flag any mismatch.
+   - Costco USA only: Use the FIRST SUBTOTAL/TOTAL only. If there is a "CC Rewards" line and then a second total (amount charged), record receipt.subtotal and receipt.total from the first block (e.g. $198.59 → 19859), NOT the second (e.g. $114.07). Set payment_method to card type + " / CC Rewards".
+
+7a. User-facing notes: In _metadata.reasoning and _metadata.sum_check_notes always write amounts in DOLLARS with $ (e.g. $198.59). Never write raw cents (e.g. 19859) in these text fields.
 
 8. payment_method must be one of: "Visa", "Mastercard", "AmEx", "Discover", "Cash",
    "Gift Card", "Other". If two methods: output as array ["Gift Card", "Visa"].
@@ -273,12 +309,17 @@ RULES:
 
 13. Output only valid JSON — no markdown, no extra text.
 
-OUTPUT SCHEMA (identical to primary, all amounts in cents):
+OUTPUT SCHEMA (identical to primary, all amounts in cents). Address: address_line1 (street), address_line2 (unit number only, e.g. 101 — no Suite/Unit/#), city, state, zip_code, country.
 {{
   "receipt": {{
     "merchant_name": "string or null",
     "merchant_phone": "string or null",
     "merchant_address": "string or null",
+    "address_line1": "string or null",
+    "address_line2": "string or null",
+    "city": "string or null",
+    "state": "string or null",
+    "zip_code": "string or null",
     "country": "string or null",
     "currency": "USD",
     "purchase_date": "YYYY-MM-DD or null",
@@ -626,6 +667,87 @@ async def _run_vision_escalation(
 
 
 # ---------------------------------------------------------------------------
+# Costco second-round helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_costco_store_ids(
+    primary_result: Dict,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return (chain_id, location_id) for a Costco receipt.
+
+    Prefers the ids already stored in address-correction metadata (avoids a
+    redundant store-match call and is immune to address-format edge-cases).
+    Falls back to a direct ``get_store_chain`` lookup when metadata is absent.
+    """
+    _addr_corr = (primary_result.get("_metadata") or {}).get("address_correction") or {}
+    chain_id = _addr_corr.get("chain_id")
+    location_id = _addr_corr.get("location_id")
+    if not chain_id:
+        rec = primary_result.get("receipt") or {}
+        store_match = get_store_chain(
+            rec.get("merchant_name") or "",
+            rec.get("merchant_address") or "",
+        )
+        if store_match.get("matched"):
+            chain_id = store_match.get("chain_id")
+            location_id = store_match.get("location_id")
+    return chain_id, location_id
+
+
+async def _run_and_save_costco_second_round(
+    primary_result: Dict,
+    chain_id: str,
+    location_id: Optional[str],
+    db_receipt_id: str,
+    primary_run_id: Optional[str],
+    trigger: str,
+) -> Tuple[Optional[Dict], Optional[str]]:
+    """Execute the Costco second-round LLM call and persist the processing run.
+
+    Returns ``(second_result, run_id)`` on success, or ``(None, None)`` when
+    the call produced no result or the database write failed.
+    """
+    second_result = await run_costco_second_round(
+        primary_result, chain_id, location_id, "gemini"
+    )
+    if not second_result:
+        return None, None
+    try:
+        run_id = save_processing_run(
+            receipt_id=db_receipt_id,
+            stage="vision_store_specific",
+            model_provider="gemini",
+            model_name=settings.gemini_model,
+            model_version="round_2",
+            input_payload={
+                "second_round": True,
+                "trigger": trigger,
+                "first_round_run_id": primary_run_id,
+            },
+            output_payload=second_result,
+            output_schema_version="0.1",
+            status="pass",
+            error_message=None,
+        )
+        append_workflow_step(db_receipt_id, "vision_store_specific", "pass", run_id=run_id)
+        logger.info(
+            "[vision] Saved Costco second-round (%s) run for receipt %s: run_id=%s",
+            trigger,
+            db_receipt_id,
+            run_id,
+        )
+        return second_result, run_id
+    except Exception as e:
+        logger.warning(
+            "[vision] Failed to save Costco second-round (%s) processing run: %s",
+            trigger,
+            e,
+        )
+        return None, None
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -716,8 +838,9 @@ async def process_receipt_workflow_vision(
     timeline.start("vision_primary")
     primary_result: Optional[Dict[str, Any]] = None
     primary_error: Optional[str] = None
-
     primary_usage: Optional[Dict[str, int]] = None
+    primary_run_id: Optional[str] = None
+    ran_costco_second_round = False
     try:
         primary_instruction = REFERENCE_DATE_INSTRUCTION.format(reference_date=_get_reference_date()) + VISION_PRIMARY_PROMPT
         primary_result, primary_usage = await parse_receipt_with_gemini_vision_escalation(
@@ -734,6 +857,10 @@ async def process_receipt_workflow_vision(
                 primary_usage.get("input_tokens"),
                 primary_usage.get("output_tokens"),
             )
+        # Correct address with canonical DB data before saving or further processing
+        if primary_result:
+            primary_result = correct_address(primary_result, auto_correct=True)
+
         if db_receipt_id:
             primary_duration = _get_duration_from_timeline(timeline, "vision_primary")
             input_pl = {"image_bytes_length": len(image_bytes), "mime_type": mime_type}
@@ -742,7 +869,7 @@ async def process_receipt_workflow_vision(
             out_pl = dict(primary_result) if primary_result else {}
             if primary_usage:
                 out_pl["token_usage"] = primary_usage
-            save_processing_run(
+            primary_run_id = save_processing_run(
                 receipt_id=db_receipt_id,
                 stage="vision_primary",
                 model_provider="gemini",
@@ -760,7 +887,34 @@ async def process_receipt_workflow_vision(
                 duration_ms=int(primary_duration) if primary_duration else None,
                 status="success",
             )
-            append_workflow_step(db_receipt_id, "vision_primary", "pass")
+            append_workflow_step(db_receipt_id, "vision_primary", "pass", run_id=primary_run_id)
+
+            # Costco second round: if any item has negative line_total, merge discounts and save round-2 run
+            is_costco = _is_costco_usa_receipt(primary_result)
+            has_negative = _items_has_negative_line_total(primary_result)
+            logger.info(
+                "[vision] Costco second-round check: is_costco=%s has_negative_item=%s items_count=%s",
+                is_costco,
+                has_negative,
+                len(primary_result.get("items") or []),
+            )
+            if is_costco and has_negative:
+                chain_id, location_id = _resolve_costco_store_ids(primary_result)
+                logger.info(
+                    "[vision] Costco store match: chain_id=%s",
+                    chain_id,
+                )
+                if chain_id:
+                    second_result, _ = await _run_and_save_costco_second_round(
+                        primary_result, chain_id, location_id, db_receipt_id,
+                        primary_run_id, "costco_discount_merge",
+                    )
+                    if second_result:
+                        primary_result = second_result
+                        ran_costco_second_round = True
+            # Costco USA: use first (pre-reward) total only; if model wrote amount-after-CC-Rewards, overwrite to first total
+            if primary_result:
+                _detect_cc_rewards_and_fix_totals(primary_result)
 
     except Exception as exc:
         timeline.end("vision_primary")
@@ -838,6 +992,35 @@ async def process_receipt_workflow_vision(
     sum_check_passed, sum_check_details = check_receipt_sums(primary_result)
     timeline.end("sum_check")
 
+    # If sum check failed but we have Costco USA + store matched and did NOT run the second round yet,
+    # try Costco-specific second round now. The primary may have missed negative discount lines or merged
+    # them wrongly; the second round re-parses with Costco rules and can fix the totals so we avoid escalation.
+    if (
+        not sum_check_passed
+        and db_receipt_id
+        and _is_costco_usa_receipt(primary_result)
+        and not ran_costco_second_round
+    ):
+        chain_id, location_id = _resolve_costco_store_ids(primary_result)
+        if chain_id:
+            logger.info(
+                f"[vision] Sum check failed but Costco store matched; running Costco second round for {receipt_id}"
+            )
+            second_result, _ = await _run_and_save_costco_second_round(
+                primary_result, chain_id, location_id, db_receipt_id,
+                primary_run_id, "sum_check_fail_costco",
+            )
+            if second_result:
+                primary_result = second_result
+                ran_costco_second_round = True
+                _detect_cc_rewards_and_fix_totals(primary_result)
+                timeline.start("sum_check")
+                sum_check_passed, sum_check_details = check_receipt_sums(primary_result)
+                timeline.end("sum_check")
+                logger.info(
+                    f"[vision] After Costco second round: sum_check_passed={sum_check_passed}"
+                )
+
     # Escalation only when backend sum check actually failed (numbers don't add up). Item-count mismatch
     # or model needs_review alone (e.g. receipt says 10 items, we got 9 — often deposit/fee or count difference)
     # does NOT trigger escalation; we save as needs_review for frontend and do not call stronger models.
@@ -860,19 +1043,20 @@ async def process_receipt_workflow_vision(
 
         # If model asked for needs_review (e.g. item count 9 vs 10) but numbers are correct: needs_review only, no escalation
         status_for_receipt = "success" if model_validation_status != "needs_review" else "needs_review"
+        stage_for_receipt = "vision_store_specific" if ran_costco_second_round else "vision_primary"
         if db_receipt_id:
             try:
                 update_receipt_status(
                     db_receipt_id,
                     current_status=status_for_receipt,
-                    current_stage="vision_primary",
+                    current_stage=stage_for_receipt,
                 )
                 if status_for_receipt == "needs_review":
                     logger.info(
                         f"[vision] Backend sum check passed; model requested needs_review (e.g. item count) for {receipt_id} — not escalating"
                     )
                 else:
-                    logger.info(f"[vision] Updated receipt {db_receipt_id} to status=success, stage=vision_primary")
+                    logger.info(f"[vision] Updated receipt {db_receipt_id} to status=success, stage={stage_for_receipt}")
                 append_workflow_step(db_receipt_id, "sum_check", "pass")
             except Exception as exc:
                 logger.warning(f"[vision] Failed to update receipt status: {exc}")
@@ -904,6 +1088,7 @@ async def process_receipt_workflow_vision(
             "success": status_for_receipt == "success",
             "receipt_id": db_receipt_id or receipt_id,
             "status": "passed" if status_for_receipt == "success" else "needs_review",
+            "current_stage": stage_for_receipt,
             "data": primary_result,
             "sum_check": sum_check_details,
             "pipeline": "vision_b",
@@ -1024,25 +1209,70 @@ async def process_receipt_workflow_vision(
             "message": "Escalation models both failed; manual review required.",
         }
 
-    # Use whichever escalation result is available for single-model case
+    # -----------------------------------------------------------------------
+    # STEP 4A — Individual sum checks BEFORE consensus
+    # A model that hallucinated item prices will fail its own sum check even if
+    # it reports the correct receipt-level subtotal/total.  Filter it out first
+    # so we never let a hallucinating model corrupt the final result via consensus.
+    # -----------------------------------------------------------------------
+    gemini_sum_passed = False
+    openai_sum_passed  = False
+    if gemini_esc_result is not None:
+        gemini_sum_passed, _ = check_receipt_sums(gemini_esc_result)
+    if openai_esc_result is not None:
+        openai_sum_passed, _  = check_receipt_sums(openai_esc_result)
+    logger.info(
+        f"[vision] Escalation individual sum checks: "
+        f"gemini={gemini_sum_passed}, openai={openai_sum_passed}"
+    )
+
+    # Select best result based on sum checks
     if gemini_esc_result is not None and openai_esc_result is None:
+        # Only Gemini available
         best_result = gemini_esc_result
-        agree, conflicts, merged = True, [], gemini_esc_result
+        agree    = gemini_sum_passed
+        conflicts = [] if agree else [{"field": "sum_check", "model_a": "fail", "model_b": "n/a"}]
     elif openai_esc_result is not None and gemini_esc_result is None:
+        # Only OpenAI available
         best_result = openai_esc_result
-        agree, conflicts, merged = True, [], openai_esc_result
-    else:
-        # Both available → consensus check
+        agree    = openai_sum_passed
+        conflicts = [] if agree else [{"field": "sum_check", "model_a": "n/a", "model_b": "fail"}]
+    elif gemini_sum_passed and not openai_sum_passed:
+        # Only Gemini passes → use it directly, skip consensus
+        logger.info(f"[vision] Only Gemini passes sum check; skipping consensus for {receipt_id}")
+        best_result = gemini_esc_result
+        agree    = True
+        conflicts = []
+    elif openai_sum_passed and not gemini_sum_passed:
+        # Only OpenAI passes → use it directly, skip consensus
+        logger.info(f"[vision] Only OpenAI passes sum check; skipping consensus for {receipt_id}")
+        best_result = openai_esc_result
+        agree    = True
+        conflicts = []
+    elif gemini_sum_passed and openai_sum_passed:
+        # Both pass → run consensus check (both are internally self-consistent)
         agree, conflicts, merged = _check_vision_consensus(gemini_esc_result, openai_esc_result)
-        best_result = merged
+        best_result = merged  # prefers Gemini (result_a)
+    else:
+        # Neither passes sum check → needs_review
+        logger.info(f"[vision] Neither escalation model passes sum check for {receipt_id}")
+        best_result = gemini_esc_result or openai_esc_result
+        agree    = False
+        conflicts = [{"field": "sum_check", "model_a": "fail", "model_b": "fail"}]
+
+    # Costco USA: use first (pre-reward) total only before persisting escalation result
+    _detect_cc_rewards_and_fix_totals(best_result)
 
     # Normalize payment_method in best result
     rec = (best_result.get("receipt") or {})
     rec["payment_method"] = _normalize_payment_method(rec.get("payment_method"))
     best_result = {**best_result, "receipt": rec}
 
+    # Correct address with canonical DB data (vision pipeline never called this before)
+    best_result = correct_address(best_result, auto_correct=True)
+
     # -----------------------------------------------------------------------
-    # STEP 5A — Escalation AGREED → success
+    # STEP 5A — Escalation AGREED + sum check passed → success
     # -----------------------------------------------------------------------
     if agree:
         logger.info(f"[vision] Escalation consensus reached for {receipt_id}")
@@ -1056,6 +1286,26 @@ async def process_receipt_workflow_vision(
                 append_workflow_step(db_receipt_id, "escalation_consensus", "agree")
             except Exception as exc:
                 logger.warning(f"[vision] Failed to update status: {exc}")
+            # Save the winning escalation result BEFORE categorize_receipt.
+            # Both Gemini and OpenAI individual runs are already saved with stage="vision_escalation".
+            # Without this, categorize_receipt reads whichever model happened to finish last —
+            # it could pick OpenAI even when Gemini won the sum check.
+            # This write is always the most recent vision_escalation row, so categorize_receipt
+            # consistently reads the correct winner.
+            try:
+                save_processing_run(
+                    receipt_id=db_receipt_id,
+                    stage="vision_escalation",
+                    model_provider="winner",
+                    model_name="best_result",
+                    model_version=None,
+                    input_payload={"winner": "sum_check_or_consensus"},
+                    output_payload=best_result,
+                    output_schema_version="vision_v1",
+                    status="pass",
+                )
+            except Exception as exc:
+                logger.warning(f"[vision] Failed to save winning escalation result: {exc}")
             try:
                 # force=True 覆盖之前写入的 primary，用 escalation 共识结果
                 cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id, True)
@@ -1075,6 +1325,7 @@ async def process_receipt_workflow_vision(
             "success": True,
             "receipt_id": db_receipt_id or receipt_id,
             "status": "escalation_success",
+            "current_stage": "vision_escalation",
             "data": best_result,
             "pipeline": "vision_b",
         }
@@ -1098,8 +1349,24 @@ async def process_receipt_workflow_vision(
             )
         except Exception as exc:
             logger.warning(f"[vision] Failed to update status: {exc}")
+        # Save the winning escalation result before categorize_receipt (same reason as STEP 5A).
         try:
-            await asyncio.to_thread(categorize_receipt, db_receipt_id)
+            save_processing_run(
+                receipt_id=db_receipt_id,
+                stage="vision_escalation",
+                model_provider="winner",
+                model_name="best_result",
+                model_version=None,
+                input_payload={"winner": "sum_check", "conflicts": len(conflicts)},
+                output_payload=best_result,
+                output_schema_version="vision_v1",
+                status="pass",
+            )
+        except Exception as exc:
+            logger.warning(f"[vision] Failed to save winning escalation result: {exc}")
+        try:
+            # force=True: overwrite primary placeholder data with best escalation result
+            await asyncio.to_thread(categorize_receipt, db_receipt_id, True)
         except Exception:
             pass
         asyncio.create_task(
