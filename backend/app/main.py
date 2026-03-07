@@ -1178,10 +1178,13 @@ async def get_receipt_processing_runs(
                 track = "general"
             break
     if track == "unknown" and pipeline_version == "vision_b":
+        # Use the latest pass stage (runs ordered by created_at asc): store_specific > escalation > primary
         for r in runs:
-            if r.get("stage") in ("vision_primary", "vision_escalation") and r.get("status") == "pass":
-                track = "vision_primary"
-                break
+            if r.get("status") != "pass":
+                continue
+            s = r.get("stage")
+            if s in ("vision_primary", "vision_escalation", "vision_store_specific"):
+                track = s
     return {
         "track": track,
         "track_method": track_method,
