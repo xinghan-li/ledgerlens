@@ -27,6 +27,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+import asyncio
 import re
 from .services.ocr.vision_client import ocr_document_bytes
 from .services.database.supabase_client import (
@@ -54,6 +55,47 @@ from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_do
 from .core.workflow_processor import process_receipt_workflow, process_receipt_workflow_after_confirm
 from .core.workflow_processor_vision import process_receipt_workflow_vision
 from .core.bulk_processor import process_bulk_receipts
+
+
+def _run_legacy_workflow_in_thread(image_bytes: bytes, filename: str, mime_type: str, user_id: str):
+    """
+    Run legacy receipt workflow in a dedicated event loop inside a thread.
+    Keeps the main FastAPI event loop free so list/detail requests are not
+    blocked while a receipt is processing (avoids "half-lock" when opening receipts during upload).
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(
+            process_receipt_workflow(
+                image_bytes=image_bytes,
+                filename=filename,
+                mime_type=mime_type,
+                user_id=user_id,
+            )
+        )
+    finally:
+        loop.close()
+
+
+def _run_vision_workflow_in_thread(image_bytes: bytes, filename: str, mime_type: str, user_id: str):
+    """
+    Run vision receipt workflow in a dedicated event loop inside a thread.
+    Same purpose as _run_legacy_workflow_in_thread: avoid blocking the main event loop.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(
+            process_receipt_workflow_vision(
+                image_bytes=image_bytes,
+                filename=filename,
+                mime_type=mime_type,
+                user_id=user_id,
+            )
+        )
+    finally:
+        loop.close()
 from .models import DocumentAIResultRequest
 from .processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
 from .processors.validation.receipt_body_detector import filter_blocks_by_receipt_body, get_receipt_body_bounds
@@ -973,12 +1015,14 @@ async def process_receipt_workflow_endpoint(
         # Determine MIME type
         mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
         
-        # Call workflow processor with authenticated user_id
-        result = await process_receipt_workflow(
-            image_bytes=contents,
-            filename=file.filename,
-            mime_type=mime_type,
-            user_id=user_id  # Pass authenticated user_id
+        # Run workflow in thread so the main event loop stays free; list/detail requests
+        # are not blocked while processing (avoids "half-lock" when viewing receipts during upload).
+        result = await asyncio.to_thread(
+            _run_legacy_workflow_in_thread,
+            contents,
+            file.filename,
+            mime_type,
+            user_id,
         )
         
         if result.get("needs_user_confirm"):
@@ -1040,11 +1084,13 @@ async def process_receipt_workflow_vision_endpoint(
 
     try:
         mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
-        result = await process_receipt_workflow_vision(
-            image_bytes=contents,
-            filename=file.filename,
-            mime_type=mime_type,
-            user_id=user_id,
+        # Run vision workflow in thread so the main event loop stays free (same as legacy).
+        result = await asyncio.to_thread(
+            _run_vision_workflow_in_thread,
+            contents,
+            file.filename,
+            mime_type,
+            user_id,
         )
 
         if result.get("needs_user_confirm"):
@@ -1078,7 +1124,7 @@ async def list_my_receipts(
     user_id: str = Depends(get_current_user),
 ):
     """List current user's receipts, most recent first. Auth required."""
-    rows = list_receipts_by_user(user_id=user_id, limit=limit, offset=offset)
+    rows = await asyncio.to_thread(list_receipts_by_user, user_id=user_id, limit=limit, offset=offset)
     return {"data": rows, "limit": limit, "offset": offset}
 
 
@@ -1088,7 +1134,8 @@ async def get_my_receipt(
     user_id: str = Depends(get_current_user),
 ):
     """Get one receipt's full JSON (workflow-style). Must be owner. Auth required."""
-    detail = get_receipt_detail_for_user(receipt_id=receipt_id, user_id=user_id)
+    # Run sync DB work in thread so the event loop is not blocked (avoids stalling vision pipeline when opening a receipt while another is processing).
+    detail = await asyncio.to_thread(get_receipt_detail_for_user, receipt_id, user_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Receipt not found or access denied")
     return detail

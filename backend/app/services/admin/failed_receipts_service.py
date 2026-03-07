@@ -286,14 +286,16 @@ def submit_manual_correction(
     supabase = _get_client()
     receipt = (
         supabase.table("receipt_status")
-        .select("id, user_id")
+        .select("id, user_id, current_status")
         .eq("id", receipt_id)
         .limit(1)
         .execute()
     )
     if not receipt.data:
         raise ValueError("Receipt not found")
-    user_id = receipt.data[0]["user_id"]
+    row = receipt.data[0]
+    user_id = row["user_id"]
+    current_status = (row.get("current_status") or "").strip()
 
     total = summary.get("total")
     if total is None:
@@ -416,7 +418,9 @@ def submit_manual_correction(
         else:
             logger.warning("[MANUAL_CORRECT_DEBUG] items_data empty, save_receipt_items NOT called")
 
-    update_receipt_status(receipt_id, current_status="success", current_stage="manual")
+    # Only set status to success when receipt was not needs_review. needs_review stays until user explicitly clicks "Review complete".
+    if current_status != "needs_review":
+        update_receipt_status(receipt_id, current_status="success", current_stage="manual")
     # When corrected store name/address did not match a location, create store_candidate so admin can review (e.g. LLM was wrong, user fixed address)
     if store_name and (not chain_id or not location_id):
         try:

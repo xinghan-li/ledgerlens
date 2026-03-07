@@ -377,23 +377,34 @@ def correct_address(
         receipt["merchant_name"] = matched_location["store_name"]
         receipt["merchant_address"] = canonical_address
         receipt["merchant_phone"] = matched_location.get("phone")
-        
+
         # CRITICAL: Always set country from canonical database, even if LLM extracted it
         receipt["country"] = matched_location["country"]
-        
+
+        # Also overwrite the structured address fields so build_merchant_address_from_structured
+        # (called in categorize_receipt) does not reconstruct an incorrect address from
+        # the LLM-hallucinated address_line1 / city / state / zip_code values.
+        receipt["address_line1"] = matched_location.get("address_line1") or ""
+        receipt["address_line2"] = matched_location.get("address_line2") or ""
+        receipt["city"] = matched_location.get("city") or ""
+        receipt["state"] = matched_location.get("state") or ""
+        receipt["zip_code"] = matched_location.get("zip_code") or ""
+
         # Add metadata about correction
         if "_metadata" not in llm_result:
             llm_result["_metadata"] = {}
-        
+
         llm_result["_metadata"]["address_correction"] = {
             "matched": True,
             "canonical_store_id": matched_location["id"],
             "canonical_store_name": matched_location["store_name"],
+            "chain_id": matched_location.get("chain_id"),
+            "location_id": matched_location.get("id"),
             "original_store_name": store_name,
             "original_address": store_address,
             "corrected": True
         }
-        
+
         logger.info(f"Address corrected for: {store_name}")
     else:
         # Add suggestion to tbd
@@ -434,25 +445,30 @@ def _format_unit_for_address(address_line2: Optional[str]) -> Optional[str]:
 def build_address_string(location: Dict[str, Any]) -> str:
     """
     Build standardized address string from location dict.
-    Uses verified DB values only; for address_line2 (unit/suite) we concat "Unit "
-    in front so output is canonical (e.g. "Unit 101") regardless of whether DB
-    stored "101" or "Ste 101".
+    First line: address2-address1 (unit-street) when both present for readability.
     """
-    parts = [location["address_line1"]]
-    
-    line2 = _format_unit_for_address(location.get("address_line2"))
-    if line2:
-        parts.append(line2)
-    
-    # City, State Zip
-    city_state_zip = f"{location['city']}, {location['state']} {location['zip_code']}"
-    parts.append(city_state_zip)
-    
-    # Country (if not USA, or always include)
+    line1 = (location.get("address_line1") or "").strip()
+    line2_raw = (location.get("address_line2") or "").strip()
+    # Extract number for "101-19715 Highway 99" style
+    line2_num = None
+    if line2_raw:
+        m = re.search(r"(?:Suite|Ste|Unit|Apt|#)\s*(\d+[\w-]*)", line2_raw, re.I)
+        line2_num = m.group(1).strip() if m else (line2_raw if re.match(r"^\d+[\w-]*$", line2_raw) else line2_raw)
+    if line1 and line2_num:
+        first_line = f"{line2_num}-{line1}"
+    elif line1:
+        first_line = line1
+    elif line2_num:
+        first_line = f"Unit {line2_num}" if re.match(r"^\d+[\w-]*$", str(line2_num)) else str(line2_num)
+    else:
+        first_line = ""
+    parts = [first_line] if first_line else []
+    city_state_zip = f"{location.get('city', '')}, {location.get('state', '')} {location.get('zip_code', '')}".strip(", ")
+    if city_state_zip.strip():
+        parts.append(city_state_zip)
     if location.get("country"):
         parts.append(location["country"])
-    
-    return "\n".join(parts)
+    return "\n".join(p for p in parts if p)
 
 
 def get_address_components(location: Dict[str, Any]) -> Dict[str, str]:

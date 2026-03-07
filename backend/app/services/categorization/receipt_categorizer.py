@@ -22,6 +22,7 @@ from datetime import datetime
 import re
 from ..database.supabase_client import (
     _get_client,
+    build_merchant_address_from_structured,
     get_store_chain,
     save_receipt_summary,
     save_receipt_items,
@@ -694,12 +695,12 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
         if status not in ("success", "needs_review"):
             return False, f"Receipt status is '{status}', must be 'success' or 'needs_review'"
         
-        # 根据 pipeline 选择 run：vision_b 用 vision_primary/vision_escalation，否则用 llm
+        # 根据 pipeline 选择 run：vision_b 用 vision_primary/vision_store_specific/vision_escalation，否则用 llm
         if pipeline == "vision_b":
             runs = supabase.table("receipt_processing_runs")\
                 .select("id, stage, status, output_payload")\
                 .eq("receipt_id", receipt_id)\
-                .in_("stage", ["vision_primary", "vision_escalation"])\
+                .in_("stage", ["vision_primary", "vision_store_specific", "vision_escalation"])\
                 .eq("status", "pass")\
                 .order("created_at", desc=True)\
                 .limit(1)\
@@ -715,7 +716,7 @@ def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
                 .execute()
         
         if not runs.data:
-            logger.info(f"[CAT_DEBUG] can_categorize receipt {receipt_id}: no run found (pipeline={pipeline}, looked for {'vision_primary/vision_escalation' if pipeline == 'vision_b' else 'llm'})")
+            logger.info(f"[CAT_DEBUG] can_categorize receipt {receipt_id}: no run found (pipeline={pipeline}, looked for {'vision_primary/vision_store_specific/vision_escalation' if pipeline == 'vision_b' else 'llm'})")
             return False, f"No successful {'vision' if pipeline == 'vision_b' else 'LLM'} processing run found"
         
         run_data = runs.data[0] if isinstance(runs.data, list) else runs.data
@@ -803,14 +804,28 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     if not receipt_row:
         return {"success": False, "receipt_id": receipt_id, "message": "Receipt not found"}
     user_id = receipt_row.get("user_id")
-    pipeline = (receipt_row.get("pipeline_version") or "legacy_a")
+    pipeline = receipt_row.get("pipeline_version")
+    # When pipeline_version was missing (e.g. retry after "Server disconnected"), avoid defaulting to legacy_a:
+    # try vision_b run first, then fall back to llm so we don't mis-use the wrong run.
+    if not pipeline:
+        _vision_run = supabase.table("receipt_processing_runs")\
+            .select("id")\
+            .eq("receipt_id", receipt_id)\
+            .in_("stage", ["vision_primary", "vision_store_specific", "vision_escalation"])\
+            .eq("status", "pass")\
+            .limit(1)\
+            .execute()
+        pipeline = "vision_b" if (_vision_run.data and len(_vision_run.data) > 0) else "legacy_a"
+        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: pipeline_version missing, inferred pipeline={pipeline!r}")
+    else:
+        pipeline = pipeline or "legacy_a"
     logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: pipeline={pipeline!r}, querying run...")
 
     if pipeline == "vision_b":
         run = supabase.table("receipt_processing_runs")\
             .select("output_payload")\
             .eq("receipt_id", receipt_id)\
-            .in_("stage", ["vision_primary", "vision_escalation"])\
+            .in_("stage", ["vision_primary", "vision_store_specific", "vision_escalation"])\
             .eq("status", "pass")\
             .order("created_at", desc=True)\
             .limit(1)\
@@ -839,6 +854,10 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         transaction_info=transaction_info,
         merchant_phone_top=output_payload.get("merchant_phone"),
     )
+    # Prefer address built from structured fields (address_line1, address_line2, city, state, zip_code) so DB gets correct split
+    built_addr = build_merchant_address_from_structured(receipt_data)
+    if built_addr:
+        receipt_data["merchant_address"] = built_addr
     # 店名统一为首字母大写；若 receipt 里无店名则用 _metadata.merchant_name（LLM 阶段必有），保证 record_summaries 有店名、列表不显示 Unknown store
     if not (receipt_data.get("merchant_name") or "").strip():
         receipt_data["merchant_name"] = (output_payload.get("_metadata", {}) or {}).get("merchant_name") or ""

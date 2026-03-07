@@ -15,6 +15,7 @@ import logging
 import re
 from ...services.ocr.documentai_client import parse_receipt_documentai
 from ...prompts.prompt_manager import get_merchant_prompt, format_prompt
+from ...prompts.prompt_loader import build_second_round_system_message
 from .llm_client import parse_receipt_with_llm
 from .gemini_client import parse_receipt_with_gemini
 from ...services.database.supabase_client import get_store_chain
@@ -264,18 +265,19 @@ async def process_receipt_with_llm_from_ocr(
         llm_merchant_name = receipt_data.get("merchant_name")
         llm_merchant_address = receipt_data.get("merchant_address")
         if not (llm_merchant_address or "").strip():
-            # Build address from parts so get_store_chain gets address and won't match by name only
+            # Build address from structured parts so get_store_chain gets address and won't match by name only
             parts = []
-            if receipt_data.get("address1"):
-                parts.append(str(receipt_data["address1"]).strip())
-            if receipt_data.get("address2"):
-                parts.append(str(receipt_data["address2"]).strip())
-            if receipt_data.get("city") or receipt_data.get("state") or receipt_data.get("zipcode"):
-                parts.append(", ".join(
-                    str(receipt_data.get(k) or "").strip()
-                    for k in ("city", "state", "zipcode")
-                    if (receipt_data.get(k) or "").strip()
-                ))
+            line1 = receipt_data.get("address_line1") or receipt_data.get("address1")
+            line2 = receipt_data.get("address_line2") or receipt_data.get("address2")
+            if line1:
+                parts.append(str(line1).strip())
+            if line2:
+                parts.append(str(line2).strip())
+            city = (receipt_data.get("city") or "").strip()
+            state = (receipt_data.get("state") or "").strip()
+            zip_val = (receipt_data.get("zip_code") or receipt_data.get("zipcode") or "").strip()
+            if city or state or zip_val:
+                parts.append(", ".join(x for x in (city, state, zip_val) if x))
             if receipt_data.get("country"):
                 parts.append(str(receipt_data["country"]).strip())
             if parts:
@@ -431,6 +433,81 @@ def _is_costco_usa_receipt(llm_result: Dict[str, Any]) -> bool:
     if country in ("CA", "CANADA"):
         return False
     return True
+
+
+def _items_has_negative_line_total(llm_result: Dict[str, Any]) -> bool:
+    """True if any item has negative line_total (e.g. Costco discount lines). Used to trigger second round."""
+    if not llm_result:
+        return False
+    items = llm_result.get("items") or []
+    for it in items:
+        lt = it.get("line_total")
+        if lt is None:
+            continue
+        try:
+            if float(lt) < 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+async def run_costco_second_round(
+    first_llm_result: Dict[str, Any],
+    chain_id: Optional[str],
+    location_id: Optional[str],
+    llm_provider: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    When receipt is Costco USA and items contain negative line_total (discount lines),
+    run a second LLM pass with costco_second_round prompt to merge discounts into the item above.
+    Returns refined result or None if second round was not run or failed.
+    """
+    if not chain_id or not _is_costco_usa_receipt(first_llm_result) or not _items_has_negative_line_total(first_llm_result):
+        return None
+    system_message = build_second_round_system_message(
+        store_chain_id=chain_id,
+        location_id=location_id,
+        first_pass_result=first_llm_result,
+    )
+    if not (system_message or "").strip():
+        logger.warning("[Costco second round] No second-round prompt loaded for chain_id=%s, skipping", chain_id)
+        return None
+    user_message = (
+        "Refine the following receipt JSON by merging each discount line (negative line_total) "
+        "into the item immediately above it. Keep the same schema. Output only valid JSON.\n\n"
+        + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+    )
+    model = settings.gemini_model if llm_provider.lower() == "gemini" else settings.openai_model
+    logger.info("[Costco second round] Running refinement with %s (model=%s)", llm_provider, model)
+    try:
+        if llm_provider.lower() == "gemini":
+            second_result = await parse_receipt_with_gemini(
+                system_message=system_message,
+                user_message=user_message,
+                model=model,
+                temperature=0.0,
+            )
+        else:
+            second_result = parse_receipt_with_llm(
+                system_message=system_message,
+                user_message=user_message,
+                model=model,
+                temperature=0.0,
+            )
+        if not second_result:
+            return None
+        second_result = _validate_llm_result(second_result, extracted_line_totals=None)
+        _detect_cc_rewards_and_fix_totals(second_result)
+        # Preserve _metadata from first pass (chain_id, location_id, rag_metadata, etc.)
+        first_meta = first_llm_result.get("_metadata") or {}
+        second_meta = second_result.get("_metadata") or {}
+        second_result["_metadata"] = {**second_meta, **first_meta}
+        logger.info("[Costco second round] Refinement completed")
+        return second_result
+    except Exception as e:
+        logger.warning("[Costco second round] Failed: %s", e, exc_info=True)
+        return None
 
 
 def _detect_cc_rewards_and_fix_totals(llm_result: Dict[str, Any]) -> None:
