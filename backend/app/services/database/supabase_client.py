@@ -895,6 +895,16 @@ def _receipt_address_disagrees_with_canonical(merchant_address: Optional[str], l
     return len(receipt_lower) > 15
 
 
+def _assemble_address_parts(first_line: str, city: str, state: str, zip_code: str, country: str) -> str:
+    """Join resolved address components into a newline-separated string."""
+    parts = [first_line] if first_line else []
+    if city or state or zip_code:
+        parts.append(f"{city}, {state} {zip_code}".strip(", "))
+    if country:
+        parts.append(country)
+    return "\n".join(p for p in parts if p)
+
+
 def _store_address_from_location_row(row: Dict[str, Any]) -> str:
     """Build store_address from store_locations row. First line: address2-address1 (unit-street) when both present for readability."""
     line1 = (row.get("address_line1") or "").strip()
@@ -914,15 +924,13 @@ def _store_address_from_location_row(row: Dict[str, Any]) -> str:
         first_line = f"Unit {line2_display}"
     else:
         first_line = ""
-    parts = [first_line] if first_line else []
-    city = row.get("city") or ""
-    state = row.get("state") or ""
-    zip_code = row.get("zip_code") or ""
-    if city or state or zip_code:
-        parts.append(f"{city}, {state} {zip_code}".strip(", "))
-    if row.get("country_code"):
-        parts.append(row["country_code"])
-    return "\n".join(p for p in parts if p)
+    return _assemble_address_parts(
+        first_line,
+        row.get("city") or "",
+        row.get("state") or "",
+        row.get("zip_code") or "",
+        row.get("country_code") or "",
+    )
 
 
 def build_merchant_address_from_structured(receipt: Dict[str, Any]) -> Optional[str]:
@@ -932,26 +940,23 @@ def build_merchant_address_from_structured(receipt: Dict[str, Any]) -> Optional[
     """
     line1 = (receipt.get("address_line1") or receipt.get("address1") or "").strip()
     line2 = (receipt.get("address_line2") or receipt.get("address2") or "").strip()
-    city = (receipt.get("city") or "").strip()
-    state = (receipt.get("state") or "").strip()
-    zip_code = (receipt.get("zip_code") or receipt.get("zipcode") or "").strip()
-    country = (receipt.get("country") or "").strip()
     if line1 and line2:
         first_line = f"{line2}-{line1}"
     elif line1:
         first_line = line1
     elif line2:
+        # Numeric-only unit → add "Unit" label; labelled string (e.g. "Suite 101") → keep as-is
         first_line = f"Unit {line2}" if re.match(r"^\d+[\w-]*$", line2) else line2
     else:
         first_line = ""
-    parts = [first_line] if first_line else []
-    if city or state or zip_code:
-        parts.append(f"{city}, {state} {zip_code}".strip(", "))
-    if country:
-        parts.append(country)
-    if not parts:
-        return None
-    return "\n".join(p for p in parts if p)
+    result = _assemble_address_parts(
+        first_line,
+        (receipt.get("city") or "").strip(),
+        (receipt.get("state") or "").strip(),
+        (receipt.get("zip_code") or receipt.get("zipcode") or "").strip(),
+        (receipt.get("country") or "").strip(),
+    )
+    return result or None
 
 
 def _to_cents(val: Any) -> Optional[int]:

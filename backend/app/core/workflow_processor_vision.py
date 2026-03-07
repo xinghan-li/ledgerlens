@@ -667,6 +667,87 @@ async def _run_vision_escalation(
 
 
 # ---------------------------------------------------------------------------
+# Costco second-round helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_costco_store_ids(
+    primary_result: Dict,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return (chain_id, location_id) for a Costco receipt.
+
+    Prefers the ids already stored in address-correction metadata (avoids a
+    redundant store-match call and is immune to address-format edge-cases).
+    Falls back to a direct ``get_store_chain`` lookup when metadata is absent.
+    """
+    _addr_corr = (primary_result.get("_metadata") or {}).get("address_correction") or {}
+    chain_id = _addr_corr.get("chain_id")
+    location_id = _addr_corr.get("location_id")
+    if not chain_id:
+        rec = primary_result.get("receipt") or {}
+        store_match = get_store_chain(
+            rec.get("merchant_name") or "",
+            rec.get("merchant_address") or "",
+        )
+        if store_match.get("matched"):
+            chain_id = store_match.get("chain_id")
+            location_id = store_match.get("location_id")
+    return chain_id, location_id
+
+
+async def _run_and_save_costco_second_round(
+    primary_result: Dict,
+    chain_id: str,
+    location_id: Optional[str],
+    db_receipt_id: str,
+    primary_run_id: Optional[str],
+    trigger: str,
+) -> Tuple[Optional[Dict], Optional[str]]:
+    """Execute the Costco second-round LLM call and persist the processing run.
+
+    Returns ``(second_result, run_id)`` on success, or ``(None, None)`` when
+    the call produced no result or the database write failed.
+    """
+    second_result = await run_costco_second_round(
+        primary_result, chain_id, location_id, "gemini"
+    )
+    if not second_result:
+        return None, None
+    try:
+        run_id = save_processing_run(
+            receipt_id=db_receipt_id,
+            stage="vision_store_specific",
+            model_provider="gemini",
+            model_name=settings.gemini_model,
+            model_version="round_2",
+            input_payload={
+                "second_round": True,
+                "trigger": trigger,
+                "first_round_run_id": primary_run_id,
+            },
+            output_payload=second_result,
+            output_schema_version="0.1",
+            status="pass",
+            error_message=None,
+        )
+        append_workflow_step(db_receipt_id, "vision_store_specific", "pass", run_id=run_id)
+        logger.info(
+            "[vision] Saved Costco second-round (%s) run for receipt %s: run_id=%s",
+            trigger,
+            db_receipt_id,
+            run_id,
+        )
+        return second_result, run_id
+    except Exception as e:
+        logger.warning(
+            "[vision] Failed to save Costco second-round (%s) processing run: %s",
+            trigger,
+            e,
+        )
+        return None, None
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -818,63 +899,19 @@ async def process_receipt_workflow_vision(
                 len(primary_result.get("items") or []),
             )
             if is_costco and has_negative:
-                # Prefer chain_id/location_id already resolved by correct_address (avoids a redundant
-                # store-match call and is immune to address-format edge-cases).
-                _addr_corr = (primary_result.get("_metadata") or {}).get("address_correction") or {}
-                chain_id = _addr_corr.get("chain_id")
-                location_id = _addr_corr.get("location_id")
-                if not chain_id:
-                    # Fall back: correct_address didn't match → try get_store_chain directly
-                    rec = primary_result.get("receipt") or {}
-                    store_match = get_store_chain(
-                        rec.get("merchant_name") or "",
-                        rec.get("merchant_address") or "",
-                    )
-                    if store_match.get("matched"):
-                        chain_id = store_match.get("chain_id")
-                        location_id = store_match.get("location_id")
+                chain_id, location_id = _resolve_costco_store_ids(primary_result)
                 logger.info(
-                    "[vision] Costco store match: chain_id=%s (from_metadata=%s)",
+                    "[vision] Costco store match: chain_id=%s",
                     chain_id,
-                    bool(_addr_corr.get("chain_id")),
                 )
                 if chain_id:
-                    second_result = await run_costco_second_round(
-                        primary_result, chain_id, location_id, "gemini"
+                    second_result, _ = await _run_and_save_costco_second_round(
+                        primary_result, chain_id, location_id, db_receipt_id,
+                        primary_run_id, "costco_discount_merge",
                     )
                     if second_result:
-                        try:
-                            second_run_id = save_processing_run(
-                                receipt_id=db_receipt_id,
-                                stage="vision_store_specific",
-                                model_provider="gemini",
-                                model_name=settings.gemini_model,
-                                model_version="round_2",
-                                input_payload={
-                                    "second_round": True,
-                                    "trigger": "costco_discount_merge",
-                                    "first_round_run_id": primary_run_id,
-                                },
-                                output_payload=second_result,
-                                output_schema_version="0.1",
-                                status="pass",
-                                error_message=None,
-                            )
-                            append_workflow_step(
-                                db_receipt_id, "vision_store_specific", "pass", run_id=second_run_id
-                            )
-                            logger.info(
-                                "[vision] Saved Costco second-round (discount merge) run for receipt %s: run_id=%s",
-                                db_receipt_id,
-                                second_run_id,
-                            )
-                            primary_result = second_result
-                            ran_costco_second_round = True
-                        except Exception as e:
-                            logger.warning(
-                                "[vision] Failed to save Costco second-round processing run: %s",
-                                e,
-                            )
+                        primary_result = second_result
+                        ran_costco_second_round = True
             # Costco USA: use first (pre-reward) total only; if model wrote amount-after-CC-Rewards, overwrite to first total
             if primary_result:
                 _detect_cc_rewards_and_fix_totals(primary_result)
@@ -964,63 +1001,25 @@ async def process_receipt_workflow_vision(
         and _is_costco_usa_receipt(primary_result)
         and not ran_costco_second_round
     ):
-        _addr_corr = (primary_result.get("_metadata") or {}).get("address_correction") or {}
-        chain_id = _addr_corr.get("chain_id")
-        location_id = _addr_corr.get("location_id")
-        if not chain_id:
-            rec = primary_result.get("receipt") or {}
-            store_match = get_store_chain(
-                rec.get("merchant_name") or "",
-                rec.get("merchant_address") or "",
-            )
-            if store_match.get("matched"):
-                chain_id = store_match.get("chain_id")
-                location_id = store_match.get("location_id")
+        chain_id, location_id = _resolve_costco_store_ids(primary_result)
         if chain_id:
             logger.info(
                 f"[vision] Sum check failed but Costco store matched; running Costco second round for {receipt_id}"
             )
-            second_result = await run_costco_second_round(
-                primary_result, chain_id, location_id, "gemini"
+            second_result, _ = await _run_and_save_costco_second_round(
+                primary_result, chain_id, location_id, db_receipt_id,
+                primary_run_id, "sum_check_fail_costco",
             )
             if second_result:
-                try:
-                    deferred_run_id = save_processing_run(
-                        receipt_id=db_receipt_id,
-                        stage="vision_store_specific",
-                        model_provider="gemini",
-                        model_name=settings.gemini_model,
-                        model_version="round_2",
-                        input_payload={
-                            "second_round": True,
-                            "trigger": "sum_check_fail_costco",
-                            "first_round_run_id": primary_run_id,
-                        },
-                        output_payload=second_result,
-                        output_schema_version="0.1",
-                        status="pass",
-                        error_message=None,
-                    )
-                    append_workflow_step(db_receipt_id, "vision_store_specific", "pass", run_id=deferred_run_id)
-                    logger.info(
-                        "[vision] Saved Costco second-round (post sum_check) run for receipt %s: run_id=%s",
-                        db_receipt_id,
-                        deferred_run_id,
-                    )
-                    primary_result = second_result
-                    ran_costco_second_round = True
-                    _detect_cc_rewards_and_fix_totals(primary_result)
-                    timeline.start("sum_check")
-                    sum_check_passed, sum_check_details = check_receipt_sums(primary_result)
-                    timeline.end("sum_check")
-                    logger.info(
-                        f"[vision] After Costco second round: sum_check_passed={sum_check_passed}"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[vision] Failed to save Costco second-round (post sum_check) run: %s",
-                        e,
-                    )
+                primary_result = second_result
+                ran_costco_second_round = True
+                _detect_cc_rewards_and_fix_totals(primary_result)
+                timeline.start("sum_check")
+                sum_check_passed, sum_check_details = check_receipt_sums(primary_result)
+                timeline.end("sum_check")
+                logger.info(
+                    f"[vision] After Costco second round: sum_check_passed={sum_check_passed}"
+                )
 
     # Escalation only when backend sum check actually failed (numbers don't add up). Item-count mismatch
     # or model needs_review alone (e.g. receipt says 10 items, we got 9 — often deposit/fee or count difference)
