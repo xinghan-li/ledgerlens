@@ -587,7 +587,7 @@ def save_processing_run(
     """
     if stage not in (
         'ocr', 'llm', 'manual', 'rule_based_cleaning',
-        'vision_primary', 'vision_escalation', 'shadow_legacy',
+        'vision_primary', 'vision_store_specific', 'vision_escalation', 'shadow_legacy',
     ):
         raise ValueError(f"Invalid stage: {stage}")
     if status not in ('pass', 'fail'):
@@ -649,7 +649,7 @@ def update_receipt_status(
     if current_stage not in (
         'ocr', 'llm_primary', 'llm_fallback', 'manual',
         'rejected_not_receipt', 'pending_receipt_confirm',
-        'vision_primary', 'vision_escalation',
+        'vision_primary', 'vision_store_specific', 'vision_escalation',
     ):
         raise ValueError(f"Invalid stage: {current_stage}")
     
@@ -896,17 +896,25 @@ def _receipt_address_disagrees_with_canonical(merchant_address: Optional[str], l
 
 
 def _store_address_from_location_row(row: Dict[str, Any]) -> str:
-    """Build store_address from store_locations row: address_line1, Unit address_line2, city, state zip, country."""
-    parts = [row.get("address_line1") or ""]
+    """Build store_address from store_locations row. First line: address2-address1 (unit-street) when both present for readability."""
+    line1 = (row.get("address_line1") or "").strip()
     line2 = (row.get("address_line2") or "").strip()
-    if line2:
+    if line2 and re.match(r"^\d+[\w-]*$", line2):
+        line2_display = line2  # number-only, use as-is for "101-19715 Highway 99"
+    elif line2:
         m = re.search(r"(?:Suite|Ste|Unit|Apt|#)\s*(\d+[\w-]*)", line2, re.I)
-        if m:
-            parts.append(f"Unit {m.group(1).strip()}")
-        elif re.match(r"^\d+[\w-]*$", line2):
-            parts.append(f"Unit {line2}")
-        else:
-            parts.append(line2)
+        line2_display = m.group(1).strip() if m else line2
+    else:
+        line2_display = ""
+    if line1 and line2_display:
+        first_line = f"{line2_display}-{line1}"
+    elif line1:
+        first_line = line1
+    elif line2_display:
+        first_line = f"Unit {line2_display}"
+    else:
+        first_line = ""
+    parts = [first_line] if first_line else []
     city = row.get("city") or ""
     state = row.get("state") or ""
     zip_code = row.get("zip_code") or ""
@@ -914,6 +922,35 @@ def _store_address_from_location_row(row: Dict[str, Any]) -> str:
         parts.append(f"{city}, {state} {zip_code}".strip(", "))
     if row.get("country_code"):
         parts.append(row["country_code"])
+    return "\n".join(p for p in parts if p)
+
+
+def build_merchant_address_from_structured(receipt: Dict[str, Any]) -> Optional[str]:
+    """
+    Build a single merchant_address string from structured receipt fields.
+    First line uses address2-address1 (unit-street) when both present for readability.
+    """
+    line1 = (receipt.get("address_line1") or receipt.get("address1") or "").strip()
+    line2 = (receipt.get("address_line2") or receipt.get("address2") or "").strip()
+    city = (receipt.get("city") or "").strip()
+    state = (receipt.get("state") or "").strip()
+    zip_code = (receipt.get("zip_code") or receipt.get("zipcode") or "").strip()
+    country = (receipt.get("country") or "").strip()
+    if line1 and line2:
+        first_line = f"{line2}-{line1}"
+    elif line1:
+        first_line = line1
+    elif line2:
+        first_line = f"Unit {line2}" if re.match(r"^\d+[\w-]*$", line2) else line2
+    else:
+        first_line = ""
+    parts = [first_line] if first_line else []
+    if city or state or zip_code:
+        parts.append(f"{city}, {state} {zip_code}".strip(", "))
+    if country:
+        parts.append(country)
+    if not parts:
+        return None
     return "\n".join(p for p in parts if p)
 
 
@@ -2168,30 +2205,37 @@ def create_store_candidate(
         if receipt.get("merchant_address"):
             address_info["full_address"] = receipt.get("merchant_address")
         
-        # Try to get structured address fields
-        if receipt.get("address1"):
-            address_info["address1"] = receipt.get("address1")
-        if receipt.get("address2"):
-            address_info["address2"] = receipt.get("address2")
+        # Prefer address_line1/address_line2 (prompt output) so DB gets correct split; fallback to address1/address2
+        addr1 = receipt.get("address_line1") or receipt.get("address1")
+        addr2 = receipt.get("address_line2") or receipt.get("address2")
+        if addr1:
+            address_info["address_line1"] = addr1
+            address_info["address1"] = addr1
+        if addr2:
+            address_info["address_line2"] = addr2
+            address_info["address2"] = addr2
         if receipt.get("city"):
             address_info["city"] = receipt.get("city")
         if receipt.get("state"):
             address_info["state"] = receipt.get("state")
         if receipt.get("country"):
             address_info["country"] = receipt.get("country")
-        if receipt.get("zipcode"):
-            address_info["zipcode"] = receipt.get("zipcode")
-        
+        if receipt.get("zip_code") or receipt.get("zipcode"):
+            address_info["zip_code"] = receipt.get("zip_code") or receipt.get("zipcode")
+            address_info["zipcode"] = address_info["zip_code"]
+
         # If structured fields are missing but we have merchant_address, try to parse it
-        if not address_info.get("address1") and receipt.get("merchant_address"):
+        if not address_info.get("address_line1") and not address_info.get("address1") and receipt.get("merchant_address"):
             try:
                 from ...processors.enrichment.address_matcher import extract_address_components_from_string
                 parsed_components = extract_address_components_from_string(receipt.get("merchant_address"))
                 if parsed_components:
                     if parsed_components.get("address1"):
                         address_info["address1"] = parsed_components["address1"]
+                        address_info.setdefault("address_line1", parsed_components["address1"])
                     if parsed_components.get("address2"):
                         address_info["address2"] = parsed_components["address2"]
+                        address_info.setdefault("address_line2", parsed_components["address2"])
                     if parsed_components.get("city"):
                         address_info["city"] = parsed_components["city"]
                     if parsed_components.get("state"):
@@ -2200,6 +2244,7 @@ def create_store_candidate(
                         address_info["country"] = parsed_components["country"]
                     if parsed_components.get("zipcode"):
                         address_info["zipcode"] = parsed_components["zipcode"]
+                        address_info["zip_code"] = parsed_components["zipcode"]
             except Exception as e:
                 logger.warning(f"Failed to parse address from merchant_address: {e}")
         
@@ -2355,6 +2400,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
     """
     Build workflow-style JSON for one receipt (same shape as POST /api/receipt/workflow response).
     Verifies receipt belongs to user. Returns None if not found or not owner.
+    Uses parallel DB queries where possible to reduce latency (summary+items, then chains+locations+categories+runs).
     """
     supabase = _get_client()
     rec = (
@@ -2367,47 +2413,98 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
     if not rec.data or rec.data[0]["user_id"] != user_id:
         return None
     status_row = rec.data[0]
-    summary = (
-        supabase.table("record_summaries")
-        .select("*")
-        .eq("receipt_id", receipt_id)
-        .limit(1)
-        .execute()
-    )
-    items = (
-        supabase.table("record_items")
-        .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount, item_index, category_id, category_source")
-        .eq("receipt_id", receipt_id)
-        .order("item_index")
-        .execute()
-    )
+
+    def _fetch_summary() -> Any:
+        return (
+            supabase.table("record_summaries")
+            .select("*")
+            .eq("receipt_id", receipt_id)
+            .limit(1)
+            .execute()
+        )
+
+    def _fetch_items() -> Any:
+        return (
+            supabase.table("record_items")
+            .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount, item_index, category_id, category_source")
+            .eq("receipt_id", receipt_id)
+            .order("item_index")
+            .execute()
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        summary_future = ex.submit(_fetch_summary)
+        items_future = ex.submit(_fetch_items)
+        summary = summary_future.result()
+        items = items_future.result()
+
     receipt_data: Dict[str, Any] = {}
     items_data: List[Dict[str, Any]] = []
-    chain_name: Optional[str] = None
-    if summary.data:
-        s = summary.data[0]
-        if s.get("store_chain_id"):
-            sc = supabase.table("store_chains").select("name").eq("id", s["store_chain_id"]).limit(1).execute()
-            if sc.data:
-                chain_name = sc.data[0].get("name")
-        # When we have a matched chain, use chain name in title case; otherwise show store_name in title case
-        raw_from_db = s.get("store_name")
-        title_cased = _store_name_to_title_case(raw_from_db) if raw_from_db else None
-        display_store_name = (_store_name_to_title_case(chain_name) if chain_name else None) or (title_cased or raw_from_db)
-        logger.info(
-            "[STORE_NAME_DEBUG] get_receipt_detail receipt_id=%s chain_name=%r display_store_name=%r",
-            receipt_id, chain_name, display_store_name,
+    s = summary.data[0] if summary.data else None
+
+    def _norm_cat_key(val: Any) -> str:
+        if val is None:
+            return ""
+        s_val = str(val).strip().lower()
+        return s_val if s_val else ""
+
+    cat_ids: List[str] = []
+    if items.data:
+        cat_ids = list({_norm_cat_key(it.get("category_id")) for it in items.data if it.get("category_id")})
+        cat_ids = [x for x in cat_ids if x]
+
+    needs_review = status_row.get("current_status") == "needs_review"
+    # store_name and store_address are already denormalized at write time (save/update_receipt_summary);
+    # no need to read store_chains or store_locations here.
+    cats_result: Any = None
+    runs_result: Any = None
+
+    def _fetch_categories() -> Any:
+        if not cat_ids:
+            return None
+        return supabase.table("categories").select("id, path").in_("id", cat_ids).execute()
+
+    def _fetch_runs() -> Any:
+        if not needs_review:
+            return None
+        return (
+            supabase.table("receipt_processing_runs")
+            .select("output_payload")
+            .eq("receipt_id", receipt_id)
+            .in_("stage", ["vision_primary", "vision_escalation"])
+            .eq("status", "pass")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
         )
-        # When we have a linked store_location, use its canonical multi-line address so city/state/zip display on separate lines
+
+    with ThreadPoolExecutor(max_workers=2) as ex2:
+        futures = []
+        if cat_ids:
+            futures.append(("cats", ex2.submit(_fetch_categories)))
+        if needs_review:
+            futures.append(("runs", ex2.submit(_fetch_runs)))
+        for key, fut in futures:
+            res = fut.result()
+            if key == "cats":
+                cats_result = res
+            elif key == "runs":
+                runs_result = res
+
+    category_path_by_id: Dict[str, str] = {}
+    if cats_result and cats_result.data:
+        for c in cats_result.data:
+            if c.get("id") is not None and c.get("path") is not None:
+                category_path_by_id[_norm_cat_key(c["id"])] = c["path"]
+
+    if s:
+        raw_from_db = s.get("store_name")
+        display_store_name = _store_name_to_title_case(raw_from_db) if raw_from_db else raw_from_db
         display_address = s.get("store_address")
-        if s.get("store_location_id"):
-            try:
-                loc = supabase.table("store_locations").select("address_line1, address_line2, city, state, zip_code, country_code").eq("id", s["store_location_id"]).limit(1).execute()
-                if loc.data:
-                    display_address = _store_address_from_location_row(loc.data[0])
-            except Exception as e:
-                logger.warning(f"Failed to get store_location for address display: {e}")
-        # record_summaries columns subtotal/tax/total store integer cents (migration 031)
+        logger.info(
+            "[STORE_NAME_DEBUG] get_receipt_detail receipt_id=%s display_store_name=%r",
+            receipt_id, display_store_name,
+        )
         receipt_data = {
             "merchant_name": display_store_name,
             "merchant_address": display_address,
@@ -2422,29 +2519,14 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
             "payment_method": s.get("payment_method"),
             "card_last4": s.get("payment_last4"),
         }
-        # Fill merchant_phone and purchase_time from information.other_info when present
         info = s.get("information") or {}
         other = info.get("other_info") or {}
         if other.get("merchant_phone"):
             receipt_data["merchant_phone"] = other["merchant_phone"]
         if other.get("purchase_time"):
             receipt_data["purchase_time"] = _purchase_time_to_24h(other["purchase_time"]) or other["purchase_time"]
-    def _norm_cat_key(val: Any) -> str:
-        if val is None:
-            return ""
-        s = str(val).strip().lower()
-        return s if s else ""
 
-    category_path_by_id: Dict[str, str] = {}
     if items.data:
-        cat_ids = list({_norm_cat_key(it.get("category_id")) for it in items.data if it.get("category_id")})
-        cat_ids = [x for x in cat_ids if x]
-        if cat_ids:
-            cats = supabase.table("categories").select("id, path").in_("id", cat_ids).execute()
-            if cats.data:
-                for c in cats.data:
-                    if c.get("id") is not None and c.get("path") is not None:
-                        category_path_by_id[_norm_cat_key(c["id"])] = c["path"]
         for it in items.data:
             cid = it.get("category_id")
             path = category_path_by_id.get(_norm_cat_key(cid)) if cid else None
@@ -2462,43 +2544,35 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
                 "category_id": str(cid) if cid else None,
                 "category_source": it.get("category_source"),
             })
-    # When status is needs_review, attach LLM feedback and full metadata from latest pass run's _metadata
+
     review_feedback: Optional[str] = None
     review_metadata: Optional[Dict[str, Any]] = None
-    if status_row.get("current_status") == "needs_review":
+    if runs_result and runs_result.data and len(runs_result.data) > 0:
         try:
-            runs = (
-                supabase.table("receipt_processing_runs")
-                .select("output_payload")
-                .eq("receipt_id", receipt_id)
-                .in_("stage", ["vision_primary", "vision_escalation"])
-                .eq("status", "pass")
-                .order("created_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            if runs.data and len(runs.data) > 0:
-                out = runs.data[0].get("output_payload") or {}
-                meta = out.get("_metadata") or {}
-                notes = (meta.get("sum_check_notes") or "").strip()
-                reasoning = (meta.get("reasoning") or "").strip()
-                if notes:
-                    review_feedback = notes
-                elif meta.get("validation_status") == "needs_review":
-                    review_feedback = "Model requested manual review."
-                # Expose structured metadata so the UI can show why AI flagged this receipt
-                review_metadata = {
-                    "validation_status": meta.get("validation_status"),
-                    "reasoning": reasoning or None,
-                    "sum_check_notes": notes or None,
-                    "item_count_on_receipt": meta.get("item_count_on_receipt"),
-                    "item_count_extracted": meta.get("item_count_extracted"),
-                    "confidence": meta.get("confidence"),
-                }
-                review_metadata = {k: v for k, v in review_metadata.items() if v is not None}
+            out = runs_result.data[0].get("output_payload") or {}
+            meta = out.get("_metadata") or {}
+            notes = (meta.get("sum_check_notes") or "").strip()
+            reasoning = (meta.get("reasoning") or "").strip()
+            if notes:
+                review_feedback = notes
+            elif meta.get("validation_status") == "needs_review":
+                review_feedback = "Model requested manual review."
+            review_metadata = {
+                "validation_status": meta.get("validation_status"),
+                "reasoning": reasoning or None,
+                "sum_check_notes": notes or None,
+                "item_count_on_receipt": meta.get("item_count_on_receipt"),
+                "item_count_extracted": meta.get("item_count_extracted"),
+                "confidence": meta.get("confidence"),
+            }
+            review_metadata = {k: v for k, v in review_metadata.items() if v is not None}
         except Exception as e:
             logger.debug("Could not load review_feedback for needs_review receipt: %s", e)
 
+    # When store_chain_id is set, store_name in record_summaries was already overwritten with chain name at write time
+    chain_name_out = (
+        _store_name_to_title_case(s.get("store_name")) if (s and s.get("store_chain_id") and s.get("store_name")) else None
+    )
     return {
         "success": True,
         "receipt_id": receipt_id,
@@ -2508,7 +2582,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
         "data": {
             "receipt": receipt_data,
             "items": items_data,
-            "chain_name": _store_name_to_title_case(chain_name) if chain_name else None,
+            "chain_name": chain_name_out,
         },
     }
 

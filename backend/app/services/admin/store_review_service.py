@@ -210,12 +210,14 @@ def approve_store_candidate(
     # Fallback to metadata address if not provided
     if loc_payload.get("address_line1") is None and addr.get("address1"):
         loc_payload["address_line1"] = addr.get("address1")
+    if loc_payload.get("address_line2") is None and (addr.get("address_line2") or addr.get("address2")):
+        loc_payload["address_line2"] = addr.get("address_line2") or addr.get("address2")
     if loc_payload.get("city") is None and addr.get("city"):
         loc_payload["city"] = addr.get("city")
     if loc_payload.get("state") is None and addr.get("state"):
         loc_payload["state"] = addr.get("state")
-    if loc_payload.get("zip_code") is None and addr.get("zipcode"):
-        loc_payload["zip_code"] = addr.get("zipcode")
+    if loc_payload.get("zip_code") is None and (addr.get("zip_code") or addr.get("zipcode")):
+        loc_payload["zip_code"] = addr.get("zip_code") or addr.get("zipcode")
     if loc_payload.get("country_code") is None and addr.get("country"):
         loc_payload["country_code"] = _normalize_country_code(addr.get("country"))
 

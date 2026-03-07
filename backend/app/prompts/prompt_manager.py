@@ -92,7 +92,8 @@ Key requirements:
 7. Do not hallucinate or guess values
 8. **IMPORTANT**: If you see package discount patterns (e.g., "2/$9.00"), follow the tag-based instructions - do NOT validate quantity × unit_price = line_total for those items
 9. **NEW**: If an Initial Parse Result is provided, use it as a reference to reduce hallucination. The initial parse is from a rule-based system that extracts items, totals, and validation from OCR coordinates. Cross-check your extraction with the initial parse result, but correct any OCR errors you find in product names.
-10. If you cannot be confident or need to escalate, set top-level "reason" to your finding; otherwise omit or null. Still output the best-effort JSON."""
+10. **User-facing notes (all stores)**: Our database stores monetary amounts in CENTS. In any free-text shown to the user (e.g. reason, tbd.notes, sum_check_notes, reasoning, or validation notes), always write amounts in DOLLARS with a $ sign (e.g. $198.59, $114.07). Never write raw cents (e.g. 19859, 11407) in these text fields.
+11. If you cannot be confident or need to escalate, set top-level "reason" to your finding; otherwise omit or null. Still output the best-effort JSON."""
 
 
 def _get_default_prompt_template() -> str:
@@ -116,15 +117,15 @@ REFERENCE DATE (today): {reference_date}. Any receipt date on or before this dat
    - **Time format**: Must be HH:MM:SS or HH:MM (e.g., "13:00:00" or "13:00")
    - Do NOT include newlines or extra text in date/time fields
    - **Payment**: Use full card brand name for payment_method (e.g. "Discover" not "DCVR", "Visa" not "VISA"). card_last4 = last 4 digits only (e.g. "3713" from "DCVR ************3713").
-   - **Address parsing**: When extracting merchant_address, include the full address with proper structure:
-     * Street address should be on first line
-     * Unit/Suite/Apt number should be separate (identify by keywords: Suite, Ste, Unit, Apt, #, or format like "#1000-3700" in Canadian addresses)
-     * City, State/Province, Zipcode on separate line
-     * Country on last line (USA, Canada, etc.)
-     * Examples:
-       - "19715 Highway 99, Suite 101" → Address includes suite number
-       - "#1000-3700 No.3 Rd." → "#1000" is unit number in Canadian format
-       - If you see a comma followed by Suite/Unit/Apt, it indicates a separate unit designation
+   - **Address (CRITICAL — output separate fields for DB)**: Do NOT put the whole address in merchant_address only. Output these separate fields so we can write correctly to the database:
+     * **address_line1**: Street address only (e.g. "19715 Highway 99", "19630 Hwy 99"). No unit/suite, no city/state/zip.
+     * **address_line2**: Unit/plaza/mall number only — output the number alone (e.g. "101", "200", "1000"). Do NOT include prefixes like "Suite", "Unit", "Apt", "#". Omit if not on receipt.
+     * **city**: City name only (e.g. "Lynnwood", "Surrey").
+     * **state**: State or province code/name (e.g. "WA", "BC").
+     * **zip_code**: Zip or postal code only (e.g. "98036", "V3T 0A1").
+     * **country**: Country code or name (e.g. "US", "USA", "Canada").
+     * **merchant_address**: Optional fallback; if you fill the fields above, we will build the display address from them. You may set to null when structured fields are present.
+     * Examples: "19715 Highway 99, Suite 101, Lynnwood, WA 98036" → address_line1="19715 Highway 99", address_line2="101", city="Lynnwood", state="WA", zip_code="98036". "#1000-3700 No.3 Rd." → address_line2="1000" (number only).
 2. Extract all line items from raw_text, ensuring each item has:
    - product_name (cleaned, no extra formatting)
    - quantity and unit (if available)
@@ -159,6 +160,7 @@ REFERENCE DATE (today): {reference_date}. Any receipt date on or before this dat
    - Items with inconsistent price calculations
    - Field conflicts between raw_text and trusted_hints
    - Missing information
+   - In tbd.notes, reason, or any user-facing text: always write monetary amounts in dollars (e.g. $198.59), never in raw cents (e.g. 19859).
 
 ## Currency Logic:
 - If address is in USA, default currency is USD
@@ -179,9 +181,14 @@ def _get_default_output_schema() -> Dict[str, Any]:
         "reason": "string or null (if escalating or not confident, explain here; otherwise omit or null)",
         "receipt": {
             "merchant_name": "string or null",
-            "merchant_address": "string or null",
-            "merchant_phone": "string or null",
+            "merchant_address": "string or null (optional; prefer filling structured address fields below)",
+            "address_line1": "string or null (street address only, no unit no city/state/zip)",
+            "address_line2": "string or null (unit/plaza number only, e.g. 101, 200 — no Suite/Unit/# prefix)",
+            "city": "string or null",
+            "state": "string or null (state or province)",
+            "zip_code": "string or null (zip or postal code)",
             "country": "string or null",
+            "merchant_phone": "string or null",
             "currency": "string (USD, CAD, etc.)",
             "purchase_date": "string (YYYY-MM-DD format ONLY, e.g. '2026-01-25') or null",
             "purchase_time": "string (HH:MM:SS or HH:MM format ONLY, e.g. '13:00:00') or null",

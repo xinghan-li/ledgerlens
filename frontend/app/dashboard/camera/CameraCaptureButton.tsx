@@ -7,7 +7,10 @@ import { authFetch } from '@/lib/auth-context'
 
 function normalizeNetworkError(msg: string, apiBaseUrl: string): string {
   if (msg === 'Load failed' || msg === 'Load failed.' || msg.includes('Failed to fetch')) {
-    return 'Cannot reach the backend. If using ngrok on mobile: expose the backend via ngrok and set NEXT_PUBLIC_API_URL in frontend .env.local to that ngrok URL. Current: ' + apiBaseUrl
+    const tip = typeof window !== 'undefined' && (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+      ? '当前是从其他地址访问的，请把 .env.local 的 NEXT_PUBLIC_API_URL 设为后端真实地址（ngrok 或 http://后端电脑IP:8000）。'
+      : '请确认后端在 ' + apiBaseUrl + ' 运行；若从手机访问请用 ngrok 并设置 NEXT_PUBLIC_API_URL。'
+    return '无法连接后端。' + tip
   }
   return msg
 }
@@ -47,6 +50,8 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
   /** 拍照后的预览：blob 用于上传，previewUrl 用于展示（需在关闭/重拍时 revoke） */
   const [capturedBlob, setCapturedBlob] = useState<Blob | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  /** 拍照后短暂屏蔽 Upload 点击，防止移动端幽灵点击（ghost click）在按钮位置交换时误触发上传 */
+  const captureGuardRef = useRef(false)
 
   useEffect(() => {
     return () => {
@@ -124,6 +129,9 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
         if (previewUrl) URL.revokeObjectURL(previewUrl)
         setPreviewUrl(URL.createObjectURL(blob))
         setCapturedBlob(blob)
+        // 设置短暂保护期，防止移动端幽灵点击在按钮切换时自动触发 Upload
+        captureGuardRef.current = true
+        setTimeout(() => { captureGuardRef.current = false }, 400)
       },
       'image/jpeg',
       0.9
@@ -139,6 +147,8 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
   }, [previewUrl])
 
   const handleUpload = useCallback(async () => {
+    // 幽灵点击保护：拍照后 400ms 内忽略 Upload 触发，防止移动端按钮位置交换导致的自动上传
+    if (captureGuardRef.current) return
     if (!capturedBlob) {
       onError?.('No photo to upload. Tap Retake to capture again.')
       return
@@ -290,30 +300,22 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
               <>
                 <button
                   type="button"
-                  onClick={handleRetake}
-                  disabled={uploading}
-                  className="flex-1 sm:flex-none px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-theme-gray-919 hover:bg-white/10 min-h-[44px] sm:min-h-[48px] select-none"
-                  aria-label="Retake photo"
-                >
-                  Retake
-                </button>
-                <button
-                  type="button"
                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleUpload() }}
                   onPointerDown={(e) => e.stopPropagation()}
                   disabled={uploading}
-                  className="flex-1 sm:flex-none px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] sm:min-h-[48px] active:bg-green-800 select-none"
+                  className="flex-1 min-w-0 px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] sm:min-h-[48px] active:bg-green-800 select-none"
                   aria-label="Upload photo"
                 >
                   {uploading ? 'Uploading…' : 'Upload'}
                 </button>
                 <button
                   type="button"
-                  onClick={handleClose}
-                  className="flex-1 sm:flex-none px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-theme-red hover:bg-theme-red/20 min-h-[44px] sm:min-h-[48px] select-none"
-                  aria-label="Cancel"
+                  onClick={handleRetake}
+                  disabled={uploading}
+                  className="flex-1 min-w-0 px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-white bg-theme-red hover:bg-red-700 min-h-[44px] sm:min-h-[48px] select-none"
+                  aria-label="Retake photo"
                 >
-                  Cancel
+                  Retake
                 </button>
               </>
             ) : (
@@ -322,14 +324,15 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
                   type="button"
                   onClick={handleCapture}
                   disabled={!stream || capturing}
-                  className="px-6 py-3 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[48px]"
+                  className="flex-1 min-w-0 px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] sm:min-h-[48px] select-none"
                 >
-                  {capturing ? 'Capturing…' : 'Take photo'}
+                  {capturing ? 'Capturing…' : 'Take'}
                 </button>
                 <button
                   type="button"
                   onClick={handleClose}
-                  className="px-6 py-3 rounded-lg font-medium text-theme-gray-919 hover:bg-white/10 min-h-[48px]"
+                  className="flex-1 min-w-0 px-4 py-2.5 sm:px-6 sm:py-3 rounded-lg font-medium text-theme-gray-919 hover:bg-white/10 min-h-[44px] sm:min-h-[48px] select-none"
+                  aria-label="Cancel"
                 >
                   Cancel
                 </button>
