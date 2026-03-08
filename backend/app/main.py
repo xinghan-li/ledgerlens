@@ -1574,16 +1574,20 @@ async def process_receipt_workflow_bulk_endpoint(
 
 # ==================== Admin (require_admin dependency) ====================
 
+# Explicit tier values so admin check does not depend on constant identity (avoids prod/dev mismatch).
+_REQUIRE_ADMIN_MIN_TIER = 7  # 7=admin, 9=super_admin
+
 async def require_admin(user_id: str = Depends(get_current_user)) -> str:
     """
     Dependency to require admin (7) or super_admin (9) user class.
+    Uses literal 7 so production cannot deny tier-7 due to wrong USER_CLASS_ADMIN.
     """
-    from .services.database.supabase_client import get_user_class, USER_CLASS_ADMIN
+    from .services.database.supabase_client import get_user_class
     try:
         raw = await asyncio.to_thread(get_user_class, user_id)
         user_class = int(raw) if raw is not None else 0
-        logger.info("require_admin: user_id=%s user_class=%s (need>=%s)", user_id, user_class, USER_CLASS_ADMIN)
-        if user_class >= USER_CLASS_ADMIN:
+        logger.info("require_admin: user_id=%s user_class=%s (need>=%s)", user_id, user_class, _REQUIRE_ADMIN_MIN_TIER)
+        if user_class >= _REQUIRE_ADMIN_MIN_TIER:
             return user_id
         # Use structured detail so frontend shows "code: REQUIRE_ADMIN_DENIED" (not "7" as error code)
         raise HTTPException(
@@ -1591,7 +1595,7 @@ async def require_admin(user_id: str = Depends(get_current_user)) -> str:
             detail={
                 "code": "REQUIRE_ADMIN_DENIED",
                 "message": "Access denied. Required: admin or super_admin.",
-                "required_tier_min": USER_CLASS_ADMIN,
+                "required_tier_min": _REQUIRE_ADMIN_MIN_TIER,
                 "current_tier": user_class,
             },
         )
