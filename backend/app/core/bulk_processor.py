@@ -10,7 +10,7 @@ from typing import List, Dict, Any
 from datetime import datetime, timezone
 from fastapi import UploadFile
 
-from .workflow_processor import process_receipt_workflow
+from .workflow_processor_vision import process_receipt_workflow_vision
 from ..services.llm.gemini_rate_limiter import check_gemini_available
 
 logger = logging.getLogger(__name__)
@@ -53,8 +53,8 @@ async def _process_single_receipt(
         # Determine MIME type
         mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
         
-        # Process receipt (workflow will handle Gemini rate limiting internally)
-        result = await process_receipt_workflow(
+        # Process receipt (vision pipeline)
+        result = await process_receipt_workflow_vision(
             image_bytes=contents,
             filename=file.filename,
             mime_type=mime_type,

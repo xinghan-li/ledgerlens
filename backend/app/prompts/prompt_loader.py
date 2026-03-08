@@ -257,6 +257,56 @@ def load_classification_prompt() -> Optional[str]:
     return None
 
 
+def _load_prompt_by_key(key: str) -> Optional[str]:
+    """
+    Load prompt content directly from prompt_library by key (bypasses binding routing).
+    Used for vision-pipeline prompts that do not vary by chain/location at load time.
+    Returns content string or None if not found or DB unavailable.
+    """
+    try:
+        from ..services.database.supabase_client import _get_client
+        supabase = _get_client()
+        res = (
+            supabase.table("prompt_library")
+            .select("content")
+            .eq("key", key)
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if rows:
+            return rows[0].get("content") or None
+        logger.warning("[PromptLoader] prompt_library key=%r not found or inactive", key)
+        return None
+    except Exception as e:
+        logger.error("[PromptLoader] Failed to load prompt key=%r: %s", key, e)
+        return None
+
+
+def load_vision_primary_prompt() -> Optional[str]:
+    """
+    Load the vision pipeline primary system prompt from prompt_library (key='vision_primary').
+    This is the general first-pass prompt sent to Gemini; REFERENCE_DATE_INSTRUCTION
+    (runtime-injected with today's date) is prepended by the caller before use.
+    Returns None if the key is missing from DB — caller should fall back to the
+    hardcoded constant in workflow_processor_vision.py.
+    """
+    return _load_prompt_by_key("vision_primary")
+
+
+def load_vision_escalation_template() -> Optional[str]:
+    """
+    Load the vision escalation prompt template from prompt_library (key='vision_escalation').
+    The returned string is a Python .format() template with placeholders:
+      {reference_date}, {failure_reason}, {primary_notes}
+    Literal JSON braces in the schema example use {{ and }} (Python format-string escaping).
+    Caller is responsible for calling .format(reference_date=..., failure_reason=..., primary_notes=...).
+    Returns None if the key is missing — caller should fall back to the hardcoded constant.
+    """
+    return _load_prompt_by_key("vision_escalation")
+
+
 def clear_cache():
     """Clear cache (for testing or after DB updates)."""
     global _binding_cache, _cache_populated

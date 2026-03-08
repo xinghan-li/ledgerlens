@@ -7,6 +7,7 @@ Rate Limiter Middleware
 
 使用内存存储（适合单实例部署）。多实例部署时应改用 Redis。
 """
+import asyncio
 import time
 import logging
 from typing import Dict, Tuple, Optional
@@ -242,8 +243,8 @@ async def check_workflow_rate_limit(user_id: str = Depends(get_current_user)) ->
             ...
     """
     try:
-        # 1. 获取用户等级（使用缓存）
-        user_class = _get_user_class_cached(user_id)
+        # 1. 获取用户等级（使用缓存；cache miss 时在线程中执行 Supabase 查询以避免阻塞事件循环）
+        user_class = await asyncio.to_thread(_get_user_class_cached, user_id)
         
         # 2. admin (7) and super_admin (9) 不限制
         if user_class >= _USER_CLASS_ADMIN:

@@ -5,12 +5,11 @@ Flow:
 1. Duplicate / rate-limit / user checks  (mirrors legacy)
 2. Create receipt_status row with pipeline_version='vision_b'
 3. PRIMARY: Gemini vision call → structured JSON
-4. Backend sum check + item count check (independent of model self-report)
-5. If PASS → save, categorize; if model set needs_review (e.g. item count only) → needs_review, no escalation.
-6. If FAIL (backend sum check failed or unclear) → ESCALATION: parallel Gemini + OpenAI → consensus
-   6a. If they agree  → success
-   6b. If they differ → needs_review (pre-fill agreed fields, highlight conflicts)
-7. Shadow legacy always runs in background for A/B comparison
+4. If familiar store (e.g. Costco, Trader Joe's): optional Vision 2 (store-specific second round)
+5. Backend sum check + item count check (independent of model self-report)
+6. If PASS → save, categorize; if model set needs_review (e.g. item count only) → needs_review, no escalation.
+7. If FAIL → ESCALATION: Gemini only (e.g. Gemini 2.5 Pro). If still wrong → needs_review (ask user).
+8. Shadow legacy runs in background for A/B comparison (optional).
 """
 
 from __future__ import annotations
@@ -20,7 +19,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import settings
@@ -45,318 +46,179 @@ from ..services.llm.gemini_client import (
     is_image_receipt_like,
     parse_receipt_with_gemini_vision_escalation,
 )
-from ..services.llm.llm_client import parse_receipt_with_openai_vision
 from ..services.ocr.documentai_client import parse_receipt_documentai
 from ..services.llm.receipt_llm_processor import (
     process_receipt_with_llm_from_docai,
     _is_costco_usa_receipt,
     _items_has_negative_line_total,
+    _is_trader_joes_receipt,
+    _has_item_count_mismatch,
     _detect_cc_rewards_and_fix_totals,
     run_costco_second_round,
+    run_trader_joes_second_round,
 )
-from .workflow_processor import (
-    TimelineRecorder,
-    _fail_output_payload,
-    _get_duration_from_timeline,
-    _save_image_for_manual_review,
-    _save_output,
-    generate_receipt_id,
-    get_output_paths_for_receipt,
-)
+# ---------------------------------------------------------------------------
+# File system helpers (inlined from former workflow_common.py)
+# ---------------------------------------------------------------------------
+# workflow_processor_vision.py -> core -> app -> backend -> project root
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+OUTPUT_ROOT = PROJECT_ROOT / "output"
+INPUT_ROOT = PROJECT_ROOT / "input"
+
+OUTPUT_ROOT.mkdir(exist_ok=True)
+INPUT_ROOT.mkdir(exist_ok=True)
+
+
+def _fail_output_payload(error_message: str, reason: Optional[str] = None) -> Dict[str, Any]:
+    """Standard JSON output_payload when a stage fails."""
+    return {"error": error_message, "reason": reason or error_message}
+
+
+class TimelineRecorder:
+    """Record timeline of processing workflow."""
+
+    def __init__(self, receipt_id: str):
+        self.receipt_id = receipt_id
+        self.timeline: List[Dict[str, Any]] = []
+        self._start_times: Dict[str, datetime] = {}
+
+    def start(self, step: str):
+        now = datetime.now(timezone.utc)
+        self._start_times[step] = now
+        self.timeline.append({
+            "step": f"{step}_start",
+            "timestamp": now.isoformat(),
+            "duration_ms": None
+        })
+
+    def end(self, step: str):
+        now = datetime.now(timezone.utc)
+        start_time = self._start_times.get(step)
+        duration_ms = None
+        if start_time:
+            duration = (now - start_time).total_seconds() * 1000
+            duration_ms = round(duration, 2)
+        self.timeline.append({
+            "step": f"{step}_end",
+            "timestamp": now.isoformat(),
+            "duration_ms": duration_ms
+        })
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "receipt_id": self.receipt_id,
+            "timeline": self.timeline
+        }
+
+
+def generate_receipt_id(filename: Optional[str] = None) -> str:
+    """Generate receipt ID (format: seq_mmddyy_hhmm_filename)."""
+    now = datetime.now(timezone.utc)
+    seq = now.strftime("%H%M%S") + str(now.microsecond)[-2:]
+    date_time = now.strftime("%m%d%y_%H%M")
+    if filename:
+        clean_name = Path(filename).stem
+        clean_name = re.sub(r'[^\w\-_]', '_', clean_name)
+        clean_name = clean_name[:20]
+        if clean_name:
+            return f"{seq}_{date_time}_{clean_name}"
+    return f"{seq}_{date_time}"
+
+
+def get_date_folder_name(receipt_id: Optional[str] = None) -> str:
+    """Get date folder name in format YYYYMMDD from receipt_id or current date."""
+    if receipt_id:
+        match = re.search(r'_(\d{2})(\d{2})(\d{2})_', receipt_id)
+        if match:
+            month, day, year_2digit = match.group(1), match.group(2), match.group(3)
+            return f"20{year_2digit}{month}{day}"
+    return datetime.now(timezone.utc).strftime("%Y%m%d")
+
+
+def _get_duration_from_timeline(timeline: "TimelineRecorder", step_name: str) -> Optional[int]:
+    """Get duration in milliseconds for a step from timeline."""
+    for entry in timeline.timeline:
+        if entry.get("step") == f"{step_name}_end":
+            return entry.get("duration_ms")
+    return None
+
+
+def get_output_paths_for_receipt(receipt_id: str, date_folder: Optional[str] = None) -> Dict[str, Path]:
+    """Get all output paths for a receipt (date_dir, json_file, timeline_dir, etc.)."""
+    if date_folder is None:
+        date_folder = get_date_folder_name(receipt_id)
+    date_dir = OUTPUT_ROOT / date_folder
+    return {
+        "date_dir": date_dir,
+        "json_file": date_dir / f"{receipt_id}_output.json",
+        "timeline_dir": date_dir / "timeline",
+        "timeline_file": date_dir / "timeline" / f"{receipt_id}_timeline.json",
+        "csv_file": date_dir / f"{date_folder}.csv",
+        "debug_dir": date_dir / "debug-001",
+        "error_dir": date_dir / "error-001"
+    }
+
+
+def _save_image_for_manual_review(
+    receipt_id: str,
+    image_bytes: bytes,
+    filename: str
+) -> Optional[str]:
+    """Save image for manual review; return relative path from project root or None."""
+    try:
+        paths = get_output_paths_for_receipt(receipt_id)
+        paths["error_dir"].mkdir(parents=True, exist_ok=True)
+        file_ext = Path(filename).suffix.lower() if filename else ".jpg"
+        if file_ext not in [".jpg", ".jpeg", ".png"]:
+            file_ext = ".jpg"
+        image_file = paths["error_dir"] / f"{receipt_id}_original{file_ext}"
+        image_file.write_bytes(image_bytes)
+        rel = image_file.relative_to(PROJECT_ROOT)
+        logger.info("Saved image for manual review: %s", rel)
+        return str(rel)
+    except Exception as e:
+        logger.error("Failed to save image for manual review: %s", e)
+        return None
+
+
+async def _save_output(
+    receipt_id: str,
+    llm_result: Dict[str, Any],
+    timeline: TimelineRecorder,
+    ocr_data: Optional[Dict[str, Any]] = None,
+    user_id: str = "dummy"
+):
+    """Save final output JSON in output/YYYYMMDD/{receipt_id}_output.json."""
+    paths = get_output_paths_for_receipt(receipt_id)
+    paths["date_dir"].mkdir(parents=True, exist_ok=True)
+    paths["timeline_dir"].mkdir(parents=True, exist_ok=True)
+    output_data = {
+        "receipt_id": receipt_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": llm_result
+    }
+    paths["json_file"].parent.mkdir(parents=True, exist_ok=True)
+    with open(paths["json_file"], "w", encoding="utf-8") as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+    logger.info("Saved output JSON: %s", paths["json_file"])
+from ..prompts.prompt_loader import load_vision_primary_prompt, load_vision_escalation_template
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Prompt constants
+# Prompt loading
 # ---------------------------------------------------------------------------
 
-# Injected at runtime so the LLM knows which dates are valid (any receipt date on or before this is valid)
-REFERENCE_DATE_INSTRUCTION = """REFERENCE DATE (today): {reference_date}. Any receipt date on or before this date is valid; use the date exactly as printed on the receipt. Do not change the year to match this reference date.
+# Runtime-injected date prefix — prepended before vision_primary at call time.
+# This CANNOT be stored in DB because it requires today's date.
+REFERENCE_DATE_INSTRUCTION = """REFERENCE DATE (today): {reference_date}. Any receipt date on or before this date is valid.
+
+**Past-year override (important):** If the receipt shows a 2-digit year (e.g. "21" in 26/02/21 or 02/26/21) and the resulting full date would be **more than one year before** the reference date above, treat the year as the reference year. Example: receipt shows "26/02/21" (DD/MM/YY) and reference is 2026-03-07 → output purchase_date 2026-02-26, not 2021-02-26. This handles receipt printer rollover, misprints, or old paper. Otherwise use the date exactly as printed.
 
 """
 
-VISION_PRIMARY_PROMPT = """You are a bookkeeper for personal shopping categorization.
-Read the attached receipt image and extract the data into the JSON structure below.
-
-RULES:
-1. Read every line on the receipt. Do not skip any line.
-
-2. All monetary amounts must be output in CENTS (integer).
-   Example: $14.99 → 1499, $22.69 → 2269. Never output decimals for money.
-
-3. Extract EVERY product line as a separate item in the items array.
-   Each item must have ALL of these fields explicitly set (use null if not available):
-   product_name, quantity, unit, unit_price, line_total, raw_text, is_on_sale.
-
-4. For weighted items (e.g. "1.73 lb @ $1.88/lb"):
-   set quantity=1.73, unit="lb", unit_price=188, line_total=<actual printed total>.
-
-5. For package discounts (e.g. "2 for $5.00", "3/$9.99"):
-   use the actual line_total printed on the receipt. Do NOT recalculate.
-   Set is_on_sale=true.
-
-6. Item-level price check:
-   For each item where quantity AND unit_price are both present:
-   - Calculate expected_line_total = round(quantity × unit_price)
-   - If abs(expected_line_total - line_total) / line_total > 0.03 (more than 3% off):
-     → Add an entry to tbd.items_with_inconsistent_price explaining the discrepancy.
-     → Lower _metadata.confidence by one tier (high→medium, medium→low).
-   - If the difference is ≤ 3%: use the receipt's printed line_total as-is, no penalty.
-   Exception: skip this check for package discount items (is_on_sale=true with package format).
-
-7. Receipt-level sum check and subtotal rule:
-   - All monetary values must be read from the receipt or calculated from it. If you cannot read or compute a value reliably, use null. Do NOT fabricate numbers.
-   - receipt.subtotal MUST equal the sum of all items' line_total when that sum is consistent with the receipt (i.e. when sum(items) + tax + fees = total). If the receipt does not print a subtotal line, set receipt.subtotal = sum(items[*].line_total). If the receipt does print a subtotal but it disagrees with sum(items), prefer sum(items) as receipt.subtotal so the math balances; never output a different subtotal that makes sum check fail.
-   a) sum(items[*].line_total) must equal receipt.subtotal (within 3 cents or 1%).
-   b) receipt.subtotal + receipt.tax + receipt.fees must equal receipt.total (within 3 cents or 1%).
-   If either check fails after honest extraction, set _metadata.sum_check_passed=false and document in _metadata.sum_check_notes.
-
-7a. Costco USA only: If the receipt shows a first SUBTOTAL/TOTAL block and later a "CC Rewards" or "Credit Card Rewards" line and then a second total (amount charged to card), record receipt.subtotal and receipt.total from the FIRST block only (e.g. SUBTOTAL $198.59 → 19859, TOTAL $198.59 → 19859). Do NOT use the second total (e.g. $114.07). The amount after CC Rewards is what was charged to the card, not the receipt total for our records. Set payment_method to the card type plus " / CC Rewards" (e.g. "Visa / CC Rewards").
-
-8. If your sum check (Rule 7) fails after best effort:
-   Set _metadata.validation_status="needs_review" and _metadata.sum_check_passed=false; document in _metadata.sum_check_notes.
-   Do NOT fabricate numbers to force the sum to balance. Do NOT invent line items (e.g. extra products) or reassign prices so that sum(items) matches the receipt. The backend computes the sum of all line_totals and shows it to the user; if you change numbers to make the equation pass, the user will see "items sum ≠ subtotal/total" and the receipt will be flagged. Extract exactly what you see; if the numbers do not add up, report that in sum_check_notes.
-
-9. User-facing notes (reasoning, sum_check_notes): Our database stores amounts in CENTS. In _metadata.reasoning and _metadata.sum_check_notes, always write monetary amounts in DOLLARS with a $ sign (e.g. $198.59, $114.07, $84.52). Never write raw cents (e.g. 19859, 11407) in these text fields — they are shown to the user and must be in dollars.
-
-10. Set _metadata.validation_status and _metadata.confidence with detailed reasoning:
-   - Start with validation_status="pass" and confidence="high".
-   - Downgrade to confidence="medium" if:
-     * Any item has a price discrepancy ≤ 3% (Rule 6 soft warning)
-     * Any field is unclear but best-effort readable
-   - Downgrade to confidence="low" if:
-     * Any item has a price discrepancy > 3% (Rule 6 hard warning)
-     * Image is blurry or partially obscured for any section
-   - Set validation_status="needs_review" if:
-     * Sum check cannot pass after honest re-examination (Rule 8)
-     * Item count on receipt does not match items extracted (see Rule 11)
-     * confidence="low" AND sum_check_passed=false
-   - Set _metadata.reasoning to a plain-English explanation of your validation_status
-     and confidence decisions. Be specific: name which items or fields caused issues. Use dollar amounts in reasoning (e.g. $198.59), not cents.
-
-11. Item count check:
-    If the receipt shows "Item count: N", "Iten count: N", or similar:
-    - Set _metadata.item_count_on_receipt = N
-    - Set _metadata.item_count_extracted = len(items)
-    - If item_count_extracted < item_count_on_receipt:
-      → Set validation_status="needs_review"
-      → Add note in _metadata.reasoning: "Extracted X items but receipt states N"
-    This does not trigger escalation: the backend only escalates when sum check fails (numbers don't add up) or the image is unclear. Item count mismatch (e.g. 9 vs 10) is often a counting difference or a deposit/fee line; we save as needs_review for the user to confirm, without calling stronger models.
-    If no item count is printed: set _metadata.item_count_on_receipt=null.
-
-12. payment_method must be one of these exact values (case-sensitive):
-    "Visa", "Mastercard", "AmEx", "Discover", "Cash", "Gift Card", "Other"
-    If two payment methods are used (e.g. Gift Card + Visa):
-    output as an array: ["Gift Card", "Visa"]
-    If only one method: output as a string: "Visa"
-    If unknown: "Other"
-
-13. purchase_date: Use the date EXACTLY as printed on the receipt, in YYYY-MM-DD format.
-    Do NOT substitute or "correct" the year: if the receipt shows 2026, output 2026; if it shows 2025, output 2025.
-    Never change the year to the current year or assume a typo. Null if not visible.
-
-14. purchase_time: output as HH:MM in 24-hour format. Drop seconds. Null if not visible.
-
-15. fees: extract any environmental fee, bottle deposit, bag fee, CRF, etc. as a
-    receipt-level total (sum of all such charges in cents). Null or 0 if none present.
-    These are also included as individual line items in the items array.
-
-16. Output only valid JSON — no markdown fences, no extra text.
-
-Address: output separate fields for DB — address_line1 (street only), address_line2 (unit/plaza number only, e.g. 101 or 200 — no Suite/Unit/# prefix), city, state, zip_code, country. Do NOT put everything in merchant_address.
-
-OUTPUT SCHEMA (all amounts in cents):
-{
-  "receipt": {
-    "merchant_name": "T&T Supermarket US",
-    "merchant_phone": "425-640-2648 or null",
-    "merchant_address": "null or full string fallback",
-    "address_line1": "19630 Hwy 99 or null",
-    "address_line2": "101 or null (number only, no Suite/Unit/#)",
-    "city": "Lynnwood or null",
-    "state": "WA or null",
-    "zip_code": "98036 or null",
-    "country": "US or null",
-    "currency": "USD",
-    "purchase_date": "2026-03-02 or null",
-    "purchase_time": "20:30 or null",
-    "subtotal": 2269,
-    "tax": 0,
-    "fees": 0,
-    "total": 2269,
-    "payment_method": "Visa",
-    "card_last4": "3719 or null"
-  },
-  "items": [
-    {
-      "product_name": "GREEN ONION",
-      "quantity": 2,
-      "unit": null,
-      "unit_price": 129,
-      "line_total": 258,
-      "raw_text": "GREEN ONION   2   1.29   2.58",
-      "is_on_sale": false
-    },
-    {
-      "product_name": "LETTUCE STEM",
-      "quantity": 1.73,
-      "unit": "lb",
-      "unit_price": 188,
-      "line_total": 325,
-      "raw_text": "(SALE) LETTUCE STEM  1.73 lb @ $1.88/lb  FP $3.25",
-      "is_on_sale": true
-    }
-  ],
-  "tbd": {
-    "items_with_inconsistent_price": [
-      {
-        "product_name": "EXAMPLE ITEM",
-        "raw_text": "EXAMPLE ITEM  2  1.29  2.75",
-        "expected_line_total": 258,
-        "actual_line_total": 275,
-        "discrepancy_pct": 6.6,
-        "note": "quantity x unit_price = 258 but receipt shows 275 (6.6% off, exceeds 3% threshold)"
-      }
-    ],
-    "missing_info": [],
-    "notes": "free-form observations about receipt quality or extraction issues"
-  },
-  "_metadata": {
-    "validation_status": "pass",
-    "confidence": "high",
-    "reasoning": "All 9 items extracted. Sum check passed: items sum 2269 = total 2269. Item count matches receipt footer (Item count: 9). No price discrepancies.",
-    "sum_check_passed": true,
-    "sum_check_notes": null,
-    "item_count_on_receipt": 9,
-    "item_count_extracted": 9
-  }
-}"""
-
-
-VISION_ESCALATION_PROMPT_TEMPLATE = """You are a senior bookkeeper for personal shopping categorization.
-REFERENCE DATE (today): {reference_date}. Any receipt date on or before this date is valid; use the date exactly as printed on the receipt. Do not change the year to match this reference date.
-
-A faster model (gemini-2.5-flash) attempted to read the attached receipt image but could not produce a reliable result.
-
-FAILURE REASON FROM PREVIOUS ATTEMPT:
-{failure_reason}
-
-NOTES FROM PREVIOUS ATTEMPT:
-{primary_notes}
-
-Please read the original receipt image again carefully and produce a corrected, fully structured JSON.
-
-RULES:
-1. Read EVERY line on the receipt — do not skip any product line.
-
-2. All monetary amounts must be output in CENTS (integer). Example: $14.99 → 1499.
-   Never output decimals for money.
-
-3. Each item must have ALL fields explicitly set (null if not available):
-   product_name, quantity, unit, unit_price, line_total, raw_text, is_on_sale.
-
-4. If the receipt shows "Item count: N" or "Iten count: N" at the bottom:
-   You MUST extract exactly N product items (excluding points/rewards/fee-only lines).
-   Set _metadata.item_count_on_receipt=N and _metadata.item_count_extracted=len(items).
-
-5. For weighted items (e.g. "1.73 lb @ $1.88/lb"):
-   set quantity=1.73, unit="lb", unit_price=188, line_total=<actual printed total>.
-
-6. Item-level price check:
-   For each item where quantity AND unit_price are both present:
-   - If abs(quantity x unit_price - line_total) / line_total > 0.03:
-     → Add to tbd.items_with_inconsistent_price with discrepancy details.
-     → Lower confidence by one tier.
-
-6a. Costco USA discount lines (CRITICAL — do NOT skip this rule for Costco receipts):
-   Costco prints instant savings as a separate negative-amount line immediately below the discounted item.
-   These discount lines have item codes that are all-numeric (often starting with "0000..."), e.g.:
-     "350329  DAWN PLATINM   11.99 A"
-     "0000369398 / 990929    -2.40 A"   ← discount for DAWN PLATINM above it
-   You MUST:
-   a) Merge each discount line into the item IMMEDIATELY ABOVE it:
-      - Subtract the discount from that item's line_total (e.g. 1199 - 240 = 959)
-      - Set is_on_sale=true on that item
-   b) Do NOT include the discount line itself as a separate item in the items array.
-   c) "Bottom of Basket" / "* * * BOB Count N * * *" lines are section separators — NOT products.
-      Do not add them to the items array.
-   Result: after merging, sum(items[*].line_total) should equal the printed SUBTOTAL (after instant savings).
-
-7. Receipt-level numbers and sum check (CRITICAL — previous attempt had wrong numbers):
-   - Every amount must be read from the image or calculated; if you cannot compute it, use null. Do NOT invent or copy wrong numbers.
-   - receipt.subtotal MUST be the sum of all items' line_total whenever that sum + tax + fees equals the printed total. If the receipt has no subtotal line, set receipt.subtotal = sum(items[*].line_total). If a printed subtotal disagrees with sum(items), use sum(items) as receipt.subtotal so the backend sum check passes. Never output a subtotal that is not equal to sum(items) when the items sum is correct.
-   a) sum(items[*].line_total) must equal receipt.subtotal (within 3 cents or 1%).
-   b) receipt.subtotal + receipt.tax + receipt.fees must equal receipt.total (within 3 cents or 1%).
-   If checks fail after honest extraction, report in _metadata.sum_check_notes. Do NOT fabricate numbers. Do NOT invent items or reassign prices to make the sum match; the backend always shows the computed sum of items to the user and will flag any mismatch.
-   - Costco USA only: Use the FIRST SUBTOTAL/TOTAL only. If there is a "CC Rewards" line and then a second total (amount charged), record receipt.subtotal and receipt.total from the first block (e.g. $198.59 → 19859), NOT the second (e.g. $114.07). Set payment_method to card type + " / CC Rewards".
-
-7a. User-facing notes: In _metadata.reasoning and _metadata.sum_check_notes always write amounts in DOLLARS with $ (e.g. $198.59). Never write raw cents (e.g. 19859) in these text fields.
-
-8. payment_method must be one of: "Visa", "Mastercard", "AmEx", "Discover", "Cash",
-   "Gift Card", "Other". If two methods: output as array ["Gift Card", "Visa"].
-
-9. purchase_date: Use the date EXACTLY as printed on the receipt (YYYY-MM-DD). Do NOT substitute the year: if the receipt shows 2026, output 2026; never change it to the current year. Null if not visible.
-
-10. purchase_time: HH:MM in 24-hour format. Drop seconds.
-
-11. fees: sum of all environmental/bottle/bag/CRF charges at receipt level (cents).
-
-12. Set _metadata.validation_status and reasoning:
-    - "pass" if sum check passes, item count matches, confidence is high or medium.
-    - "needs_review" if sum check fails or item count mismatches or confidence is low.
-    - When only item count mismatches (e.g. receipt says 10, extracted 9) and sum check passes: set validation_status="needs_review" so the user can review; the backend will NOT escalate (often just deposit/fee or count difference).
-    - _metadata.reasoning must explain specifically what passed or failed.
-
-13. Output only valid JSON — no markdown, no extra text.
-
-OUTPUT SCHEMA (identical to primary, all amounts in cents). Address: address_line1 (street), address_line2 (unit number only, e.g. 101 — no Suite/Unit/#), city, state, zip_code, country.
-{{
-  "receipt": {{
-    "merchant_name": "string or null",
-    "merchant_phone": "string or null",
-    "merchant_address": "string or null",
-    "address_line1": "string or null",
-    "address_line2": "string or null",
-    "city": "string or null",
-    "state": "string or null",
-    "zip_code": "string or null",
-    "country": "string or null",
-    "currency": "USD",
-    "purchase_date": "YYYY-MM-DD or null",
-    "purchase_time": "HH:MM or null",
-    "subtotal": 2269,
-    "tax": 0,
-    "fees": 0,
-    "total": 2269,
-    "payment_method": "Visa",
-    "card_last4": "3719 or null"
-  }},
-  "items": [
-    {{
-      "product_name": "GREEN ONION",
-      "quantity": 2,
-      "unit": null,
-      "unit_price": 129,
-      "line_total": 258,
-      "raw_text": "GREEN ONION   2   1.29   2.58",
-      "is_on_sale": false
-    }}
-  ],
-  "tbd": {{
-    "items_with_inconsistent_price": [],
-    "missing_info": [],
-    "notes": "free-form observations"
-  }},
-  "_metadata": {{
-    "validation_status": "pass",
-    "confidence": "high",
-    "reasoning": "Specific explanation of what passed/failed and why.",
-    "sum_check_passed": true,
-    "sum_check_notes": null,
-    "item_count_on_receipt": 9,
-    "item_count_extracted": 9
-  }}
-}}"""
+# Primary and escalation prompts live in prompt_library (keys: 'vision_primary',
+# 'vision_escalation'). Run migration 058_vision_prompts_to_library.sql to populate.
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +228,36 @@ OUTPUT SCHEMA (identical to primary, all amounts in cents). Address: address_lin
 def _get_reference_date() -> str:
     """Current date (UTC) for prompt context: any receipt date on or before this is valid."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _get_vision_primary_prompt() -> str:
+    """
+    Load the vision primary system prompt from prompt_library (key='vision_primary').
+    Raises RuntimeError if the key is missing — run migration 058 to populate.
+    """
+    content = load_vision_primary_prompt()
+    if content:
+        return content
+    raise RuntimeError(
+        "prompt_library key='vision_primary' not found or inactive. "
+        "Run backend/database/058_vision_prompts_to_library.sql to populate."
+    )
+
+
+def _get_vision_escalation_template() -> str:
+    """
+    Load the vision escalation prompt template from prompt_library (key='vision_escalation').
+    The returned string is a Python .format() template — caller must call
+    .format(reference_date=..., failure_reason=..., primary_notes=...) before use.
+    Raises RuntimeError if the key is missing.
+    """
+    content = load_vision_escalation_template()
+    if content:
+        return content
+    raise RuntimeError(
+        "prompt_library key='vision_escalation' not found or inactive. "
+        "Run backend/database/058_vision_prompts_to_library.sql to populate."
+    )
 
 
 def _normalize_payment_method(pm: Any) -> str:
@@ -416,70 +308,6 @@ def _build_failure_reason(
     failure_reason = "\n".join(lines)
     primary_notes = (llm_result.get("tbd") or {}).get("notes") or "None"
     return failure_reason, primary_notes
-
-
-def _check_vision_consensus(
-    result_a: Dict[str, Any],
-    result_b: Dict[str, Any],
-) -> Tuple[bool, List[Dict[str, Any]], Dict[str, Any]]:
-    """
-    Compare two vision-model outputs.
-
-    Returns:
-        (agree, conflicts, merged_result)
-        agree  = True if key fields are consistent within tolerance
-        conflicts = list of {field, model_a, model_b} dicts
-        merged_result = result_a annotated with conflicts list
-    """
-    receipt_a = result_a.get("receipt") or {}
-    receipt_b = result_b.get("receipt") or {}
-    items_a = result_a.get("items") or []
-    items_b = result_b.get("items") or []
-
-    conflicts: List[Dict[str, Any]] = []
-
-    # Numeric fields: 3-cent or 1% tolerance
-    for field in ("total", "subtotal", "tax"):
-        va = receipt_a.get(field)
-        vb = receipt_b.get(field)
-        if va is not None and vb is not None:
-            try:
-                fa, fb = float(va), float(vb)
-                ref = max(abs(fa), abs(fb), 1)
-                tol = max(3.0, ref * 0.01)
-                if abs(fa - fb) > tol:
-                    conflicts.append({"field": f"receipt.{field}", "model_a": va, "model_b": vb})
-            except (TypeError, ValueError):
-                pass
-
-    # Item count
-    if abs(len(items_a) - len(items_b)) > 0:
-        conflicts.append({
-            "field": "items.count",
-            "model_a": len(items_a),
-            "model_b": len(items_b),
-        })
-
-    # Text fields (fuzzy-ish: simple lower-strip compare)
-    for field in ("merchant_name", "purchase_date", "payment_method"):
-        va = str(receipt_a.get(field) or "").strip().lower()
-        vb = str(receipt_b.get(field) or "").strip().lower()
-        if va and vb and va != vb:
-            conflicts.append({
-                "field": f"receipt.{field}",
-                "model_a": receipt_a.get(field),
-                "model_b": receipt_b.get(field),
-            })
-
-    agree = len(conflicts) == 0
-
-    # Merge: prefer model_a (Gemini escalation), annotate conflicts
-    merged = dict(result_a)
-    merged["_vision_conflicts"] = conflicts
-    merged["_vision_model_b_total"] = receipt_b.get("total")
-    merged["_vision_model_b_item_count"] = len(items_b)
-
-    return agree, conflicts, merged
 
 
 # ---------------------------------------------------------------------------
@@ -547,10 +375,10 @@ async def _run_shadow_legacy(
 
 
 # ---------------------------------------------------------------------------
-# Escalation — parallel Gemini3 + OpenAI vision
+# Escalation — Gemini only (OpenAI debate deprecated)
 # ---------------------------------------------------------------------------
 
-async def _run_vision_escalation(
+async def _run_vision_escalation_gemini_only(
     image_bytes: bytes,
     mime_type: str,
     failure_reason: str,
@@ -558,112 +386,60 @@ async def _run_vision_escalation(
     db_receipt_id: str,
     *,
     gemini_model: Optional[str] = None,
-    openai_model: Optional[str] = None,
-) -> Tuple[Optional[Dict], Optional[Dict]]:
+) -> Optional[Dict]:
     """
-    Call escalation models in parallel. Model names from caller (resolved from settings + env fallback).
-    Returns (gemini_result, openai_result); either may be None on error.
+    Call Gemini escalation model only. Returns result or None on error.
+    OpenAI was removed from vision escalation to avoid introducing errors.
     """
-    escalation_prompt = VISION_ESCALATION_PROMPT_TEMPLATE.format(
+    escalation_prompt = _get_vision_escalation_template().format(
         reference_date=_get_reference_date(),
         failure_reason=failure_reason,
         primary_notes=primary_notes,
     )
 
     gemini_model = (gemini_model or "").strip() or (getattr(settings, "gemini_escalation_model", None) or "").strip() or (os.getenv("GEMINI_ESCALATION_MODEL") or "").strip()
-    openai_model = (openai_model or "").strip() or (getattr(settings, "openai_escalation_model", None) or "").strip() or (os.getenv("OPENAI_ESCALATION_MODEL") or "").strip()
-
-    async def _call_gemini() -> Optional[Dict]:
-        if not gemini_model:
-            logger.info("[escalation] GEMINI_ESCALATION_MODEL not configured, skipping")
-            return None
-        try:
-            result, usage = await parse_receipt_with_gemini_vision_escalation(
-                image_bytes=image_bytes,
-                instruction=escalation_prompt,
-                model=gemini_model,
-                mime_type=mime_type,
-            )
-            in_pl = {"failure_reason": failure_reason, "image_bytes_length": len(image_bytes)}
-            out_pl = dict(result) if result else {}
-            if usage:
-                in_pl["token_usage"] = usage
-                out_pl["token_usage"] = usage
-            save_processing_run(
-                receipt_id=db_receipt_id,
-                stage="vision_escalation",
-                model_provider="gemini",
-                model_name=gemini_model,
-                model_version=None,
-                input_payload=in_pl,
-                output_payload=out_pl,
-                output_schema_version="vision_v1",
-                status="pass",
-            )
-            return result
-        except Exception as exc:
-            logger.error(f"[escalation] Gemini failed: {exc}")
-            save_processing_run(
-                receipt_id=db_receipt_id,
-                stage="vision_escalation",
-                model_provider="gemini",
-                model_name=gemini_model,
-                model_version=None,
-                input_payload={"failure_reason": failure_reason},
-                output_payload=_fail_output_payload(str(exc)),
-                output_schema_version=None,
-                status="fail",
-                error_message=str(exc),
-            )
-            return None
-
-    async def _call_openai() -> Optional[Dict]:
-        if not openai_model:
-            logger.info("[escalation] OPENAI_ESCALATION_MODEL not configured, skipping")
-            return None
-        try:
-            result = await asyncio.to_thread(
-                parse_receipt_with_openai_vision,
-                image_bytes=image_bytes,
-                instruction=escalation_prompt,
-                model=openai_model,
-                mime_type=mime_type,
-            )
-            save_processing_run(
-                receipt_id=db_receipt_id,
-                stage="vision_escalation",
-                model_provider="openai",
-                model_name=openai_model,
-                model_version=None,
-                input_payload={
-                    "failure_reason": failure_reason,
-                    "image_bytes_length": len(image_bytes),
-                },
-                output_payload=result,
-                output_schema_version="vision_v1",
-                status="pass",
-            )
-            return result
-        except Exception as exc:
-            logger.error(f"[escalation] OpenAI failed: {exc}")
-            save_processing_run(
-                receipt_id=db_receipt_id,
-                stage="vision_escalation",
-                model_provider="openai",
-                model_name=openai_model,
-                model_version=None,
-                input_payload={"failure_reason": failure_reason},
-                output_payload=_fail_output_payload(str(exc)),
-                output_schema_version=None,
-                status="fail",
-                error_message=str(exc),
-            )
-            return None
-
-    gemini_result, openai_result = await asyncio.gather(
-        _call_gemini(), _call_openai()
-    )
-    return gemini_result, openai_result
+    if not gemini_model:
+        logger.info("[escalation] GEMINI_ESCALATION_MODEL not configured, skipping")
+        return None
+    try:
+        result, usage = await parse_receipt_with_gemini_vision_escalation(
+            image_bytes=image_bytes,
+            instruction=escalation_prompt,
+            model=gemini_model,
+            mime_type=mime_type,
+        )
+        in_pl = {"failure_reason": failure_reason, "image_bytes_length": len(image_bytes)}
+        out_pl = dict(result) if result else {}
+        if usage:
+            in_pl["token_usage"] = usage
+            out_pl["token_usage"] = usage
+        save_processing_run(
+            receipt_id=db_receipt_id,
+            stage="vision_escalation",
+            model_provider="gemini",
+            model_name=gemini_model,
+            model_version=None,
+            input_payload=in_pl,
+            output_payload=out_pl,
+            output_schema_version="vision_v1",
+            status="pass",
+        )
+        return result
+    except Exception as exc:
+        logger.error(f"[escalation] Gemini failed: {exc}")
+        save_processing_run(
+            receipt_id=db_receipt_id,
+            stage="vision_escalation",
+            model_provider="gemini",
+            model_name=gemini_model,
+            model_version=None,
+            input_payload={"failure_reason": failure_reason},
+            output_payload=_fail_output_payload(str(exc)),
+            output_schema_version=None,
+            status="fail",
+            error_message=str(exc),
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -702,14 +478,19 @@ async def _run_and_save_costco_second_round(
     db_receipt_id: str,
     primary_run_id: Optional[str],
     trigger: str,
+    image_bytes: Optional[bytes] = None,
+    mime_type: str = "image/jpeg",
 ) -> Tuple[Optional[Dict], Optional[str]]:
     """Execute the Costco second-round LLM call and persist the processing run.
 
+    image_bytes and mime_type are forwarded so the second-round call re-reads
+    the original receipt image alongside the first-pass JSON.
     Returns ``(second_result, run_id)`` on success, or ``(None, None)`` when
     the call produced no result or the database write failed.
     """
     second_result = await run_costco_second_round(
-        primary_result, chain_id, location_id, "gemini"
+        primary_result, chain_id, location_id, "gemini",
+        image_bytes=image_bytes, mime_type=mime_type,
     )
     if not second_result:
         return None, None
@@ -747,6 +528,61 @@ async def _run_and_save_costco_second_round(
         return None, None
 
 
+async def _run_and_save_trader_joes_second_round(
+    primary_result: Dict,
+    chain_id: str,
+    location_id: Optional[str],
+    db_receipt_id: str,
+    primary_run_id: Optional[str],
+    trigger: str,
+    image_bytes: Optional[bytes] = None,
+    mime_type: str = "image/jpeg",
+) -> Tuple[Optional[Dict], Optional[str]]:
+    """Execute the Trader Joe's second-round LLM call and persist the processing run.
+
+    image_bytes and mime_type are forwarded so the second-round call re-reads
+    the original receipt image alongside the first-pass JSON.
+    """
+    second_result = await run_trader_joes_second_round(
+        primary_result, chain_id, location_id, "gemini",
+        image_bytes=image_bytes, mime_type=mime_type,
+    )
+    if not second_result:
+        return None, None
+    try:
+        run_id = save_processing_run(
+            receipt_id=db_receipt_id,
+            stage="vision_store_specific",
+            model_provider="gemini",
+            model_name=settings.gemini_model,
+            model_version="round_2",
+            input_payload={
+                "second_round": True,
+                "trigger": trigger,
+                "first_round_run_id": primary_run_id,
+            },
+            output_payload=second_result,
+            output_schema_version="0.1",
+            status="pass",
+            error_message=None,
+        )
+        append_workflow_step(db_receipt_id, "vision_store_specific", "pass", run_id=run_id)
+        logger.info(
+            "[vision] Saved Trader Joe's second-round (%s) run for receipt %s: run_id=%s",
+            trigger,
+            db_receipt_id,
+            run_id,
+        )
+        return second_result, run_id
+    except Exception as e:
+        logger.warning(
+            "[vision] Failed to save Trader Joe's second-round (%s) processing run: %s",
+            trigger,
+            e,
+        )
+        return None, None
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -756,6 +592,7 @@ async def process_receipt_workflow_vision(
     filename: str,
     mime_type: str = "image/jpeg",
     user_id: Optional[str] = None,
+    existing_receipt_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Vision-First receipt processing pipeline (Route B).
@@ -765,11 +602,16 @@ async def process_receipt_workflow_vision(
         filename: Original filename
         mime_type: MIME type (image/jpeg or image/png)
         user_id: Authenticated user ID; falls back to TEST_USER_ID if None
+        existing_receipt_id: If set (e.g. user confirmed receipt), use this as receipt_id
+            and db_receipt_id; skip create_receipt and duplicate check.
 
     Returns:
         Processing result dictionary (compatible shape with legacy workflow)
     """
-    receipt_id = generate_receipt_id(filename)
+    if existing_receipt_id:
+        receipt_id = existing_receipt_id
+    else:
+        receipt_id = generate_receipt_id(filename)
     timeline = TimelineRecorder(receipt_id)
 
     original_file_hash = hashlib.sha256(image_bytes).hexdigest()
@@ -779,8 +621,11 @@ async def process_receipt_workflow_vision(
     if user_id is None:
         user_id = get_test_user_id()
 
+    # When re-running for an existing receipt (e.g. after user confirm), skip duplicate check and create_receipt
+    db_receipt_id: Optional[str] = existing_receipt_id
+
     # Rate-limit / lock check
-    if user_id:
+    if user_id and not existing_receipt_id:
         user_class = get_user_class(user_id)
         if user_class < USER_CLASS_ADMIN:
             locked, locked_until = check_user_locked(user_id)
@@ -795,10 +640,10 @@ async def process_receipt_workflow_vision(
                     "pipeline": "vision_b",
                 }
 
-    # Duplicate check
-    if user_id:
-        existing_receipt_id = check_duplicate_by_hash(file_hash, user_id)
-        if existing_receipt_id:
+    # Duplicate check (skip when re-running for existing receipt, e.g. after user confirm)
+    if user_id and not existing_receipt_id:
+        duplicate_id = check_duplicate_by_hash(file_hash, user_id)
+        if duplicate_id:
             user_class = get_user_class(user_id)
             allow_dup = user_class >= USER_CLASS_ADMIN or settings.allow_duplicate_for_debug
             if allow_dup:
@@ -812,13 +657,12 @@ async def process_receipt_workflow_vision(
                     "status": "duplicate",
                     "error": "duplicate_receipt",
                     "message": "This receipt has already been uploaded.",
-                    "existing_receipt_id": existing_receipt_id,
+                    "existing_receipt_id": duplicate_id,
                     "pipeline": "vision_b",
                 }
 
-    # Create DB record
-    db_receipt_id: Optional[str] = None
-    if user_id:
+    # Create DB record (skip when existing_receipt_id is set)
+    if user_id and not existing_receipt_id:
         try:
             db_receipt_id = create_receipt(
                 user_id=user_id,
@@ -841,8 +685,9 @@ async def process_receipt_workflow_vision(
     primary_usage: Optional[Dict[str, int]] = None
     primary_run_id: Optional[str] = None
     ran_costco_second_round = False
+    ran_trader_joes_second_round = False
     try:
-        primary_instruction = REFERENCE_DATE_INSTRUCTION.format(reference_date=_get_reference_date()) + VISION_PRIMARY_PROMPT
+        primary_instruction = REFERENCE_DATE_INSTRUCTION.format(reference_date=_get_reference_date()) + _get_vision_primary_prompt()
         primary_result, primary_usage = await parse_receipt_with_gemini_vision_escalation(
             image_bytes=image_bytes,
             instruction=primary_instruction,
@@ -908,10 +753,23 @@ async def process_receipt_workflow_vision(
                     second_result, _ = await _run_and_save_costco_second_round(
                         primary_result, chain_id, location_id, db_receipt_id,
                         primary_run_id, "costco_discount_merge",
+                        image_bytes=image_bytes, mime_type=mime_type,
                     )
                     if second_result:
                         primary_result = second_result
                         ran_costco_second_round = True
+            # Trader Joe's second round: when item count mismatch, re-extract with item count by unit
+            if not ran_costco_second_round and _is_trader_joes_receipt(primary_result) and _has_item_count_mismatch(primary_result):
+                chain_id, location_id = _resolve_costco_store_ids(primary_result)
+                if chain_id:
+                    second_result, _ = await _run_and_save_trader_joes_second_round(
+                        primary_result, chain_id, location_id, db_receipt_id,
+                        primary_run_id, "trader_joes_item_count",
+                        image_bytes=image_bytes, mime_type=mime_type,
+                    )
+                    if second_result:
+                        primary_result = second_result
+                        ran_trader_joes_second_round = True
             # Costco USA: use first (pre-reward) total only; if model wrote amount-after-CC-Rewards, overwrite to first total
             if primary_result:
                 _detect_cc_rewards_and_fix_totals(primary_result)
@@ -1009,6 +867,7 @@ async def process_receipt_workflow_vision(
             second_result, _ = await _run_and_save_costco_second_round(
                 primary_result, chain_id, location_id, db_receipt_id,
                 primary_run_id, "sum_check_fail_costco",
+                image_bytes=image_bytes, mime_type=mime_type,
             )
             if second_result:
                 primary_result = second_result
@@ -1043,7 +902,7 @@ async def process_receipt_workflow_vision(
 
         # If model asked for needs_review (e.g. item count 9 vs 10) but numbers are correct: needs_review only, no escalation
         status_for_receipt = "success" if model_validation_status != "needs_review" else "needs_review"
-        stage_for_receipt = "vision_store_specific" if ran_costco_second_round else "vision_primary"
+        stage_for_receipt = "vision_store_specific" if (ran_costco_second_round or ran_trader_joes_second_round) else "vision_primary"
         if db_receipt_id:
             try:
                 update_receipt_status(
@@ -1124,19 +983,14 @@ async def process_receipt_workflow_vision(
         llm_result=primary_result,
     )
 
-    # Resolve escalation model names: prefer settings, fallback to env (pydantic-settings may not bind alias to env on all versions)
+    # Escalation: Gemini only (OpenAI debate deprecated)
     gemini_esc = (settings.gemini_escalation_model or "").strip() or (os.getenv("GEMINI_ESCALATION_MODEL") or "").strip()
-    openai_esc = (settings.openai_escalation_model or "").strip() or (os.getenv("OPENAI_ESCALATION_MODEL") or "").strip()
-    escalation_configured = bool(gemini_esc or openai_esc)
+    escalation_configured = bool(gemini_esc)
 
     if not escalation_configured:
         logger.warning(
-            "[vision] No escalation models configured "
-            "(GEMINI_ESCALATION_MODEL / OPENAI_ESCALATION_MODEL). "
-            "Marking as needs_review without escalation. "
-            "settings.gemini_esc=%s settings.openai_esc=%s",
-            getattr(settings, "gemini_escalation_model", None),
-            getattr(settings, "openai_escalation_model", None),
+            "[vision] No escalation model configured (GEMINI_ESCALATION_MODEL). "
+            "Marking as needs_review without escalation."
         )
         if db_receipt_id:
             # needs_review + categorize 已在上面统一做过，此处只起 shadow
@@ -1156,31 +1010,26 @@ async def process_receipt_workflow_vision(
         }
 
     # -----------------------------------------------------------------------
-    # STEP 4 — Escalation: parallel Gemini + OpenAI
+    # STEP 4 — Escalation: Gemini only
     # -----------------------------------------------------------------------
-    logger.info(
-        "[vision] Escalation configured: gemini=%s openai=%s",
-        gemini_esc or "(none)",
-        openai_esc or "(none)",
-    )
+    logger.info("[vision] Escalation: gemini=%s", gemini_esc or "(none)")
     timeline.start("vision_escalation")
-    gemini_esc_result, openai_esc_result = await _run_vision_escalation(
+    gemini_esc_result = await _run_vision_escalation_gemini_only(
         image_bytes=image_bytes,
         mime_type=mime_type,
         failure_reason=failure_reason,
         primary_notes=primary_notes,
         db_receipt_id=db_receipt_id or receipt_id,
         gemini_model=gemini_esc or None,
-        openai_model=openai_esc or None,
     )
     timeline.end("vision_escalation")
 
     if db_receipt_id:
         append_workflow_step(db_receipt_id, "vision_escalation", "done")
 
-    # If both escalation calls failed, mark needs_review with primary data
-    if gemini_esc_result is None and openai_esc_result is None:
-        logger.error(f"[vision] Both escalation models failed for {receipt_id}")
+    # If escalation failed, mark needs_review with primary data
+    if gemini_esc_result is None:
+        logger.error(f"[vision] Escalation (Gemini) failed for {receipt_id}")
         if db_receipt_id:
             try:
                 update_receipt_status(
@@ -1210,55 +1059,13 @@ async def process_receipt_workflow_vision(
         }
 
     # -----------------------------------------------------------------------
-    # STEP 4A — Individual sum checks BEFORE consensus
-    # A model that hallucinated item prices will fail its own sum check even if
-    # it reports the correct receipt-level subtotal/total.  Filter it out first
-    # so we never let a hallucinating model corrupt the final result via consensus.
+    # STEP 4A — Escalation result sum check (Gemini only)
     # -----------------------------------------------------------------------
+    best_result = gemini_esc_result
     gemini_sum_passed = False
-    openai_sum_passed  = False
     if gemini_esc_result is not None:
         gemini_sum_passed, _ = check_receipt_sums(gemini_esc_result)
-    if openai_esc_result is not None:
-        openai_sum_passed, _  = check_receipt_sums(openai_esc_result)
-    logger.info(
-        f"[vision] Escalation individual sum checks: "
-        f"gemini={gemini_sum_passed}, openai={openai_sum_passed}"
-    )
-
-    # Select best result based on sum checks
-    if gemini_esc_result is not None and openai_esc_result is None:
-        # Only Gemini available
-        best_result = gemini_esc_result
-        agree    = gemini_sum_passed
-        conflicts = [] if agree else [{"field": "sum_check", "model_a": "fail", "model_b": "n/a"}]
-    elif openai_esc_result is not None and gemini_esc_result is None:
-        # Only OpenAI available
-        best_result = openai_esc_result
-        agree    = openai_sum_passed
-        conflicts = [] if agree else [{"field": "sum_check", "model_a": "n/a", "model_b": "fail"}]
-    elif gemini_sum_passed and not openai_sum_passed:
-        # Only Gemini passes → use it directly, skip consensus
-        logger.info(f"[vision] Only Gemini passes sum check; skipping consensus for {receipt_id}")
-        best_result = gemini_esc_result
-        agree    = True
-        conflicts = []
-    elif openai_sum_passed and not gemini_sum_passed:
-        # Only OpenAI passes → use it directly, skip consensus
-        logger.info(f"[vision] Only OpenAI passes sum check; skipping consensus for {receipt_id}")
-        best_result = openai_esc_result
-        agree    = True
-        conflicts = []
-    elif gemini_sum_passed and openai_sum_passed:
-        # Both pass → run consensus check (both are internally self-consistent)
-        agree, conflicts, merged = _check_vision_consensus(gemini_esc_result, openai_esc_result)
-        best_result = merged  # prefers Gemini (result_a)
-    else:
-        # Neither passes sum check → needs_review
-        logger.info(f"[vision] Neither escalation model passes sum check for {receipt_id}")
-        best_result = gemini_esc_result or openai_esc_result
-        agree    = False
-        conflicts = [{"field": "sum_check", "model_a": "fail", "model_b": "fail"}]
+    logger.info(f"[vision] Escalation sum check: gemini={gemini_sum_passed}")
 
     # Costco USA: use first (pre-reward) total only before persisting escalation result
     _detect_cc_rewards_and_fix_totals(best_result)
@@ -1272,10 +1079,10 @@ async def process_receipt_workflow_vision(
     best_result = correct_address(best_result, auto_correct=True)
 
     # -----------------------------------------------------------------------
-    # STEP 5A — Escalation AGREED + sum check passed → success
+    # STEP 5A — Escalation sum check passed → success
     # -----------------------------------------------------------------------
-    if agree:
-        logger.info(f"[vision] Escalation consensus reached for {receipt_id}")
+    if gemini_sum_passed:
+        logger.info(f"[vision] Escalation (Gemini) sum check passed for {receipt_id}")
         if db_receipt_id:
             try:
                 update_receipt_status(
@@ -1283,7 +1090,7 @@ async def process_receipt_workflow_vision(
                     current_status="success",
                     current_stage="vision_escalation",
                 )
-                append_workflow_step(db_receipt_id, "escalation_consensus", "agree")
+                append_workflow_step(db_receipt_id, "escalation_consensus", "pass")
             except Exception as exc:
                 logger.warning(f"[vision] Failed to update status: {exc}")
             # Save the winning escalation result BEFORE categorize_receipt.
@@ -1299,7 +1106,7 @@ async def process_receipt_workflow_vision(
                     model_provider="winner",
                     model_name="best_result",
                     model_version=None,
-                    input_payload={"winner": "sum_check_or_consensus"},
+                    input_payload={"winner": "gemini_escalation"},
                     output_payload=best_result,
                     output_schema_version="vision_v1",
                     status="pass",
@@ -1331,11 +1138,9 @@ async def process_receipt_workflow_vision(
         }
 
     # -----------------------------------------------------------------------
-    # STEP 5B — Escalation DISAGREED → needs_review with highlights
+    # STEP 5B — Escalation sum check failed → needs_review (ask user)
     # -----------------------------------------------------------------------
-    logger.info(
-        f"[vision] Escalation conflict for {receipt_id}: {len(conflicts)} conflict(s)"
-    )
+    logger.info(f"[vision] Escalation (Gemini) sum check failed for {receipt_id}; needs_review")
     if db_receipt_id:
         try:
             update_receipt_status(
@@ -1343,13 +1148,9 @@ async def process_receipt_workflow_vision(
                 current_status="needs_review",
                 current_stage="vision_escalation",
             )
-            append_workflow_step(
-                db_receipt_id, "escalation_consensus", "conflict",
-                details={"conflicts": conflicts},
-            )
+            append_workflow_step(db_receipt_id, "escalation_consensus", "fail")
         except Exception as exc:
             logger.warning(f"[vision] Failed to update status: {exc}")
-        # Save the winning escalation result before categorize_receipt (same reason as STEP 5A).
         try:
             save_processing_run(
                 receipt_id=db_receipt_id,
@@ -1357,15 +1158,14 @@ async def process_receipt_workflow_vision(
                 model_provider="winner",
                 model_name="best_result",
                 model_version=None,
-                input_payload={"winner": "sum_check", "conflicts": len(conflicts)},
+                input_payload={"winner": "gemini_escalation", "sum_check_passed": False},
                 output_payload=best_result,
                 output_schema_version="vision_v1",
                 status="pass",
             )
         except Exception as exc:
-            logger.warning(f"[vision] Failed to save winning escalation result: {exc}")
+            logger.warning(f"[vision] Failed to save escalation result: {exc}")
         try:
-            # force=True: overwrite primary placeholder data with best escalation result
             await asyncio.to_thread(categorize_receipt, db_receipt_id, True)
         except Exception:
             pass
@@ -1378,10 +1178,6 @@ async def process_receipt_workflow_vision(
         "receipt_id": db_receipt_id or receipt_id,
         "status": "needs_review",
         "data": best_result,
-        "conflicts": conflicts,
         "pipeline": "vision_b",
-        "message": (
-            f"Escalation models disagreed on {len(conflicts)} field(s). "
-            "Conflicting fields are highlighted for manual correction."
-        ),
+        "message": "Escalation (Gemini) could not fix the sum check. Please correct manually.",
     }

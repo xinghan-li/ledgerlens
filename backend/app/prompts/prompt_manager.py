@@ -114,6 +114,7 @@ REFERENCE DATE (today): {reference_date}. Any receipt date on or before this dat
 
 1. Extract receipt-level fields (merchant, date, time, amounts, payment method)
    - **Date format**: Must be YYYY-MM-DD (e.g., "2026-01-25"). Use the date EXACTLY as printed on the receipt; do NOT substitute or correct the year (e.g. if the receipt shows 2026, output 2026; never change it to the current year).
+   - **Canadian date ambiguity**: Some Canadian stores print dates as YY/MM/DD (e.g. "26/03/07" = 2026-03-07) rather than MM/DD/YY. If the store is in Canada and BOTH YY/MM/DD and MM/DD/YY produce seemingly valid dates, choose the interpretation whose result is closest to the REFERENCE DATE.
    - **Time format**: Must be HH:MM:SS or HH:MM (e.g., "13:00:00" or "13:00")
    - Do NOT include newlines or extra text in date/time fields
    - **Payment**: Use full card brand name for payment_method (e.g. "Discover" not "DCVR", "Visa" not "VISA"). card_last4 = last 4 digits only (e.g. "3713" from "DCVR ************3713").
