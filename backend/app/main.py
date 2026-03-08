@@ -1116,6 +1116,18 @@ async def get_my_receipt(
     return detail
 
 
+def _fetch_receipt_processing_runs_sync(receipt_id: str):
+    """Sync helper: receipt_status + receipt_processing_runs + workflow_steps. Run in thread to avoid blocking."""
+    from .services.database.supabase_client import _get_client, get_receipt_workflow_steps
+    supabase = _get_client()
+    rec = supabase.table("receipt_status").select("id, user_id, pipeline_version").eq("id", receipt_id).limit(1).execute()
+    runs_res = supabase.table("receipt_processing_runs").select(
+        "id, stage, model_provider, model_name, model_version, status, error_message, validation_status, created_at, input_payload, output_payload"
+    ).eq("receipt_id", receipt_id).order("created_at", desc=False).execute()
+    steps = get_receipt_workflow_steps(receipt_id)
+    return rec, runs_res, steps
+
+
 @app.get("/api/receipt/{receipt_id}/processing-runs", tags=["Receipts - Other"])
 async def get_receipt_processing_runs(
     receipt_id: str,
@@ -1125,18 +1137,12 @@ async def get_receipt_processing_runs(
     from .services.database.supabase_client import get_user_class, USER_CLASS_ADMIN
     if get_user_class(user_id) < USER_CLASS_ADMIN:
         raise HTTPException(status_code=403, detail="Admin or super_admin required")
-    from .services.database.supabase_client import _get_client
-    supabase = _get_client()
-    rec = supabase.table("receipt_status").select("id, user_id, pipeline_version").eq("id", receipt_id).limit(1).execute()
+    rec, runs_res, steps = await asyncio.to_thread(_fetch_receipt_processing_runs_sync, receipt_id)
     if not rec.data or rec.data[0]["user_id"] != user_id:
         raise HTTPException(status_code=404, detail="Receipt not found or access denied")
     pipeline_version = (rec.data[0].get("pipeline_version") or "legacy_a")
-    from .services.database.supabase_client import get_receipt_workflow_steps
     # receipt_processing_runs has RLS: rows visible only when auth.uid() = receipt_status.user_id.
     # Backend must use SUPABASE_SERVICE_ROLE_KEY so RLS is bypassed; with anon key auth.uid() is null and runs come back empty.
-    runs_res = supabase.table("receipt_processing_runs").select(
-        "id, stage, model_provider, model_name, model_version, status, error_message, validation_status, created_at, input_payload, output_payload"
-    ).eq("receipt_id", receipt_id).order("created_at", desc=False).execute()
     runs = runs_res.data or []
     if not runs and rec.data:
         logger.warning(
@@ -1144,7 +1150,6 @@ async def get_receipt_processing_runs(
             "If runs exist in DB, backend likely using anon key; set SUPABASE_SERVICE_ROLE_KEY to bypass RLS.",
             receipt_id,
         )
-    steps = get_receipt_workflow_steps(receipt_id)
     track = "unknown"
     track_method = None
     for r in runs:
@@ -1575,13 +1580,20 @@ async def require_admin(user_id: str = Depends(get_current_user)) -> str:
     """
     from .services.database.supabase_client import get_user_class, USER_CLASS_ADMIN
     try:
-        user_class = await asyncio.to_thread(get_user_class, user_id)
+        raw = await asyncio.to_thread(get_user_class, user_id)
+        user_class = int(raw) if raw is not None else 0
         logger.info("require_admin: user_id=%s user_class=%s (need>=%s)", user_id, user_class, USER_CLASS_ADMIN)
         if user_class >= USER_CLASS_ADMIN:
             return user_id
+        # Use structured detail so frontend shows "code: REQUIRE_ADMIN_DENIED" (not "7" as error code)
         raise HTTPException(
             status_code=403,
-            detail=f"Access denied. Required: admin or super_admin, got tier: {user_class}"
+            detail={
+                "code": "REQUIRE_ADMIN_DENIED",
+                "message": "Access denied. Required: admin or super_admin.",
+                "required_tier_min": USER_CLASS_ADMIN,
+                "current_tier": user_class,
+            },
         )
     except HTTPException:
         raise
