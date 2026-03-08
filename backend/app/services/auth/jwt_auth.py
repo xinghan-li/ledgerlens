@@ -8,6 +8,7 @@ JWT (RS256/HS256) is verified and sub is used as user_id.
 from fastapi import Depends, HTTPException, Header, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Dict, Optional, Tuple
+import asyncio
 import hashlib
 import jwt  # PyJWT library
 from jwt import PyJWKClient
@@ -191,11 +192,11 @@ async def get_current_user(
     # Try Firebase first if available (Firebase ID tokens use RS256 with Google kid)
     if verify_firebase_token is not None and get_or_create_user_id is not None:
         logger.debug("[Auth] Trying Firebase verification")
-        fb = verify_firebase_token(token)
+        fb = await asyncio.to_thread(verify_firebase_token, token)
         if fb is not None:
             firebase_uid, email = fb
             try:
-                user_id = get_or_create_user_id(firebase_uid, email)
+                user_id = await asyncio.to_thread(get_or_create_user_id, firebase_uid, email)
                 if user_id:
                     logger.info("Authenticated via Firebase: user_id=%s", user_id)
                     _cache_user_id(token, user_id)

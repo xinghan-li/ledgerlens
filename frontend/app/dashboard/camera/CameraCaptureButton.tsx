@@ -73,6 +73,7 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
     if (!token || disabled) return
     setOpen(true)
     setCapturing(false)
+    setUploading(false)
     setCapturedBlob(null)
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl)
