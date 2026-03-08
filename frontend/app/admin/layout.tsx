@@ -40,12 +40,21 @@ export default function AdminLayout({
         }
         if (res.status === 403) {
           const body = await res.json().catch(() => ({}))
-          setDenyReason(body.detail || 'Admin or Super Admin role required.')
+          const d = body.detail
+          const msg =
+            typeof d === 'object' && d !== null && 'message' in d
+              ? `${d.message} (Error code: ${(d as { code?: string }).code ?? 'unknown'}. Your tier: ${(d as { current_tier?: number }).current_tier ?? '—'})`
+              : typeof d === 'string'
+                ? d
+                : 'Admin or Super Admin role required.'
+          setDenyReason(msg)
           setAllowed(false)
           return
         }
         const body = await res.json().catch(() => ({}))
-        setDenyReason(`Server error (${res.status}): ${body.detail || res.statusText}`)
+        const d = body.detail
+        const errMsg = typeof d === 'object' && d !== null && 'message' in d ? (d as { message?: string }).message : (body.detail ?? res.statusText)
+        setDenyReason(`Server error (${res.status}): ${errMsg}`)
         setAllowed(false)
       } catch (e) {
         setDenyReason(`Network error: ${e instanceof Error ? e.message : 'unknown'}`)
