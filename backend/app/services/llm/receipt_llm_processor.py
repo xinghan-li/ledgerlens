@@ -17,7 +17,7 @@ from ...services.ocr.documentai_client import parse_receipt_documentai
 from ...prompts.prompt_manager import get_merchant_prompt, format_prompt
 from ...prompts.prompt_loader import build_second_round_system_message
 from .llm_client import parse_receipt_with_llm
-from .gemini_client import parse_receipt_with_gemini
+from .gemini_client import parse_receipt_with_gemini, parse_receipt_with_gemini_vision_escalation
 from ...services.database.supabase_client import get_store_chain
 from ...prompts.extraction_rule_manager import get_merchant_extraction_rules, apply_extraction_rules
 from ...services.ocr.ocr_normalizer import normalize_ocr_result, extract_unified_info
@@ -452,15 +452,54 @@ def _items_has_negative_line_total(llm_result: Dict[str, Any]) -> bool:
     return False
 
 
+def _is_trader_joes_receipt(llm_result: Dict[str, Any]) -> bool:
+    """True if this receipt is for Trader Joe's (for store-specific second round)."""
+    if not llm_result:
+        return False
+    receipt = llm_result.get("receipt", {})
+    name = (receipt.get("merchant_name") or receipt.get("store") or "").lower()
+    return "trader joe" in name
+
+
+def _has_item_count_mismatch(llm_result: Dict[str, Any]) -> bool:
+    """True when receipt states an item count and extracted item count does not match."""
+    if not llm_result:
+        return False
+    meta = llm_result.get("_metadata") or {}
+    expected = meta.get("item_count_on_receipt")
+    if expected is None:
+        return False
+    try:
+        expected = int(expected)
+    except (TypeError, ValueError):
+        return False
+    items = llm_result.get("items") or []
+    return len(items) != expected
+
+
+# Second-round prompts: store-specific content is loaded from prompt_library via
+# build_second_round_system_message() (prompt_key='receipt_parse_second', chain binding).
+# Costco → costco_second_round (052), Trader Joe's → trader_joes_second_round (057).
+# Code only sends a generic user message + first-pass JSON; no store-specific text here.
+SECOND_ROUND_USER_MESSAGE_PREFIX = (
+    "Refine the receipt JSON below according to the store-specific rules in your system message. "
+    "Output only valid JSON.\n\n"
+)
+
+
 async def run_costco_second_round(
     first_llm_result: Dict[str, Any],
     chain_id: Optional[str],
     location_id: Optional[str],
     llm_provider: str,
+    image_bytes: Optional[bytes] = None,
+    mime_type: str = "image/jpeg",
 ) -> Optional[Dict[str, Any]]:
     """
     When receipt is Costco USA and items contain negative line_total (discount lines),
     run a second LLM pass with costco_second_round prompt to merge discounts into the item above.
+    When image_bytes is provided (vision pipeline), re-sends the receipt image alongside
+    the first-pass JSON so the model can verify against the original image.
     Returns refined result or None if second round was not run or failed.
     """
     if not chain_id or not _is_costco_usa_receipt(first_llm_result) or not _items_has_negative_line_total(first_llm_result):
@@ -473,15 +512,24 @@ async def run_costco_second_round(
     if not (system_message or "").strip():
         logger.warning("[Costco second round] No second-round prompt loaded for chain_id=%s, skipping", chain_id)
         return None
-    user_message = (
-        "Refine the following receipt JSON by merging each discount line (negative line_total) "
-        "into the item immediately above it. Keep the same schema. Output only valid JSON.\n\n"
-        + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
-    )
     model = settings.gemini_model if llm_provider.lower() == "gemini" else settings.openai_model
-    logger.info("[Costco second round] Running refinement with %s (model=%s)", llm_provider, model)
+    logger.info("[Costco second round] Running refinement with %s (model=%s, vision=%s)", llm_provider, model, image_bytes is not None)
     try:
-        if llm_provider.lower() == "gemini":
+        if llm_provider.lower() == "gemini" and image_bytes:
+            # Vision call: re-read the image with the first-pass JSON as context
+            instruction = (
+                system_message
+                + "\n\nFIRST PASS RESULT (re-read the receipt image above and correct this JSON as needed):\n"
+                + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            )
+            second_result, _ = await parse_receipt_with_gemini_vision_escalation(
+                image_bytes=image_bytes,
+                instruction=instruction,
+                model=model,
+                mime_type=mime_type,
+            )
+        elif llm_provider.lower() == "gemini":
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
             second_result = await parse_receipt_with_gemini(
                 system_message=system_message,
                 user_message=user_message,
@@ -489,6 +537,7 @@ async def run_costco_second_round(
                 temperature=0.0,
             )
         else:
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
             second_result = parse_receipt_with_llm(
                 system_message=system_message,
                 user_message=user_message,
@@ -507,6 +556,76 @@ async def run_costco_second_round(
         return second_result
     except Exception as e:
         logger.warning("[Costco second round] Failed: %s", e, exc_info=True)
+        return None
+
+
+async def run_trader_joes_second_round(
+    first_llm_result: Dict[str, Any],
+    chain_id: Optional[str],
+    location_id: Optional[str],
+    llm_provider: str,
+    image_bytes: Optional[bytes] = None,
+    mime_type: str = "image/jpeg",
+) -> Optional[Dict[str, Any]]:
+    """
+    When receipt is Trader Joe's and item count mismatch, run a second LLM pass with
+    trader_joes_second_round prompt so the model re-extracts with item count by unit (e.g. 5 bananas = 5 items).
+    When image_bytes is provided (vision pipeline), re-sends the receipt image alongside
+    the first-pass JSON so the model can verify against the original image.
+    Returns refined result or None if second round was not run or failed.
+    """
+    if not chain_id or not _is_trader_joes_receipt(first_llm_result) or not _has_item_count_mismatch(first_llm_result):
+        return None
+    system_message = build_second_round_system_message(
+        store_chain_id=chain_id,
+        location_id=location_id,
+        first_pass_result=first_llm_result,
+    )
+    if not (system_message or "").strip():
+        logger.warning("[Trader Joe's second round] No second-round prompt loaded for chain_id=%s, skipping", chain_id)
+        return None
+    model = settings.gemini_model if llm_provider.lower() == "gemini" else settings.openai_model
+    logger.info("[Trader Joe's second round] Running refinement with %s (model=%s, vision=%s)", llm_provider, model, image_bytes is not None)
+    try:
+        if llm_provider.lower() == "gemini" and image_bytes:
+            # Vision call: re-read the image with the first-pass JSON as context
+            instruction = (
+                system_message
+                + "\n\nFIRST PASS RESULT (re-read the receipt image above and correct this JSON as needed):\n"
+                + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            )
+            second_result, _ = await parse_receipt_with_gemini_vision_escalation(
+                image_bytes=image_bytes,
+                instruction=instruction,
+                model=model,
+                mime_type=mime_type,
+            )
+        elif llm_provider.lower() == "gemini":
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            second_result = await parse_receipt_with_gemini(
+                system_message=system_message,
+                user_message=user_message,
+                model=model,
+                temperature=0.0,
+            )
+        else:
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            second_result = parse_receipt_with_llm(
+                system_message=system_message,
+                user_message=user_message,
+                model=model,
+                temperature=0.0,
+            )
+        if not second_result:
+            return None
+        second_result = _validate_llm_result(second_result, extracted_line_totals=None)
+        first_meta = first_llm_result.get("_metadata") or {}
+        second_meta = second_result.get("_metadata") or {}
+        second_result["_metadata"] = {**second_meta, **first_meta}
+        logger.info("[Trader Joe's second round] Refinement completed")
+        return second_result
+    except Exception as e:
+        logger.warning("[Trader Joe's second round] Failed: %s", e, exc_info=True)
         return None
 
 

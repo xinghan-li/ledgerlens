@@ -16,6 +16,7 @@ export default function AdminLayout({
   const pathname = usePathname()
   const apiBaseUrl = useApiUrl()
   const [allowed, setAllowed] = useState<boolean | null>(null)
+  const [denyReason, setDenyReason] = useState<string | null>(null)
 
   useEffect(() => {
     const auth = getFirebaseAuth()
@@ -33,16 +34,21 @@ export default function AdminLayout({
         const res = await fetch(`${apiBaseUrl}/api/admin/classification-review?limit=1`, {
           headers: { Authorization: `Bearer ${token}` },
         })
-        if (res.status === 403) {
-          setAllowed(false)
-          return
-        }
         if (res.ok) {
           setAllowed(true)
           return
         }
+        if (res.status === 403) {
+          const body = await res.json().catch(() => ({}))
+          setDenyReason(body.detail || 'Admin or Super Admin role required.')
+          setAllowed(false)
+          return
+        }
+        const body = await res.json().catch(() => ({}))
+        setDenyReason(`Server error (${res.status}): ${body.detail || res.statusText}`)
         setAllowed(false)
-      } catch {
+      } catch (e) {
+        setDenyReason(`Network error: ${e instanceof Error ? e.message : 'unknown'}`)
         setAllowed(false)
       }
     })
@@ -63,8 +69,8 @@ export default function AdminLayout({
   if (!allowed) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-theme-cream">
-        <div className="text-center">
-          <p className="text-theme-red font-medium">Admin or Super Admin role required.</p>
+        <div className="text-center max-w-md px-4">
+          <p className="text-theme-red font-medium">{denyReason || 'Admin or Super Admin role required.'}</p>
           <Link href="/dashboard" className="mt-4 inline-block text-theme-orange hover:underline">Back to Dashboard</Link>
         </div>
       </div>

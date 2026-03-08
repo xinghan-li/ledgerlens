@@ -438,9 +438,14 @@ def get_user_class(user_id: str) -> int:
         if res.data and len(res.data) > 0:
             val = res.data[0].get("user_class")
             if val is not None:
-                return int(val)
+                result = int(val)
+                logger.debug("get_user_class(%s) = %s (raw=%r)", user_id, result, val)
+                return result
+            logger.warning("get_user_class(%s): user_class is None in DB row", user_id)
+        else:
+            logger.warning("get_user_class(%s): no rows returned from users table", user_id)
     except Exception as e:
-        logger.warning(f"Failed to get user_class for {user_id}: {e}")
+        logger.warning("get_user_class(%s) failed: %s", user_id, e, exc_info=True)
     return USER_CLASS_FREE
 
 

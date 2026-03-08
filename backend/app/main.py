@@ -52,36 +52,21 @@ from .models import ReceiptOCRResponse
 from .services.ocr.documentai_client import parse_receipt_documentai
 from .services.ocr.textract_client import parse_receipt_textract
 from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_docai, process_receipt_with_llm_from_ocr
-from .core.workflow_processor import process_receipt_workflow, process_receipt_workflow_after_confirm
 from .core.workflow_processor_vision import process_receipt_workflow_vision
 from .core.bulk_processor import process_bulk_receipts
+from .core.workflow_processor_vision import PROJECT_ROOT
 
 
-def _run_legacy_workflow_in_thread(image_bytes: bytes, filename: str, mime_type: str, user_id: str):
-    """
-    Run legacy receipt workflow in a dedicated event loop inside a thread.
-    Keeps the main FastAPI event loop free so list/detail requests are not
-    blocked while a receipt is processing (avoids "half-lock" when opening receipts during upload).
-    """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(
-            process_receipt_workflow(
-                image_bytes=image_bytes,
-                filename=filename,
-                mime_type=mime_type,
-                user_id=user_id,
-            )
-        )
-    finally:
-        loop.close()
-
-
-def _run_vision_workflow_in_thread(image_bytes: bytes, filename: str, mime_type: str, user_id: str):
+def _run_vision_workflow_in_thread(
+    image_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    user_id: str,
+    existing_receipt_id: Optional[str] = None,
+):
     """
     Run vision receipt workflow in a dedicated event loop inside a thread.
-    Same purpose as _run_legacy_workflow_in_thread: avoid blocking the main event loop.
+    Avoids blocking the main FastAPI event loop during processing.
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -92,6 +77,7 @@ def _run_vision_workflow_in_thread(image_bytes: bytes, filename: str, mime_type:
                 filename=filename,
                 mime_type=mime_type,
                 user_id=user_id,
+                existing_receipt_id=existing_receipt_id,
             )
         )
     finally:
@@ -527,8 +513,10 @@ async def get_authorization_token(request: AuthorizationRequest):
 async def get_current_user_info(user_id: str = Depends(get_current_user)):
     """Return current user id, email, and user_class. Used by frontend to show/hide Developer and role-specific UI."""
     from .services.database.supabase_client import _get_client
-    supabase = _get_client()
-    res = supabase.table("users").select("id, email, user_class, registration_no, user_name").eq("id", user_id).limit(1).execute()
+    def _query():
+        supabase = _get_client()
+        return supabase.table("users").select("id, email, user_class, registration_no, user_name").eq("id", user_id).limit(1).execute()
+    res = await asyncio.to_thread(_query)
     if not res.data:
         raise HTTPException(status_code=404, detail="User not found")
     row = res.data[0]
@@ -970,28 +958,15 @@ async def process_receipt_workflow_endpoint(
     user_id: str = Depends(check_workflow_rate_limit)  # check_workflow_rate_limit 现在会返回 user_id
 ):
     """
-    Complete receipt processing workflow.
-    
+    Receipt processing workflow (vision pipeline only).
+
+    Same as /api/receipt/workflow-vision. Legacy OCR+LLM pipeline has been deprecated.
+
     Rate Limit:
     - super_admin and admin: No limit
     - Other user classes: 5 per minute, 20 per hour
-    
-    Workflow:
-    1. Google Document AI OCR
-    2. Decide whether to use Gemini or GPT-4o-mini based on Gemini rate limiting
-    3. LLM processing to get structured JSON
-    4. Sum check (tolerance ±0.03)
-    5. If failed, introduce AWS OCR + GPT-4o-mini secondary processing
-    6. File storage and timeline recording
-    7. Statistics update
-    
-    Returns:
-    - success: Whether successful
-    - receipt_id: Receipt ID (format: 001_mmyydd_hhmm)
-    - status: Status (passed, passed_with_resolution, passed_after_backup, needs_manual_review, error)
-    - data: Structured receipt data
-    - sum_check: Sum check details
-    - timeline: Timeline (optional)
+
+    Workflow: Vision (Gemini) → optional store-specific second round → on failure Gemini escalation → needs_review.
     """
     # Basic validation
     if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
@@ -1004,21 +979,22 @@ async def process_receipt_workflow_endpoint(
     if len(contents) == 0:
         raise HTTPException(status_code=400, detail="Empty file.")
     
-    # Check file size (approximately 5MB limit)
     if len(contents) > 5 * 1024 * 1024:
         raise HTTPException(
             status_code=400,
             detail="File size exceeds 5MB limit."
         )
     
+    if not settings.vision_pipeline_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Vision pipeline is currently disabled.",
+        )
+
     try:
-        # Determine MIME type
         mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
-        
-        # Run workflow in thread so the main event loop stays free; list/detail requests
-        # are not blocked while processing (avoids "half-lock" when viewing receipts during upload).
         result = await asyncio.to_thread(
-            _run_legacy_workflow_in_thread,
+            _run_vision_workflow_in_thread,
             contents,
             file.filename,
             mime_type,
@@ -1051,12 +1027,11 @@ async def process_receipt_workflow_vision_endpoint(
     user_id: str = Depends(check_workflow_rate_limit),
 ):
     """
-    Vision-First receipt processing pipeline (Route B).
+    Vision-only receipt processing pipeline.
 
-    Skips Google Document AI OCR entirely. Sends the raw image directly to
-    Gemini for structured JSON extraction, then validates with sum check and
-    item count check. Falls back to parallel Gemini escalation + OpenAI
-    escalation if the primary call fails validation.
+    Sends the raw image to Gemini for structured JSON; optional store-specific
+    second round; on sum check failure, Gemini-only escalation; then needs_review
+    if still unresolved. Same as /api/receipt/workflow (legacy OCR+LLM deprecated).
 
     Rate limits and duplicate detection are identical to /api/receipt/workflow.
     """
@@ -1157,10 +1132,18 @@ async def get_receipt_processing_runs(
         raise HTTPException(status_code=404, detail="Receipt not found or access denied")
     pipeline_version = (rec.data[0].get("pipeline_version") or "legacy_a")
     from .services.database.supabase_client import get_receipt_workflow_steps
+    # receipt_processing_runs has RLS: rows visible only when auth.uid() = receipt_status.user_id.
+    # Backend must use SUPABASE_SERVICE_ROLE_KEY so RLS is bypassed; with anon key auth.uid() is null and runs come back empty.
     runs_res = supabase.table("receipt_processing_runs").select(
         "id, stage, model_provider, model_name, model_version, status, error_message, validation_status, created_at, input_payload, output_payload"
     ).eq("receipt_id", receipt_id).order("created_at", desc=False).execute()
     runs = runs_res.data or []
+    if not runs and rec.data:
+        logger.warning(
+            "get_receipt_processing_runs: receipt %s has no runs in API response. "
+            "If runs exist in DB, backend likely using anon key; set SUPABASE_SERVICE_ROLE_KEY to bypass RLS.",
+            receipt_id,
+        )
     steps = get_receipt_workflow_steps(receipt_id)
     track = "unknown"
     track_method = None
@@ -1217,7 +1200,6 @@ async def confirm_receipt_after_reject(
         raise HTTPException(status_code=400, detail="No image stored for this receipt")
     image_bytes: bytes
     if "://" not in raw_url or raw_url.startswith("/") or raw_url.startswith("output"):
-        from .core.workflow_processor import PROJECT_ROOT
         path = Path(raw_url)
         if not path.is_absolute():
             path = PROJECT_ROOT / raw_url
@@ -1233,12 +1215,14 @@ async def confirm_receipt_after_reject(
     mime_type = "image/jpeg"
     if raw_url.lower().endswith(".png"):
         mime_type = "image/png"
-    result = await process_receipt_workflow_after_confirm(
-        receipt_id=receipt_id,
-        image_bytes=image_bytes,
-        filename=Path(raw_url).name or "receipt.jpg",
-        mime_type=mime_type,
-        user_id=user_id,
+    # Run vision pipeline with existing receipt (no new create_receipt / duplicate check)
+    result = await asyncio.to_thread(
+        _run_vision_workflow_in_thread,
+        image_bytes,
+        Path(raw_url).name or "receipt.jpg",
+        mime_type,
+        user_id,
+        existing_receipt_id=receipt_id,
     )
     return result
 
@@ -1585,13 +1569,14 @@ async def process_receipt_workflow_bulk_endpoint(
 
 # ==================== Admin (require_admin dependency) ====================
 
-def require_admin(user_id: str = Depends(get_current_user)) -> str:
+async def require_admin(user_id: str = Depends(get_current_user)) -> str:
     """
     Dependency to require admin (7) or super_admin (9) user class.
     """
     from .services.database.supabase_client import get_user_class, USER_CLASS_ADMIN
     try:
-        user_class = get_user_class(user_id)
+        user_class = await asyncio.to_thread(get_user_class, user_id)
+        logger.info("require_admin: user_id=%s user_class=%s (need>=%s)", user_id, user_class, USER_CLASS_ADMIN)
         if user_class >= USER_CLASS_ADMIN:
             return user_id
         raise HTTPException(
@@ -1601,7 +1586,7 @@ def require_admin(user_id: str = Depends(get_current_user)) -> str:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to check user class: {e}")
+        logger.error(f"Failed to check user class for {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to verify user permissions")
 
 
@@ -1992,11 +1977,10 @@ async def admin_get_receipt_image(
     if raw_url.lower().startswith(("http://", "https://")):
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=raw_url)
-    # Local path: resolve relative to project root (same as workflow_processor); guard against path traversal
-    from .core.workflow_processor import PROJECT_ROOT as project_root
-    file_path = (project_root / raw_url).resolve()
+    # Local path: resolve relative to project root; guard against path traversal
+    file_path = (PROJECT_ROOT / raw_url).resolve()
     try:
-        file_path.relative_to(project_root)
+        file_path.relative_to(PROJECT_ROOT)
     except ValueError:
         raise HTTPException(status_code=404, detail="Image file not found")
     if not file_path.exists() or not file_path.is_file():
