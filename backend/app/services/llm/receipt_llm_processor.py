@@ -477,6 +477,16 @@ def _has_item_count_mismatch(llm_result: Dict[str, Any]) -> bool:
     return len(items) != expected
 
 
+# Second-round prompts: store-specific content is loaded from prompt_library via
+# build_second_round_system_message() (prompt_key='receipt_parse_second', chain binding).
+# Costco → costco_second_round (052), Trader Joe's → trader_joes_second_round (057).
+# Code only sends a generic user message + first-pass JSON; no store-specific text here.
+SECOND_ROUND_USER_MESSAGE_PREFIX = (
+    "Refine the receipt JSON below according to the store-specific rules in your system message. "
+    "Output only valid JSON.\n\n"
+)
+
+
 async def run_costco_second_round(
     first_llm_result: Dict[str, Any],
     chain_id: Optional[str],
@@ -519,11 +529,7 @@ async def run_costco_second_round(
                 mime_type=mime_type,
             )
         elif llm_provider.lower() == "gemini":
-            user_message = (
-                "Refine the following receipt JSON by merging each discount line (negative line_total) "
-                "into the item immediately above it. Keep the same schema. Output only valid JSON.\n\n"
-                + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
-            )
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
             second_result = await parse_receipt_with_gemini(
                 system_message=system_message,
                 user_message=user_message,
@@ -531,11 +537,7 @@ async def run_costco_second_round(
                 temperature=0.0,
             )
         else:
-            user_message = (
-                "Refine the following receipt JSON by merging each discount line (negative line_total) "
-                "into the item immediately above it. Keep the same schema. Output only valid JSON.\n\n"
-                + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
-            )
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
             second_result = parse_receipt_with_llm(
                 system_message=system_message,
                 user_message=user_message,
@@ -599,12 +601,7 @@ async def run_trader_joes_second_round(
                 mime_type=mime_type,
             )
         elif llm_provider.lower() == "gemini":
-            user_message = (
-                "Refine the receipt JSON below. At this store, item count is by unit (e.g. 5 bananas = 5 items). "
-                "Ensure your extracted item count matches the receipt's stated count; if not, go back and include all quantities. "
-                "Output only valid JSON.\n\n"
-                + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
-            )
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
             second_result = await parse_receipt_with_gemini(
                 system_message=system_message,
                 user_message=user_message,
@@ -612,12 +609,7 @@ async def run_trader_joes_second_round(
                 temperature=0.0,
             )
         else:
-            user_message = (
-                "Refine the receipt JSON below. At this store, item count is by unit (e.g. 5 bananas = 5 items). "
-                "Ensure your extracted item count matches the receipt's stated count; if not, go back and include all quantities. "
-                "Output only valid JSON.\n\n"
-                + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
-            )
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
             second_result = parse_receipt_with_llm(
                 system_message=system_message,
                 user_message=user_message,
