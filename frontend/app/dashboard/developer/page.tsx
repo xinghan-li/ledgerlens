@@ -77,7 +77,7 @@ export default function DeveloperDashboardPage() {
   const [categoryUpdateMessage, setCategoryUpdateMessage] = useState<string | null>(null)
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
-  const [userClass, setUserClass] = useState<string | null>(null)
+  const [userClass, setUserClass] = useState<number | null>(null)
   const [processingRunsModalReceiptId, setProcessingRunsModalReceiptId] = useState<string | null>(null)
   const [processingRunsData, setProcessingRunsData] = useState<{ track: string; track_method: string | null; runs: Array<Record<string, unknown>>; workflow_steps: Array<Record<string, unknown>>; pipeline_version?: string | null } | null>(null)
   const [processingRunsLoading, setProcessingRunsLoading] = useState(false)
@@ -316,9 +316,9 @@ export default function DeveloperDashboardPage() {
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
         if (cancelled) return
-        setUserClass(data?.user_class ?? null)
-        const uc = data?.user_class
-        setDeveloperAllowed(uc === 9 || uc === 'super_admin')
+        const uc = data?.user_class != null ? Number(data.user_class) : null
+        setUserClass(uc)
+        setDeveloperAllowed(uc === 9 || uc === 7)
       })
       .catch(() => {
         if (!cancelled) setDeveloperAllowed(false)
@@ -1319,7 +1319,7 @@ export default function DeveloperDashboardPage() {
                                     >
                                       Copy
                                     </button>
-                                  {(userClass === 'admin' || userClass === 'super_admin') && (
+                                  {(userClass === 7 || userClass === 9) && (
                                     <button
                                       type="button"
                                       onClick={async (e) => {
