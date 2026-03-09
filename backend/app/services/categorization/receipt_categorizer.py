@@ -897,8 +897,8 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     if store_chain_id_uuid and store_chain_id_uuid != (chain_id or ""):
         logger.info(f"Resolved store_chain_id for rules: {chain_id!r} -> {store_chain_id_uuid}")
 
-    # 若 run 的 _metadata 没有 location_id（例如 vision 管线未写），用 get_store_chain 再匹配一次；
-    # 只要在 store_locations 有 match（含 1–2 字母 fuzzy），就不应进 store_candidate，且 summary 应带上该 location。
+    # If the run's _metadata lacks location_id (e.g., not set by the vision pipeline), try matching again with get_store_chain.
+    # If a match is found in store_locations (including fuzzy matches), it shouldn't become a store_candidate, and the summary should include this location.
     resolved_chain_id: Optional[str] = None
     resolved_location_id: Optional[str] = None
     if receipt_data.get("merchant_name") and (not chain_id or not location_id):
@@ -1002,8 +1002,8 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             "message": f"Failed to save summary: {str(e)}"
         }
 
-    # 5b. 仅当在 store_locations 中既无 match 也无 fuzzy match（即 effective 仍缺 chain 或 location）时才创建 store_candidate。
-    #     若 get_store_chain 已匹配到门店（含 1–2 字母 fuzzy），effective_chain_id 与 effective_location_id 已在上文填好，不建 candidate。
+    # 5b. Only create a store_candidate if there's no match or fuzzy match in store_locations (i.e., effective chain/location is still missing).
+    #     If get_store_chain already matched a store (including fuzzy matches), effective_chain_id and effective_location_id are already set, so no candidate is created.
     merchant_name = (receipt_data.get("merchant_name") or "").strip()
     need_candidate = merchant_name and (not effective_chain_id or not effective_location_id)
     if need_candidate:

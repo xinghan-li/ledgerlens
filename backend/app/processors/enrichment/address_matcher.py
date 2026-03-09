@@ -550,18 +550,11 @@ def parse_full_address_to_components(full_address: Optional[str]) -> Dict[str, s
         return out
 
     # Optional: trailing country
-    if raw.upper().endswith(" USA") or raw.upper().endswith(", USA"):
-        out["country"] = "US"
-        raw = re.sub(r",?\s*USA\s*$", "", raw, flags=re.IGNORECASE).strip()
-    elif raw.upper().endswith(" US") or raw.upper().endswith(", US"):
-        out["country"] = "US"
-        raw = re.sub(r",?\s*US\s*$", "", raw, flags=re.IGNORECASE).strip()
-    elif raw.upper().endswith(" CANADA") or raw.upper().endswith(", CANADA"):
-        out["country"] = "CA"
-        raw = re.sub(r",?\s*CANADA\s*$", "", raw, flags=re.IGNORECASE).strip()
-    elif raw.upper().endswith(" CA") or raw.upper().endswith(", CA"):
-        out["country"] = "CA"
-        raw = re.sub(r",?\s*CA\s*$", "", raw, flags=re.IGNORECASE).strip()
+    country_match = re.search(r",?\s*(USA|US|CANADA|CA)\s*$", raw, flags=re.IGNORECASE)
+    if country_match:
+        country_str = country_match.group(1).upper()
+        out["country"] = "US" if country_str in ("USA", "US") else "CA"
+        raw = raw[:country_match.start()].strip()
 
     # 1) Leading unit: (#|Suite|Unit|Apt|Ste)? digits "-" -> address2 = digits only
     unit_match = re.match(

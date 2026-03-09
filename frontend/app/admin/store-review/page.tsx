@@ -142,15 +142,11 @@ export default function StoreReviewPage() {
   }
   const formatAddressLine = (r: Row) => {
     const a = getCardAddr(r)
-    const parts: string[] = []
-    if (a.address_line2 && a.address_line1) parts.push(`${a.address_line2} - ${a.address_line1}`)
-    else if (a.address_line2) parts.push(a.address_line2)
-    else if (a.address_line1) parts.push(a.address_line1)
-    if (a.city) parts.push(a.city)
-    if (a.state && a.zip_code) parts.push(`${a.state} ${a.zip_code}`)
-    else if (a.state) parts.push(a.state)
-    else if (a.zip_code) parts.push(a.zip_code)
-    if (a.country_code) parts.push(a.country_code)
+    const addressPart = a.address_line2 && a.address_line1
+      ? `${a.address_line2} - ${a.address_line1}`
+      : a.address_line2 || a.address_line1
+    const stateZipPart = a.state && a.zip_code ? `${a.state} ${a.zip_code}` : a.state || a.zip_code
+    const parts = [addressPart, a.city, stateZipPart, a.country_code].filter(Boolean)
     return parts.length ? parts.join(', ') : (getMetaAddress(r).full_address as string) ?? '—'
   }
 
