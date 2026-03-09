@@ -224,14 +224,16 @@ def match_store(
                 logger.info("[STORE_DEBUG] match_store OUT (address match): matched=True, location_id=%s", result.get("location_id"))
                 return result
             logger.debug(f"Address match score {best_score:.2f} but store name mismatch, skipping")
-        # Had address but no DB location matched => no match (do not fall back to name; send to store_candidates)
+        # Had address but no DB location matched => no match (caller may use best_score + phone for address correction)
         logger.info(f"Receipt has address but no store_location matched (best score: {best_score:.2f}). Will not assign any location.")
         if best_location and best_score >= 0.80:
             logger.info(
                 "[STORE_DEBUG] near-miss: addr_norm=%r | db_addr=%r (compare lengths/tokens to see why score < 0.90)",
                 addr_norm[:80], db_addr_best[:80],
             )
-        logger.info("[STORE_DEBUG] match_store OUT (address path, no match): matched=False")
+        result["best_score"] = best_score
+        result["best_location"] = best_location
+        logger.info("[STORE_DEBUG] match_store OUT (address path, no match): matched=False, best_score=%s", best_score)
         return result
 
     # 2) No address on receipt: name-only (location name or single-location chain only)
@@ -303,17 +305,31 @@ def match_store(
     return result
 
 
+def _phone_10_digits(s: Optional[str]) -> str:
+    """Extract exactly 10 digits from phone string (strip parentheses, dashes, spaces). For 11-digit (e.g. 1-xxx) use last 10."""
+    if not s or not isinstance(s, str):
+        return ""
+    digits = re.sub(r"\D", "", s)
+    if len(digits) >= 10:
+        return digits[-10:]
+    return digits
+
+
 def correct_address(
     llm_result: Dict[str, Any],
-    auto_correct: bool = True
+    auto_correct: bool = True,
+    phone_assist_threshold: float = 0.6,
 ) -> Dict[str, Any]:
     """
     Correct store address using fuzzy matching and canonical database.
-    
+    Used after first-round vision: if address match > phone_assist_threshold and
+    receipt phone (10 digits) equals location phone (10 digits), accept and correct
+    so that slightly damaged addresses still match.
+
     Args:
         llm_result: LLM processing result
         auto_correct: If True, automatically replace address; if False, only add suggestions
-    
+        phone_assist_threshold: When not matched, accept best candidate if score >= this and 10-digit phone match (default 0.6)
     Returns:
         Updated LLM result with corrected address (if auto_correct=True)
         or with correction suggestions in tbd section
@@ -323,27 +339,43 @@ def correct_address(
     store_address = _fix_ocr_address(receipt.get("merchant_address"))
     _addr_preview = (store_address[:100] + "...") if store_address and len(store_address) > 100 else store_address
     logger.info("[STORE_DEBUG] correct_address IN: merchant_name=%r, merchant_address=%r", store_name, _addr_preview)
-    
+
     if not store_name:
         logger.debug("No store name in receipt, skipping address correction")
         return llm_result
-    
-    # Match store
+
+    # Match store (address + name; may return best_score / best_location when not matched)
     match_result = match_store(store_name, store_address)
     logger.info(
-        "[STORE_DEBUG] correct_address match_result: matched=%s, location_id=%s",
+        "[STORE_DEBUG] correct_address match_result: matched=%s, location_id=%s, best_score=%s",
         match_result.get("matched"),
         match_result.get("location_id"),
+        match_result.get("best_score"),
     )
-    
-    if not match_result.get("matched"):
-        logger.debug(f"No canonical address found for: {store_name}")
-        return llm_result
-    
+
     matched_location = match_result.get("location_data")
+    phone_assisted = False
+    if not match_result.get("matched"):
+        # Phone-assisted match: score > threshold and 10-digit phone full match => still correct address (e.g. damaged 13109 vs 18109)
+        best_score = match_result.get("best_score") or 0
+        best_location = match_result.get("best_location")
+        if best_location and best_score >= phone_assist_threshold:
+            receipt_10 = _phone_10_digits(receipt.get("merchant_phone"))
+            loc_10 = _phone_10_digits(best_location.get("phone"))
+            if receipt_10 and loc_10 and receipt_10 == loc_10:
+                matched_location = best_location
+                phone_assisted = True
+                logger.info(
+                    "[STORE_DEBUG] correct_address: accepting by phone match (score=%.2f, 10-digit phone match)",
+                    best_score,
+                )
+        if not matched_location:
+            logger.debug("No canonical address found for: %s", store_name)
+            return llm_result
+
     if not matched_location:
         return llm_result
-    
+
     # Build canonical address
     canonical_address = build_address_string(matched_location)
     
@@ -402,7 +434,8 @@ def correct_address(
             "location_id": matched_location.get("id"),
             "original_store_name": store_name,
             "original_address": store_address,
-            "corrected": True
+            "corrected": True,
+            "phone_assisted": phone_assisted,
         }
 
         logger.info(f"Address corrected for: {store_name}")
@@ -491,15 +524,95 @@ def get_address_components(location: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def parse_full_address_to_components(full_address: Optional[str]) -> Dict[str, str]:
+    """
+    Parse a single-line full address into address1, address2, city, state, zip.
+    Used for store_candidates metadata so frontend can show split fields.
+
+    Rules:
+    1. Leading numbers with "-": e.g. "#3000-10153 King George Blvd" or "Suite 101-123 Main St"
+       -> Left of "-" (digits only, strip Suite/Unit/Apt/Ste) -> address2; rest -> address1 + city/state/zip.
+    2. address1 = street (first segment before comma, or after stripping address2 prefix).
+    3. After last comma: "City, ST Zip" -> city from second-to-last segment, state = 2-letter (strip .), zip = rest.
+    """
+    out = {
+        "address1": "",
+        "address2": "",
+        "city": "",
+        "state": "",
+        "country": "",
+        "zipcode": "",
+    }
+    if not full_address or not isinstance(full_address, str):
+        return out
+    raw = " ".join(full_address.replace("\n", " ").split()).strip()
+    if not raw:
+        return out
+
+    # Optional: trailing country
+    if raw.upper().endswith(" USA") or raw.upper().endswith(", USA"):
+        out["country"] = "US"
+        raw = re.sub(r",?\s*USA\s*$", "", raw, flags=re.IGNORECASE).strip()
+    elif raw.upper().endswith(" US") or raw.upper().endswith(", US"):
+        out["country"] = "US"
+        raw = re.sub(r",?\s*US\s*$", "", raw, flags=re.IGNORECASE).strip()
+    elif raw.upper().endswith(" CANADA") or raw.upper().endswith(", CANADA"):
+        out["country"] = "CA"
+        raw = re.sub(r",?\s*CANADA\s*$", "", raw, flags=re.IGNORECASE).strip()
+    elif raw.upper().endswith(" CA") or raw.upper().endswith(", CA"):
+        out["country"] = "CA"
+        raw = re.sub(r",?\s*CA\s*$", "", raw, flags=re.IGNORECASE).strip()
+
+    # 1) Leading unit: (#|Suite|Unit|Apt|Ste)? digits "-" -> address2 = digits only
+    unit_match = re.match(
+        r"^\s*(?:\#|(?:Suite|Unit|Apt|Ste)\s*)?(\d+)\s*-\s*(.+)$",
+        raw,
+        re.IGNORECASE,
+    )
+    if unit_match:
+        out["address2"] = unit_match.group(1)
+        raw = unit_match.group(2).strip()
+
+    # 2) Split by comma: "Street, City, ST Zip" or "Street, City, ST"
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        return out
+    if len(parts) >= 3:
+        out["address1"] = parts[0]
+        out["city"] = parts[-2]
+        state_zip = parts[-1]
+    elif len(parts) == 2:
+        out["address1"] = parts[0]
+        state_zip = parts[1]
+    else:
+        out["address1"] = parts[0]
+        return out
+
+    # 3) State: 2-letter (optional .); Zip: rest (Canadian can be "V6X 3L9")
+    state_zip_match = re.match(r"^([A-Za-z]{2})\.?\s*(.*)$", state_zip.strip())
+    if state_zip_match:
+        out["state"] = state_zip_match.group(1).strip().upper().replace(".", "")
+        zip_part = state_zip_match.group(2).strip()
+        if zip_part:
+            out["zipcode"] = zip_part
+    if not out["country"] and out["zipcode"]:
+        if re.match(r"^[A-Z]\d[A-Z]\s*\d[A-Z]\d$", out["zipcode"].replace(" ", "")):
+            out["country"] = "CA"
+        elif re.match(r"^\d{5}(-\d{4})?$", out["zipcode"]):
+            out["country"] = "US"
+    return out
+
+
 def extract_address_components_from_string(address_str: Optional[str]) -> Dict[str, str]:
     """
     Parse address string into components (fallback when no canonical match).
+    Prefers single-line comma format via parse_full_address_to_components when applicable.
     
     Args:
         address_str: Full address string (may contain newlines)
     
     Returns:
-        Dictionary with parsed address components
+        Dictionary with parsed address components (address1, address2, city, state, country, zipcode)
     """
     if not address_str:
         return {
@@ -510,8 +623,14 @@ def extract_address_components_from_string(address_str: Optional[str]) -> Dict[s
             "country": "",
             "zipcode": ""
         }
-    
-    # Split by newlines
+
+    one_line = " ".join(address_str.replace("\n", " ").split()).strip()
+    if one_line and "," in one_line:
+        parsed = parse_full_address_to_components(one_line)
+        if parsed.get("address1") or parsed.get("city") or parsed.get("state") or parsed.get("zipcode"):
+            return parsed
+
+    # Split by newlines for multi-line format
     lines = [line.strip() for line in address_str.split("\n") if line.strip()]
     
     components = {
@@ -528,23 +647,19 @@ def extract_address_components_from_string(address_str: Optional[str]) -> Dict[s
     
     # Last line might be country
     if len(lines) > 0 and lines[-1].upper() in ["USA", "CANADA", "US", "CA"]:
-        components["country"] = lines[-1].upper()
+        components["country"] = "US" if lines[-1].upper() in ("USA", "US") else "CA"
         lines = lines[:-1]
     
     if not lines:
         return components
     
-    # First line is address1, but may contain suite/unit info
-    import re
     first_line = lines[0]
     
     # Check for suite/unit patterns:
-    # Pattern 1: "123 Main St, Suite 101" or "123 Main St, Ste 101"
     suite_match = re.search(r'^(.*?),\s*(Suite|Ste|Unit|Apt|#)\s*(.+)$', first_line, re.IGNORECASE)
     if suite_match:
         components["address1"] = suite_match.group(1).strip()
         components["address2"] = f"{suite_match.group(2)} {suite_match.group(3)}".strip()
-    # Pattern 2: Canadian format "#1000-3700 No.3 Rd" (unit-building)
     elif re.match(r'^#\d+[-\s]\d+', first_line):
         unit_match = re.match(r'^(#\d+)[-\s](.+)$', first_line)
         if unit_match:
@@ -555,15 +670,10 @@ def extract_address_components_from_string(address_str: Optional[str]) -> Dict[s
     else:
         components["address1"] = first_line
     
-    # Last line(s): city, state, zip. Common formats:
-    # A) One line: "Kirkland, WA 98034"
-    # B) Two lines: "Kirkland, WA" + "98034"
     if len(lines) > 1:
         last_line = lines[-1].strip()
-        # Check if last line is zip-only (e.g. "98034" or "98034-1234")
         zip_only = re.match(r'^[A-Z0-9\s\-]{3,12}$', last_line) and re.search(r'\d', last_line)
         if len(lines) >= 2 and zip_only:
-            # Format B: second-to-last is "City, ST"
             city_state_line = lines[-2].strip()
             match = re.search(r'^(.*?),\s*([A-Za-z]{2})\s*$', city_state_line, re.IGNORECASE)
             if match:
@@ -574,7 +684,6 @@ def extract_address_components_from_string(address_str: Optional[str]) -> Dict[s
                 components["city"] = city_state_line
                 components["zipcode"] = last_line
         else:
-            # Format A or single line: "City, ST Zip" or "City, ST"
             city_state_zip = last_line
             match = re.search(r'^(.*?),\s*([A-Z]{2})\s+([A-Z0-9\s\-]+)$', city_state_zip)
             if match:
@@ -589,7 +698,6 @@ def extract_address_components_from_string(address_str: Optional[str]) -> Dict[s
                 else:
                     components["city"] = city_state_zip
     
-    # Middle lines (if any) are address2, ONLY if address2 wasn't already set from suite parsing
     if len(lines) > 2 and not components["address2"]:
         components["address2"] = ", ".join(lines[1:-1])
     

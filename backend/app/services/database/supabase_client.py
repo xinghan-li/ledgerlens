@@ -2237,12 +2237,13 @@ def create_store_candidate(
     if llm_result:
         receipt = llm_result.get("receipt", {})
         
-        # Extract address information (structured)
+        # Extract address information: always have address1, address2, city, state, zip (for frontend store-review form)
         address_info = {}
-        if receipt.get("merchant_address"):
-            address_info["full_address"] = receipt.get("merchant_address")
-        
-        # Prefer address_line1/address_line2 (prompt output) so DB gets correct split; fallback to address1/address2
+        full_addr = receipt.get("merchant_address") or ""
+        if full_addr:
+            address_info["full_address"] = full_addr
+
+        # Prefer structured fields from receipt (prompt output)
         addr1 = receipt.get("address_line1") or receipt.get("address1")
         addr2 = receipt.get("address_line2") or receipt.get("address2")
         if addr1:
@@ -2258,33 +2259,33 @@ def create_store_candidate(
         if receipt.get("country"):
             address_info["country"] = receipt.get("country")
         if receipt.get("zip_code") or receipt.get("zipcode"):
-            address_info["zip_code"] = receipt.get("zip_code") or receipt.get("zipcode")
-            address_info["zipcode"] = address_info["zip_code"]
+            z = receipt.get("zip_code") or receipt.get("zipcode")
+            address_info["zip_code"] = z
+            address_info["zipcode"] = z
 
-        # If structured fields are missing but we have merchant_address, try to parse it
-        if not address_info.get("address_line1") and not address_info.get("address1") and receipt.get("merchant_address"):
+        # When structured fields are missing, parse full_address into address1, address2, city, state, zip
+        if full_addr and (not address_info.get("address1") or not address_info.get("city")):
             try:
-                from ...processors.enrichment.address_matcher import extract_address_components_from_string
-                parsed_components = extract_address_components_from_string(receipt.get("merchant_address"))
-                if parsed_components:
-                    if parsed_components.get("address1"):
-                        address_info["address1"] = parsed_components["address1"]
-                        address_info.setdefault("address_line1", parsed_components["address1"])
-                    if parsed_components.get("address2"):
-                        address_info["address2"] = parsed_components["address2"]
-                        address_info.setdefault("address_line2", parsed_components["address2"])
-                    if parsed_components.get("city"):
-                        address_info["city"] = parsed_components["city"]
-                    if parsed_components.get("state"):
-                        address_info["state"] = parsed_components["state"]
-                    if parsed_components.get("country"):
-                        address_info["country"] = parsed_components["country"]
-                    if parsed_components.get("zipcode"):
-                        address_info["zipcode"] = parsed_components["zipcode"]
-                        address_info["zip_code"] = parsed_components["zipcode"]
+                from ...processors.enrichment.address_matcher import parse_full_address_to_components
+                parsed = parse_full_address_to_components(full_addr)
+                if parsed.get("address1"):
+                    address_info.setdefault("address1", parsed["address1"])
+                    address_info.setdefault("address_line1", parsed["address1"])
+                if parsed.get("address2"):
+                    address_info.setdefault("address2", parsed["address2"])
+                    address_info.setdefault("address_line2", parsed["address2"])
+                if parsed.get("city"):
+                    address_info.setdefault("city", parsed["city"])
+                if parsed.get("state"):
+                    address_info.setdefault("state", parsed["state"])
+                if parsed.get("country"):
+                    address_info.setdefault("country", parsed["country"])
+                if parsed.get("zipcode"):
+                    address_info.setdefault("zipcode", parsed["zipcode"])
+                    address_info.setdefault("zip_code", parsed["zipcode"])
             except Exception as e:
-                logger.warning(f"Failed to parse address from merchant_address: {e}")
-        
+                logger.warning("Parse full_address for store_candidate metadata: %s", e)
+
         if address_info:
             metadata["address"] = address_info
         
