@@ -6,16 +6,18 @@ from pydantic import Field, field_validator
 from typing import Optional, Any
 from dotenv import load_dotenv
 from pathlib import Path
+import os
 
-# Determine .env file path (backend/.env)
-_env_path = Path(__file__).parent.parent / ".env"
+_backend_dir = Path(__file__).parent.parent
+# When LEDGERLENS_ENV=production (e.g. sync script with --production), load .env.production
+_env_name = os.getenv("LEDGERLENS_ENV", "")
+_env_path = _backend_dir / ".env.production" if _env_name == "production" else _backend_dir / ".env"
 
 # Load environment variables from .env file
 # Use override=True to ensure environment variables take precedence over defaults
 load_dotenv(dotenv_path=_env_path, override=True)
 
 # Debug: Print loaded environment variables (for debugging only)
-import os
 _gemini_model_env = os.getenv("GEMINI_MODEL")
 if _gemini_model_env:
     print(f"[DEBUG] GEMINI_MODEL from environment: {_gemini_model_env}")
@@ -198,6 +200,7 @@ class Settings(BaseSettings):
         "env_file": str(_env_path),  # Use explicit .env file path
         "case_sensitive": False,
         "env_file_encoding": "utf-8",
+        "extra": "ignore",  # Ignore env vars not declared as fields (e.g. GOOGLE_APPLICATION_CREDENTIALS_JSON)
     }
 
 

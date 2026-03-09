@@ -477,14 +477,102 @@ def _has_item_count_mismatch(llm_result: Dict[str, Any]) -> bool:
     return len(items) != expected
 
 
+def _is_whole_foods_receipt(llm_result: Dict[str, Any]) -> bool:
+    """True if this receipt is for Whole Foods Market (for store-specific second round: date/time at end)."""
+    if not llm_result:
+        return False
+    receipt = llm_result.get("receipt", {})
+    name = (receipt.get("merchant_name") or receipt.get("store") or "").lower()
+    return "whole food" in name
+
+
+def _has_date_time_missing(llm_result: Dict[str, Any]) -> bool:
+    """True when purchase_date or purchase_time is missing (triggers Whole Foods second round)."""
+    if not llm_result:
+        return False
+    rec = llm_result.get("receipt") or {}
+    date_ok = rec.get("purchase_date") not in (None, "")
+    time_ok = rec.get("purchase_time") not in (None, "")
+    return not date_ok or not time_ok
+
+
 # Second-round prompts: store-specific content is loaded from prompt_library via
 # build_second_round_system_message() (prompt_key='receipt_parse_second', chain binding).
-# Costco → costco_second_round (052), Trader Joe's → trader_joes_second_round (057).
-# Code only sends a generic user message + first-pass JSON; no store-specific text here.
+# Whether to run second round is data-driven: after primary vision, resolve merchant to
+# chain_id; if the chain has a receipt_parse_second (chain-scoped) binding in DB, run second round.
 SECOND_ROUND_USER_MESSAGE_PREFIX = (
     "Refine the receipt JSON below according to the store-specific rules in your system message. "
     "Output only valid JSON.\n\n"
 )
+
+
+async def run_store_second_round(
+    first_llm_result: Dict[str, Any],
+    chain_id: Optional[str],
+    location_id: Optional[str],
+    llm_provider: str,
+    image_bytes: Optional[bytes] = None,
+    mime_type: str = "image/jpeg",
+) -> Optional[Dict[str, Any]]:
+    """
+    Run second LLM pass when the chain has a receipt_parse_second (chain-scoped) prompt in DB.
+    Caller should ensure has_chain_second_round_prompt(chain_id) before calling.
+    Uses build_second_round_system_message(chain_id) so prompt is loaded from DB (Costco, Trader Joe's, Whole Foods, etc.).
+    Returns refined result or None.
+    """
+    if not chain_id:
+        return None
+    system_message = build_second_round_system_message(
+        store_chain_id=chain_id,
+        location_id=location_id,
+        first_pass_result=first_llm_result,
+    )
+    if not (system_message or "").strip():
+        logger.warning("[Store second round] No second-round prompt loaded for chain_id=%s, skipping", chain_id)
+        return None
+    model = settings.gemini_model if llm_provider.lower() == "gemini" else settings.openai_model
+    logger.info("[Store second round] Running refinement for chain_id=%s with %s (vision=%s)", chain_id, model, image_bytes is not None)
+    try:
+        if llm_provider.lower() == "gemini" and image_bytes:
+            instruction = (
+                system_message
+                + "\n\nFIRST PASS RESULT (re-read the receipt image above and correct this JSON as needed):\n"
+                + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            )
+            second_result, _ = await parse_receipt_with_gemini_vision_escalation(
+                image_bytes=image_bytes,
+                instruction=instruction,
+                model=model,
+                mime_type=mime_type,
+            )
+        elif llm_provider.lower() == "gemini":
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            second_result = await parse_receipt_with_gemini(
+                system_message=system_message,
+                user_message=user_message,
+                model=model,
+                temperature=0.0,
+            )
+        else:
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            second_result = parse_receipt_with_llm(
+                system_message=system_message,
+                user_message=user_message,
+                model=model,
+                temperature=0.0,
+            )
+        if not second_result:
+            return None
+        second_result = _validate_llm_result(second_result, extracted_line_totals=None)
+        _detect_cc_rewards_and_fix_totals(second_result)
+        first_meta = first_llm_result.get("_metadata") or {}
+        second_meta = second_result.get("_metadata") or {}
+        second_result["_metadata"] = {**second_meta, **first_meta}
+        logger.info("[Store second round] Refinement completed for chain_id=%s", chain_id)
+        return second_result
+    except Exception as e:
+        logger.warning("[Store second round] Failed for chain_id=%s: %s", chain_id, e, exc_info=True)
+        return None
 
 
 async def run_costco_second_round(
@@ -626,6 +714,75 @@ async def run_trader_joes_second_round(
         return second_result
     except Exception as e:
         logger.warning("[Trader Joe's second round] Failed: %s", e, exc_info=True)
+        return None
+
+
+async def run_whole_foods_second_round(
+    first_llm_result: Dict[str, Any],
+    chain_id: Optional[str],
+    location_id: Optional[str],
+    llm_provider: str,
+    image_bytes: Optional[bytes] = None,
+    mime_type: str = "image/jpeg",
+) -> Optional[Dict[str, Any]]:
+    """
+    When receipt is Whole Foods Market and purchase_date and/or purchase_time are missing,
+    run a second LLM pass with whole_foods_market_second_round prompt so the model re-reads
+    the end of the receipt (above barcode) to extract date/time.
+    When image_bytes is provided (vision pipeline), re-sends the receipt image.
+    Returns refined result or None if second round was not run or failed.
+    """
+    if not chain_id or not _is_whole_foods_receipt(first_llm_result) or not _has_date_time_missing(first_llm_result):
+        return None
+    system_message = build_second_round_system_message(
+        store_chain_id=chain_id,
+        location_id=location_id,
+        first_pass_result=first_llm_result,
+    )
+    if not (system_message or "").strip():
+        logger.warning("[Whole Foods second round] No second-round prompt loaded for chain_id=%s, skipping", chain_id)
+        return None
+    model = settings.gemini_model if llm_provider.lower() == "gemini" else settings.openai_model
+    logger.info("[Whole Foods second round] Running refinement with %s (model=%s, vision=%s)", llm_provider, model, image_bytes is not None)
+    try:
+        if llm_provider.lower() == "gemini" and image_bytes:
+            instruction = (
+                system_message
+                + "\n\nFIRST PASS RESULT (re-read the receipt image above and correct this JSON as needed):\n"
+                + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            )
+            second_result, _ = await parse_receipt_with_gemini_vision_escalation(
+                image_bytes=image_bytes,
+                instruction=instruction,
+                model=model,
+                mime_type=mime_type,
+            )
+        elif llm_provider.lower() == "gemini":
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            second_result = await parse_receipt_with_gemini(
+                system_message=system_message,
+                user_message=user_message,
+                model=model,
+                temperature=0.0,
+            )
+        else:
+            user_message = SECOND_ROUND_USER_MESSAGE_PREFIX + json.dumps(first_llm_result, ensure_ascii=False, indent=2)
+            second_result = parse_receipt_with_llm(
+                system_message=system_message,
+                user_message=user_message,
+                model=model,
+                temperature=0.0,
+            )
+        if not second_result:
+            return None
+        second_result = _validate_llm_result(second_result, extracted_line_totals=None)
+        first_meta = first_llm_result.get("_metadata") or {}
+        second_meta = second_result.get("_metadata") or {}
+        second_result["_metadata"] = {**second_meta, **first_meta}
+        logger.info("[Whole Foods second round] Refinement completed")
+        return second_result
+    except Exception as e:
+        logger.warning("[Whole Foods second round] Failed: %s", e, exc_info=True)
         return None
 
 

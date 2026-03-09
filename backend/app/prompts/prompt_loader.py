@@ -224,6 +224,23 @@ def load_second_round_prompts(
     )
 
 
+def has_chain_second_round_prompt(store_chain_id: Optional[str]) -> bool:
+    """
+    True if this chain has a chain-scoped binding for receipt_parse_second
+    (i.e. there is a store-specific round-2 prompt in the DB for this chain).
+    Used to decide whether to run second round after primary vision.
+    """
+    if not store_chain_id:
+        return False
+    _populate_binding_cache()
+    bindings = _binding_cache.get("receipt_parse_second", [])
+    chain_id_str = str(store_chain_id)
+    for _priority, entry in bindings:
+        if entry.get("scope") == "chain" and str(entry.get("chain_id") or "") == chain_id_str:
+            return True
+    return False
+
+
 def get_debug_prompt_system(prompt_key: str) -> Optional[str]:
     """
     Load the system prompt for a debug cascade step (e.g. receipt_parse_debug_ocr, receipt_parse_debug_vision).

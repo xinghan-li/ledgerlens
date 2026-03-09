@@ -25,6 +25,7 @@ from ..database.supabase_client import (
     build_merchant_address_from_structured,
     get_store_chain,
     save_receipt_summary,
+    update_receipt_summary,
     save_receipt_items,
     enqueue_unmatched_items_to_classification_review,
     _store_name_to_title_case,
@@ -534,6 +535,9 @@ def _normalize_output_payload_to_dollars(
     items = []
     for it in items_data or []:
         item = dict(it)
+        # 部分 vision/LLM 输出用 amount 表示行金额，统一当作 line_total 参与后续归一化
+        if item.get("line_total") is None and item.get("amount") is not None:
+            item["line_total"] = item["amount"]
         for key in ("line_total", "unit_price", "original_price", "discount_amount"):
             v = item.get(key)
             if v is not None:
@@ -770,20 +774,29 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             "message": f"Cannot categorize: {reason}"
         }
     
-    # 2. 检查是否已经 categorize 过
+    # 2. 检查是否已经完整 categorize 过（既有 summary 又有 record_items）
+    #    若仅有 summary 无 record_items（例如之前写入 summary 后 items 失败/回滚失败），则继续补写 items
     if not force:
         existing_summary = supabase.table("record_summaries")\
             .select("id")\
             .eq("receipt_id", receipt_id)\
             .execute()
-        
-        if existing_summary.data:
-            logger.info(f"Receipt {receipt_id} already categorized")
+        existing_items = supabase.table("record_items")\
+            .select("id")\
+            .eq("receipt_id", receipt_id)\
+            .limit(1)\
+            .execute()
+        has_summary = bool(existing_summary.data)
+        has_items = bool(existing_items.data)
+        if has_summary and has_items:
+            logger.info(f"Receipt {receipt_id} already categorized (summary + items present)")
             return {
                 "success": True,
                 "receipt_id": receipt_id,
                 "message": "Already categorized (use force=true to re-categorize)"
             }
+        if has_summary and not has_items:
+            logger.info(f"Receipt {receipt_id} has summary but no record_items; will backfill items from run")
     
     # 3. 读取 receipt 和 processing run（vision_b 用 vision_primary/vision_escalation，否则用 llm）
     try:
@@ -915,22 +928,49 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             logger.info(f"Deleted existing categorization data for {receipt_id}")
         except Exception as e:
             logger.warning(f"Failed to delete old data: {e}")
+
+    # 4b. 保证 receipt 有 total，避免 save_receipt_summary 因缺 total 抛错导致整条链路不写 record_items
+    if not receipt_data.get("total") and items_data:
+        items_sum = sum((item.get("line_total") or 0) for item in items_data)
+        if items_sum > 0:
+            receipt_data["total"] = round(items_sum + (receipt_data.get("tax") or 0) + (receipt_data.get("fees") or 0), 2)
+            logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: derived receipt_data.total={receipt_data['total']} from items+tax+fees")
+    if not receipt_data.get("total"):
+        st, tx, fe = receipt_data.get("subtotal") or 0, receipt_data.get("tax") or 0, receipt_data.get("fees") or 0
+        if st or tx or fe:
+            receipt_data["total"] = round((st or 0) + (tx or 0) + (fe or 0), 2)
+            logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: derived receipt_data.total={receipt_data['total']} from subtotal+tax+fees")
     
-    # 5. 保存 receipt_summary（用解析后的 store_chain_id_uuid 写入，确保 record_summaries.store_chain_id 为 UUID，从而存首字母大写的 chain name）
+    # 5. 保存或更新 receipt_summary（有 summary 无 items 时只更新 summary 并补写 items，不重复 insert）
     summary_id = None
+    summary_created_in_this_run = False
     try:
-        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: calling save_receipt_summary (items={len(items_data)})")
-        summary_id = save_receipt_summary(
-            receipt_id=receipt_id,
-            user_id=user_id,
-            receipt_data=receipt_data,
-            chain_id=store_chain_id_uuid or chain_id,
-            location_id=location_id,
-            items_data=items_data,
-        )
-        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ✅ save_receipt_summary OK, summary_id={summary_id}")
+        if has_summary and not has_items:
+            logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: backfill items path — calling update_receipt_summary")
+            summary_id = update_receipt_summary(
+                receipt_id=receipt_id,
+                user_id=user_id,
+                receipt_data=receipt_data,
+                chain_id=store_chain_id_uuid or chain_id,
+                location_id=location_id,
+                items_data=items_data,
+            )
+            if summary_id:
+                logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ✅ update_receipt_summary OK")
+        if summary_id is None:
+            logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: calling save_receipt_summary (items={len(items_data)})")
+            summary_id = save_receipt_summary(
+                receipt_id=receipt_id,
+                user_id=user_id,
+                receipt_data=receipt_data,
+                chain_id=store_chain_id_uuid or chain_id,
+                location_id=location_id,
+                items_data=items_data,
+            )
+            summary_created_in_this_run = True
+            logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ✅ save_receipt_summary OK, summary_id={summary_id}")
     except Exception as e:
-        logger.error(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ❌ save_receipt_summary failed: {e}", exc_info=True)
+        logger.error(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ❌ save/update summary failed: {e}", exc_info=True)
         return {
             "success": False,
             "receipt_id": receipt_id,
@@ -977,11 +1017,13 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ✅ save_receipt_items OK, count={len(item_ids)}")
     except Exception as e:
         logger.error(f"[CAT_DEBUG] categorize_receipt {receipt_id}: ❌ save_receipt_items failed: {e}", exc_info=True)
-        # 如果 items 保存失败，回滚 summary
-        try:
-            supabase.table("record_summaries").delete().eq("id", summary_id).execute()
-        except Exception as rollback_error:
-            logger.warning(f"Failed to rollback summary {summary_id}: {rollback_error}")
+        # 仅当本次 run 新建了 summary 时才回滚；若本次只是补写 items（已有 summary）则不删 summary
+        if summary_created_in_this_run and summary_id:
+            try:
+                supabase.table("record_summaries").delete().eq("id", summary_id).execute()
+                logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: rolled back summary {summary_id}")
+            except Exception as rollback_error:
+                logger.warning(f"Failed to rollback summary {summary_id}: {rollback_error}")
         return {
             "success": False,
             "receipt_id": receipt_id,

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { getFirebaseAuth } from '@/lib/firebase'
 import { isSignInWithEmailLink, signInWithEmailLink } from 'firebase/auth'
+import { getApiBaseUrl } from '@/lib/api-url'
 
 const EMAIL_FOR_SIGNIN_KEY = 'emailForSignIn'
 
@@ -30,9 +31,22 @@ export default function AuthCallbackPage() {
     }
 
     signInWithEmailLink(auth, email, href)
-      .then(() => {
+      .then(async (userCred) => {
         window.localStorage.removeItem(EMAIL_FOR_SIGNIN_KEY)
         setStatus('success')
+        // Sync user to Supabase (find-or-create) before redirect so they appear in public.users
+        const user = userCred?.user ?? auth.currentUser
+        if (user) {
+          try {
+            const token = await user.getIdToken()
+            const base = await getApiBaseUrl()
+            await fetch(`${base.replace(/\/$/, '')}/api/auth/me`, {
+              headers: { Authorization: `Bearer ${token}` },
+            })
+          } catch (_) {
+            // Still redirect; user will be created on next protected API call
+          }
+        }
         router.replace('/dashboard')
       })
       .catch((err: { code?: string; message?: string }) => {
