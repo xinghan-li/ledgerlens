@@ -896,7 +896,32 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     )
     if store_chain_id_uuid and store_chain_id_uuid != (chain_id or ""):
         logger.info(f"Resolved store_chain_id for rules: {chain_id!r} -> {store_chain_id_uuid}")
-    
+
+    # If the run's _metadata lacks location_id (e.g., not set by the vision pipeline), try matching again with get_store_chain.
+    # If a match is found in store_locations (including fuzzy matches), it shouldn't become a store_candidate, and the summary should include this location.
+    resolved_chain_id: Optional[str] = None
+    resolved_location_id: Optional[str] = None
+    if receipt_data.get("merchant_name") and (not chain_id or not location_id):
+        try:
+            match_result = get_store_chain(
+                receipt_data.get("merchant_name"),
+                receipt_data.get("merchant_address"),
+            )
+            if match_result.get("matched"):
+                resolved_chain_id = match_result.get("chain_id")
+                resolved_location_id = match_result.get("location_id")
+                if resolved_chain_id or resolved_location_id:
+                    logger.info(
+                        "[STORE_DEBUG] categorize_receipt: get_store_chain matched (metadata missing store ids): chain_id=%s, location_id=%s",
+                        resolved_chain_id,
+                        resolved_location_id,
+                    )
+        except Exception as e:
+            logger.debug("get_store_chain in categorizer (resolve location): %s", e)
+
+    effective_chain_id = store_chain_id_uuid or chain_id or resolved_chain_id
+    effective_location_id = location_id or resolved_location_id
+
     logger.info(f"Retrieved output_payload: {len(items_data)} items (normalized to dollars)")
 
     # Subtotal correction: if sum(items) + tax + fees ≈ total, always use sum(items) as subtotal so we never persist a wrong subtotal from the model
@@ -916,7 +941,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
                 )
     
     # 4a. Enrich items with category_id from product_categorization_rules (use UUID, not string tag)
-    _enrich_items_category_from_rules(items_data, store_chain_id_uuid)
+    _enrich_items_category_from_rules(items_data, effective_chain_id)
     # 4b. For items still without category_id, call LLM to suggest category (so record_items get category_id when level-3 exists)
     _enrich_items_category_from_llm_sync(items_data, receipt_data.get("merchant_name"))
     
@@ -951,8 +976,8 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
                 receipt_id=receipt_id,
                 user_id=user_id,
                 receipt_data=receipt_data,
-                chain_id=store_chain_id_uuid or chain_id,
-                location_id=location_id,
+                chain_id=effective_chain_id,
+                location_id=effective_location_id,
                 items_data=items_data,
             )
             if summary_id:
@@ -963,8 +988,8 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
                 receipt_id=receipt_id,
                 user_id=user_id,
                 receipt_data=receipt_data,
-                chain_id=store_chain_id_uuid or chain_id,
-                location_id=location_id,
+                chain_id=effective_chain_id,
+                location_id=effective_location_id,
                 items_data=items_data,
             )
             summary_created_in_this_run = True
@@ -977,11 +1002,8 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             "message": f"Failed to save summary: {str(e)}"
         }
 
-    # 5b. When no store match or no location (new location for existing chain), create store_candidate so admin can approve.
-    #     _resolve_store_chain_id_uuid can resolve chain by name only (e.g. T&T) so we get effective_chain_id but no location_id
-    #     for a new address (e.g. T&T Surrey); we must still create a candidate so admin can add the location.
-    effective_chain_id = store_chain_id_uuid or chain_id
-    effective_location_id = location_id
+    # 5b. Only create a store_candidate if there's no match or fuzzy match in store_locations (i.e., effective chain/location is still missing).
+    #     If get_store_chain already matched a store (including fuzzy matches), effective_chain_id and effective_location_id are already set, so no candidate is created.
     merchant_name = (receipt_data.get("merchant_name") or "").strip()
     need_candidate = merchant_name and (not effective_chain_id or not effective_location_id)
     if need_candidate:
