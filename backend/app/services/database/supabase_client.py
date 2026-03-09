@@ -431,6 +431,7 @@ def get_user_class(user_id: str) -> int:
     Used for rate limit bypass and duplicate-upload allowance.
     """
     if not user_id:
+        logger.warning("get_user_class: empty user_id, returning 0")
         return USER_CLASS_FREE
     supabase = _get_client()
     try:
@@ -441,9 +442,15 @@ def get_user_class(user_id: str) -> int:
                 result = int(val)
                 logger.debug("get_user_class(%s) = %s (raw=%r)", user_id, result, val)
                 return result
-            logger.warning("get_user_class(%s): user_class is None in DB row", user_id)
+            logger.warning(
+                "get_user_class(%s): returning 0 — row exists but user_class is None (check DB)",
+                user_id,
+            )
         else:
-            logger.warning("get_user_class(%s): no rows returned from users table", user_id)
+            logger.warning(
+                "get_user_class(%s): returning 0 — no row in users for this id (check id/firebase_uid)",
+                user_id,
+            )
     except Exception as e:
         logger.warning("get_user_class(%s) failed: %s", user_id, e, exc_info=True)
     return USER_CLASS_FREE
@@ -1164,6 +1171,13 @@ def save_receipt_summary(
         receipt_for_info["merchant_phone"] = location_phone
     information = _build_information_json(receipt_for_info, items_data or [], supabase, store_chain_id)
     
+    # record_summaries.receipt_date 是 NOT NULL，无日期时用当天避免 insert 失败导致整条不写 record_items
+    receipt_date_value = purchase_date
+    if receipt_date_value is None or (isinstance(receipt_date_value, str) and not receipt_date_value.strip()):
+        from datetime import date
+        receipt_date_value = date.today().isoformat()
+        logger.info("[SAVE_SUMMARY_DEBUG] receipt_id=%s missing purchase_date, using today: %s", receipt_id, receipt_date_value)
+
     payload = {
         "receipt_id": receipt_id,
         "user_id": user_id,
@@ -1178,7 +1192,7 @@ def save_receipt_summary(
         "currency": currency,
         "payment_method": payment_method,
         "payment_last4": card_last4,
-        "receipt_date": purchase_date,
+        "receipt_date": receipt_date_value,
         "information": information,
     }
     
@@ -1435,7 +1449,16 @@ def save_receipt_items(
         unit = item.get("unit")
         unit_price = item.get("unit_price")
         line_total = item.get("line_total")
-        
+        # 若模型未返回 line_total，用 quantity * unit_price 推导，避免整单商品被跳过导致不写 record_items
+        if line_total is None and quantity is not None and unit_price is not None:
+            try:
+                q = float(quantity)
+                u = float(unit_price)
+                if q > 0 and u >= 0:
+                    line_total = round(q * u, 2)
+                    logger.debug("[SAVE_ITEMS_DEBUG] derived line_total=%.2f from qty*unit_price for %r", line_total, (product_name or "")[:40])
+            except (TypeError, ValueError):
+                pass
         if line_total is None:
             logger.warning(f"Skipping item '{product_name}' without line_total")
             continue
@@ -2344,7 +2367,8 @@ def list_receipts_by_user(
         sum_res = f_summaries.result()
         fallback_names = f_fallback.result()
 
-    summary_by_id = {s["receipt_id"]: s for s in (sum_res.data or [])}
+    # 统一用 str(receipt_id) 做 key，避免 Supabase 返回 UUID 与前端/比较时字符串不一致导致取不到
+    summary_by_id = {str(s["receipt_id"]): s for s in (sum_res.data or [])}
     chain_ids = {s.get("store_chain_id") for s in (sum_res.data or []) if s.get("store_chain_id")}
     chain_name_by_id: Dict[str, str] = {}
     if chain_ids:
@@ -2354,7 +2378,8 @@ def list_receipts_by_user(
             chain_name_by_id = {str(c["id"]): c.get("name", "") for c in ch.data}
 
     for r in rows:
-        s = summary_by_id.get(r["id"]) or {}
+        rid_str = str(r["id"])
+        s = summary_by_id.get(rid_str) or {}
         r["store_chain_id"] = s.get("store_chain_id")
         sid = s.get("store_chain_id")
         raw_chain = chain_name_by_id.get(str(sid)) if sid else None
@@ -2363,7 +2388,7 @@ def list_receipts_by_user(
         r["receipt_date"] = s.get("receipt_date")
         # Apply pre-fetched fallback merchant name for receipts still without a store_name
         if not (r.get("store_name") or "").strip():
-            name = fallback_names.get(str(r["id"]))
+            name = fallback_names.get(rid_str)
             if name:
                 r["store_name"] = _store_name_to_title_case(name) or name
 
@@ -2371,7 +2396,8 @@ def list_receipts_by_user(
 
 
 def _merchant_name_from_latest_llm_run(supabase: Client, receipt_ids: List[str]) -> Dict[str, str]:
-    """For each receipt_id, get merchant_name from the latest LLM run's output_payload (receipt.merchant_name or _metadata.merchant_name)."""
+    """For each receipt_id, get merchant_name from the latest pass run's output_payload (receipt.merchant_name or _metadata.merchant_name).
+    Includes both llm (legacy) and vision_* stages so vision pipeline receipts get fallback when record_summaries.store_name is missing."""
     if not receipt_ids:
         return {}
     try:
@@ -2379,7 +2405,7 @@ def _merchant_name_from_latest_llm_run(supabase: Client, receipt_ids: List[str])
             supabase.table("receipt_processing_runs")
             .select("receipt_id, output_payload, created_at")
             .in_("receipt_id", receipt_ids)
-            .eq("stage", "llm")
+            .in_("stage", ["llm", "vision_primary", "vision_store_specific", "vision_escalation"])
             .eq("status", "pass")
             .order("created_at", desc=True)
             .execute()
@@ -2400,7 +2426,11 @@ def _merchant_name_from_latest_llm_run(supabase: Client, receipt_ids: List[str])
                 payload = json.loads(payload)
             except Exception:
                 continue
-        name = (payload.get("receipt") or {}).get("merchant_name") or (payload.get("_metadata") or {}).get("merchant_name")
+        meta = payload.get("_metadata") or {}
+        rec = payload.get("receipt") or {}
+        name = rec.get("merchant_name") or meta.get("merchant_name")
+        if not name and isinstance(meta.get("address_correction"), dict):
+            name = (meta["address_correction"] or {}).get("canonical_store_name")
         if name and isinstance(name, str) and name.strip():
             out[rid] = name.strip()
     return out
@@ -2464,6 +2494,8 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
         cat_ids = [x for x in cat_ids if x]
 
     needs_review = status_row.get("current_status") == "needs_review"
+    # When record_summaries or record_items are missing, fill from latest pass run so UI shows receipt/items (e.g. vision wrote run but categorize failed).
+    need_run_fallback = (s is None) or not (items.data or [])
     # store_name and store_address are already denormalized at write time (save/update_receipt_summary);
     # no need to read store_chains or store_locations here.
     cats_result: Any = None
@@ -2475,13 +2507,13 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
         return supabase.table("categories").select("id, path").in_("id", cat_ids).execute()
 
     def _fetch_runs() -> Any:
-        if not needs_review:
+        if not needs_review and not need_run_fallback:
             return None
         return (
             supabase.table("receipt_processing_runs")
             .select("output_payload")
             .eq("receipt_id", receipt_id)
-            .in_("stage", ["vision_primary", "vision_escalation"])
+            .in_("stage", ["llm", "vision_primary", "vision_store_specific", "vision_escalation"])
             .eq("status", "pass")
             .order("created_at", desc=True)
             .limit(1)
@@ -2492,7 +2524,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
         futures = []
         if cat_ids:
             futures.append(("cats", ex2.submit(_fetch_categories)))
-        if needs_review:
+        if needs_review or need_run_fallback:
             futures.append(("runs", ex2.submit(_fetch_runs)))
         for key, fut in futures:
             res = fut.result()
@@ -2555,34 +2587,106 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
                 "category_source": it.get("category_source"),
             })
 
+    # When record_summaries/record_items are missing, fill from latest pass run so UI shows data (e.g. vision success but DB write failed).
+    if need_run_fallback and runs_result and runs_result.data:
+        try:
+            out = runs_result.data[0].get("output_payload") or {}
+            if isinstance(out, str):
+                out = json.loads(out) if out else {}
+            rec = out.get("receipt") or {}
+            meta = out.get("_metadata") or {}
+            addr_corr = meta.get("address_correction") or {}
+            if s is None:
+                # Build receipt_data entirely from run (amounts in payload are cents).
+                store_name = (rec.get("merchant_name") or addr_corr.get("canonical_store_name") or "").strip()
+                if store_name:
+                    store_name = _store_name_to_title_case(store_name) or store_name
+                receipt_data = {
+                    "merchant_name": store_name or None,
+                    "merchant_address": rec.get("merchant_address") or None,
+                    "merchant_phone": rec.get("merchant_phone") or None,
+                    "country": rec.get("country"),
+                    "currency": rec.get("currency") or "USD",
+                    "purchase_date": rec.get("purchase_date"),
+                    "purchase_time": rec.get("purchase_time"),
+                    "subtotal": _cents_to_dollars(rec.get("subtotal")),
+                    "tax": _cents_to_dollars(rec.get("tax")),
+                    "total": _cents_to_dollars(rec.get("total")),
+                    "payment_method": rec.get("payment_method"),
+                    "card_last4": rec.get("card_last4"),
+                }
+            if not items_data:
+                run_items = out.get("items") or []
+                for i, it in enumerate(run_items):
+                    qty = it.get("quantity")
+                    qty_display = qty if qty is not None and isinstance(qty, (int, float)) else None
+                    items_data.append({
+                        "id": None,
+                        "product_name": it.get("product_name"),
+                        "quantity": qty_display,
+                        "unit": it.get("unit"),
+                        "unit_price": _cents_to_dollars(it.get("unit_price")),
+                        "line_total": _cents_to_dollars(it.get("line_total")),
+                        "on_sale": it.get("on_sale") or it.get("is_on_sale") or False,
+                        "original_price": _cents_to_dollars(it.get("original_price")),
+                        "discount_amount": _cents_to_dollars(it.get("discount_amount")),
+                        "category_path": None,
+                        "category_id": None,
+                        "category_source": None,
+                    })
+            elif s is not None and receipt_data and receipt_data.get("total") is None and rec:
+                # Summary exists but totals missing; fill from run.
+                if rec.get("subtotal") is not None:
+                    receipt_data["subtotal"] = _cents_to_dollars(rec.get("subtotal"))
+                if rec.get("tax") is not None:
+                    receipt_data["tax"] = _cents_to_dollars(rec.get("tax"))
+                if rec.get("total") is not None:
+                    receipt_data["total"] = _cents_to_dollars(rec.get("total"))
+        except Exception as e:
+            logger.debug("Fallback from run payload for receipt detail failed: %s", e)
+
     review_feedback: Optional[str] = None
     review_metadata: Optional[Dict[str, Any]] = None
+    chain_name_out: Optional[str] = None
+    if s:
+        chain_name_out = (
+            _store_name_to_title_case(s.get("store_name")) if (s.get("store_chain_id") and s.get("store_name")) else None
+        )
+    elif receipt_data and receipt_data.get("merchant_name"):
+        chain_name_out = receipt_data.get("merchant_name")
     if runs_result and runs_result.data and len(runs_result.data) > 0:
         try:
             out = runs_result.data[0].get("output_payload") or {}
             meta = out.get("_metadata") or {}
             notes = (meta.get("sum_check_notes") or "").strip()
             reasoning = (meta.get("reasoning") or "").strip()
+            sum_check_passed = meta.get("sum_check_passed")
+            ic_receipt = meta.get("item_count_on_receipt")
+            ic_extracted = meta.get("item_count_extracted")
+            item_count_matches = (
+                ic_receipt is not None
+                and ic_extracted is not None
+                and (ic_receipt == ic_extracted if isinstance(ic_receipt, type(ic_extracted)) else str(ic_receipt) == str(ic_extracted))
+            )
             if notes:
                 review_feedback = notes
             elif meta.get("validation_status") == "needs_review":
                 review_feedback = "Model requested manual review."
+            # Only show sum_check_notes when sum check did not pass (avoid redundant "Sum check passed" in UI)
+            sum_check_notes_out = None if sum_check_passed is True else (notes or None)
+            # Only show item count in review_metadata when there is a mismatch (avoid "receipt says 1, extracted 1")
             review_metadata = {
                 "validation_status": meta.get("validation_status"),
                 "reasoning": reasoning or None,
-                "sum_check_notes": notes or None,
-                "item_count_on_receipt": meta.get("item_count_on_receipt"),
-                "item_count_extracted": meta.get("item_count_extracted"),
+                "sum_check_notes": sum_check_notes_out,
+                "item_count_on_receipt": None if item_count_matches else ic_receipt,
+                "item_count_extracted": None if item_count_matches else ic_extracted,
                 "confidence": meta.get("confidence"),
             }
             review_metadata = {k: v for k, v in review_metadata.items() if v is not None}
         except Exception as e:
             logger.debug("Could not load review_feedback for needs_review receipt: %s", e)
 
-    # When store_chain_id is set, store_name in record_summaries was already overwritten with chain name at write time
-    chain_name_out = (
-        _store_name_to_title_case(s.get("store_name")) if (s and s.get("store_chain_id") and s.get("store_name")) else None
-    )
     return {
         "success": True,
         "receipt_id": receipt_id,

@@ -1295,6 +1295,14 @@ async def get_categories_for_user(user_id: str = Depends(get_current_user)):
     return {"data": get_categories_tree(active_only=True)}
 
 
+def _is_valid_uuid(s: str) -> bool:
+    """Basic UUID format check (36 chars, 4 hyphens). Rejects 'null' and empty."""
+    if not s or not isinstance(s, str) or s.strip().lower() == "null":
+        return False
+    s = s.strip()
+    return len(s) == 36 and s.count("-") == 4
+
+
 @app.patch("/api/receipt/{receipt_id}/item/{item_id}/category", tags=["Receipts - Other"])
 async def update_item_category(
     receipt_id: str,
@@ -1303,6 +1311,13 @@ async def update_item_category(
     user_id: str = Depends(get_current_user),
 ):
     """Update one record_item's category_id. Body: { \"category_id\": \"uuid\" or null }. Must be receipt owner."""
+    if not _is_valid_uuid(receipt_id):
+        raise HTTPException(status_code=400, detail="Invalid receipt_id")
+    if not _is_valid_uuid(item_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid item_id. The item may not be saved yet (e.g. from run preview); complete review first.",
+        )
     category_id = body.get("category_id")
     if category_id is not None and not isinstance(category_id, str):
         category_id = str(category_id) if category_id else None
@@ -1589,10 +1604,16 @@ async def require_admin(user_id: str = Depends(get_current_user)) -> str:
     try:
         raw = await asyncio.to_thread(get_user_class, user_id)
         user_class = int(raw) if raw is not None else 0
-        logger.info("require_admin: user_id=%s user_class=%s (need>=%s)", user_id, user_class, _REQUIRE_ADMIN_MIN_TIER)
         if user_class >= _REQUIRE_ADMIN_MIN_TIER:
+            logger.debug("require_admin: user_id=%s user_class=%s OK", user_id, user_class)
             return user_id
-        # Use structured detail so frontend shows "code: REQUIRE_ADMIN_DENIED" (not "7" as error code)
+        # Log at WARNING so it appears in production when LOG_LEVEL=WARNING; search for "require_admin" in logs
+        logger.warning(
+            "require_admin: user_id=%s user_class=%s (need>=%s) — access denied",
+            user_id, user_class, _REQUIRE_ADMIN_MIN_TIER,
+        )
+        # Use structured detail so frontend shows "code: REQUIRE_ADMIN_DENIED" (not "7" as error code).
+        # Include user_id so operator can verify in DB: SELECT id, user_class FROM users WHERE id = '<user_id>'
         raise HTTPException(
             status_code=403,
             detail={
@@ -1600,6 +1621,7 @@ async def require_admin(user_id: str = Depends(get_current_user)) -> str:
                 "message": "Access denied. Required: admin or super_admin.",
                 "required_tier_min": _REQUIRE_ADMIN_MIN_TIER,
                 "current_tier": user_class,
+                "user_id": user_id,
             },
         )
     except HTTPException:

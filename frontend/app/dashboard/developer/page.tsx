@@ -1004,6 +1004,10 @@ export default function DeveloperDashboardPage() {
                                             }
                                             const confirmEdit = async () => {
                                               if (!r.id || !token) return
+                                              if (!itemId) {
+                                                setCategoryUpdateMessage('Item not saved yet; complete review first')
+                                                return
+                                              }
                                               setCategoryUpdateMessage(null)
                                               const toSend = editCatL3 || editCatL2 || editCatL1 || null
                                               try {
@@ -1078,7 +1082,7 @@ export default function DeveloperDashboardPage() {
                                                     <div className="truncate text-theme-dark-404" title={c1}>{c1}</div>
                                                     <div className="truncate text-theme-dark-404" title={c2}>{c2}</div>
                                                     <div className="truncate text-theme-dark-404" title={c3}>{c3}</div>
-                                                    <button type="button" className="p-1 text-theme-gray-666 hover:text-theme-dark-404 hover:bg-theme-ivory-dark rounded w-5 h-5 flex items-center justify-center" onClick={startEdit} title="Edit">✏️</button>
+                                                    <button type="button" className={`p-1 rounded w-5 h-5 flex items-center justify-center ${itemId ? 'text-theme-gray-666 hover:text-theme-dark-404 hover:bg-theme-ivory-dark' : 'text-theme-mid cursor-not-allowed opacity-50'}`} onClick={itemId ? startEdit : undefined} title={itemId ? 'Edit' : 'Item not saved yet; complete review first'}>✏️</button>
                                                   </>
                                                 )}
                                               </div>

@@ -201,8 +201,22 @@ async def get_current_user(
                     logger.info("Authenticated via Firebase: user_id=%s", user_id)
                     _cache_user_id(token, user_id)
                     return user_id
+                # get_or_create_user_id returned None (e.g. empty firebase_uid)
+                logger.error("Firebase get_or_create_user_id returned None for firebase_uid=%s", firebase_uid)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User creation or lookup failed. Please try again or contact support.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            except HTTPException:
+                raise
             except Exception as e:
-                logger.warning("Firebase get_or_create_user_id failed: %s", e)
+                logger.error("Firebase get_or_create_user_id failed: %s", e, exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User creation or lookup failed. Please try again or contact support.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
         else:
             # Firebase verification failed but token looks like Firebase (RS256 + typical Google kid length); return explicit error instead of trying Supabase JWKS
             if token_alg == "RS256" and len(token_kid) == 40:
