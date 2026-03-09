@@ -123,10 +123,14 @@ def _get_client() -> Client:
                 "SUPABASE_URL and SUPABASE_ANON_KEY must be set in environment"
             )
         
-        # Use service role key if available, otherwise use anon key
+        # Use service role key if available, otherwise use anon key (RLS can block reads/writes with anon)
         key = settings.supabase_service_role_key or settings.supabase_anon_key
         _supabase = create_client(settings.supabase_url, key)
-        logger.info("Supabase client initialized")
+        using_service_role = bool(settings.supabase_service_role_key)
+        logger.info(
+            "Supabase client initialized (key=%s); set SUPABASE_SERVICE_ROLE_KEY in production to bypass RLS",
+            "service_role" if using_service_role else "anon",
+        )
     
     return _supabase
 

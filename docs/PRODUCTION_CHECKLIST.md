@@ -34,6 +34,82 @@ feature/*     ← 功能开发，合并到 main
 
 ---
 
+## 日常：每次 production 更新都重新部署后端
+
+> 你改完代码、想让线上后端跑最新版本时，按下面选一种做即可。
+
+### 方案 A：自动部署（推荐，一次配好以后就 3 步）
+
+**前提**：已按下方「首次配置 CI」做过一次。
+
+每次要更新后端时：
+
+1. 在本地确保当前在 `main` 且已提交所有改动：
+   ```bash
+   git checkout main
+   git status   # 确认没有未提交的修改
+   ```
+
+2. 切到 `production` 并合并 `main`：
+   ```bash
+   git checkout production
+   git pull origin production
+   git merge main
+   ```
+
+3. 推送到 GitHub，触发自动部署：
+   ```bash
+   git push origin production
+   ```
+
+4. 打开 **GitHub → Actions**，看 `Deploy Backend to Cloud Run` 是否变绿；约 3～5 分钟后到 **GCP Cloud Run → Revisions** 会多一个新版本，流量会切到新版本。
+
+---
+
+### 方案 B：手动部署（未配 CI 或临时用）
+
+在**项目根目录**（能看到 `backend` 文件夹的那一层）打开终端，依次执行：
+
+```bash
+# 1. 登录 GCP（未登录时按提示在浏览器里登录）
+gcloud auth login
+gcloud config set project ledgerlens-484819
+gcloud auth configure-docker gcr.io
+
+# 2. 构建并推送镜像
+docker build -t gcr.io/ledgerlens-484819/ledgerlens-backend:latest ./backend
+docker push gcr.io/ledgerlens-484819/ledgerlens-backend:latest
+
+# 3. 让 Cloud Run 使用新镜像
+gcloud run deploy ledgerlens-backend --image gcr.io/ledgerlens-484819/ledgerlens-backend:latest --region us-central1 --platform managed
+```
+
+执行完后 Cloud Run 会多一个新 revision，即已更新后端。
+
+---
+
+### 首次配置 CI（方案 A 只需做一次）
+
+1. **在 GCP 建一个给 CI 用的 Service Account**  
+   - 打开 [GCP Console → IAM → Service Accounts](https://console.cloud.google.com/iam-admin/serviceaccounts?project=ledgerlens-484819)  
+   - 创建账号，名字如 `github-actions-deploy`  
+   - 赋予角色：**Cloud Run Admin**、**Storage Admin**（或 **Artifact Registry 写入**，若用 GCR 则需 **Storage Object Admin** 等可 push 镜像的权限）
+
+2. **给该 SA 创建并下载 JSON 密钥**  
+   - 在该 Service Account 的「密钥」里创建密钥 → JSON → 下载
+
+3. **把 JSON 内容放进 GitHub Secrets**  
+   - 打开 GitHub 仓库 → **Settings → Secrets and variables → Actions**  
+   - **New repository secret**，名字填 **`GCP_SA_KEY`**，值粘贴整个 JSON 文件内容，保存
+
+4. **确认仓库里已有 workflow 文件**  
+   - 路径：`.github/workflows/deploy-backend.yml`  
+   - 内容是：push 到 `production` 时构建并部署后端（见 PHASE 7）
+
+之后每次按「方案 A」的 3 步 push 到 `production`，后端就会自动重新部署。
+
+---
+
 ## PHASE 1：Supabase Production 数据库
 
 ### 1.1 新建 Supabase 项目

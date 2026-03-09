@@ -41,9 +41,11 @@ export default function AdminLayout({
         if (res.status === 403) {
           const body = await res.json().catch(() => ({}))
           const d = body.detail
+          const tier = typeof d === 'object' && d !== null ? (d as { current_tier?: number }).current_tier : undefined
+          const uid = typeof d === 'object' && d !== null ? (d as { user_id?: string }).user_id : undefined
           const msg =
             typeof d === 'object' && d !== null && 'message' in d
-              ? `${d.message} (Error code: ${(d as { code?: string }).code ?? 'unknown'}. Your tier: ${(d as { current_tier?: number }).current_tier ?? '—'})`
+              ? `${(d as { message?: string }).message} (Code: ${(d as { code?: string }).code ?? 'unknown'}, tier=${tier ?? '—'}${uid ? `. User ID: ${uid} — run in Supabase: SELECT id, user_class FROM users WHERE id = '${uid}'` : ''})`
               : typeof d === 'string'
                 ? d
                 : 'Admin or Super Admin role required.'
