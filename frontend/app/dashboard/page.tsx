@@ -81,6 +81,7 @@ export default function DashboardPage() {
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
   const [smartCategorizeSelectedIds, setSmartCategorizeSelectedIds] = useState<Record<string, Set<string>>>({})
+  const [syncItemsLoadingReceiptId, setSyncItemsLoadingReceiptId] = useState<string | null>(null)
   const [userClass, setUserClass] = useState<number | null>(null)
   const [processingRunsModalReceiptId, setProcessingRunsModalReceiptId] = useState<string | null>(null)
   const [processingRunsData, setProcessingRunsData] = useState<{ track: string; track_method: string | null; runs: Array<Record<string, unknown>>; workflow_steps: Array<Record<string, unknown>>; pipeline_version?: string | null } | null>(null)
@@ -1055,6 +1056,9 @@ export default function DashboardPage() {
                                           <div className="border-t border-theme-ivory-dark pt-3 flex flex-col gap-2">
                                             <p className="text-xs font-medium text-theme-mid uppercase tracking-wide">Smart Categorization</p>
                                             <div className="flex flex-col gap-1.5 w-full">
+                                              {items.some((it: any) => !it.id) && (
+                                                <button type="button" disabled={smartCategorizeLoading || syncItemsLoadingReceiptId === r.id} onClick={async () => { if (!r.id || !token) return; setSyncItemsLoadingReceiptId(r.id); setCategoryUpdateMessage(null); setSmartCategorizeMessage(null); try { const res = await fetch(`${apiBaseUrl}/api/receipt/categorize/${r.id}`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { setSmartCategorizeMessage(data.items_count != null ? `已写入 ${data.items_count} 条商品` : '已写入商品'); await refetchReceiptDetail(r.id) } else setSmartCategorizeMessage(data.message || data.detail || '写入失败'); } catch { setSmartCategorizeMessage('Network error'); } finally { setSyncItemsLoadingReceiptId(null); } }} className="w-full text-sm text-amber-800 bg-amber-100 hover:bg-amber-200 py-2 rounded border border-amber-300 disabled:opacity-50 disabled:cursor-not-allowed">{syncItemsLoadingReceiptId === r.id ? '写入中…' : '写入商品到列表'}</button>
+                                              )}
                                               <button type="button" disabled={smartCategorizeLoading} onClick={async () => { if (!r.id || !token) return; setSmartCategorizeLoading(true); setSmartCategorizeMessage(null); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({}) }); const data = await res.json().catch(() => ({})); if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); await refetchReceiptDetail(r.id) } else setSmartCategorizeMessage(data.detail || 'Failed'); } catch { setSmartCategorizeMessage('Network error'); } finally { setSmartCategorizeLoading(false); } }} className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed">{smartCategorizeLoading ? 'Running…' : 'All'}</button>
                                               <button type="button" disabled={smartCategorizeLoading || selectedIdsForReceipt(r.id).size === 0} onClick={async () => { if (!r.id || !token || selectedIdsForReceipt(r.id).size === 0) return; setSmartCategorizeLoading(true); setSmartCategorizeMessage(null); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ item_ids: Array.from(selectedIdsForReceipt(r.id)) }) }); const data = await res.json().catch(() => ({})); if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); setSmartCategorizeSelectedIds((prev) => ({ ...prev, [r.id]: new Set() })); await refetchReceiptDetail(r.id) } else setSmartCategorizeMessage(data.detail || 'Failed'); } catch { setSmartCategorizeMessage('Network error'); } finally { setSmartCategorizeLoading(false); } }} className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed">{smartCategorizeLoading ? 'Running…' : 'Selected Only'}</button>
                                             </div>
@@ -1417,6 +1421,30 @@ export default function DashboardPage() {
                                               <span className="text-sm text-theme-black font-medium">Run Smart Categorization on</span>
                                             </div>
                                             <div className="flex flex-col gap-1.5 items-end shrink-0 min-w-[7.5rem]">
+                                                {items.some((it: any) => !it.id) && (
+                                                  <button
+                                                    type="button"
+                                                    disabled={smartCategorizeLoading || syncItemsLoadingReceiptId === r.id}
+                                                    onClick={async () => {
+                                                      if (!r.id || !token) return
+                                                      setSyncItemsLoadingReceiptId(r.id)
+                                                      setCategoryUpdateMessage(null)
+                                                      setSmartCategorizeMessage(null)
+                                                      try {
+                                                        const res = await fetch(`${apiBaseUrl}/api/receipt/categorize/${r.id}`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+                                                        const data = await res.json().catch(() => ({}))
+                                                        if (res.ok && data.success) {
+                                                          setSmartCategorizeMessage(data.items_count != null ? `已写入 ${data.items_count} 条商品` : '已写入商品')
+                                                          await refetchReceiptDetail(r.id)
+                                                        } else setSmartCategorizeMessage(data.message || data.detail || '写入失败')
+                                                      } catch { setSmartCategorizeMessage('Network error') }
+                                                      finally { setSyncItemsLoadingReceiptId(null) }
+                                                    }}
+                                                    className="w-full text-sm text-amber-800 bg-amber-100 hover:bg-amber-200 px-3 py-1 rounded border border-amber-300 disabled:opacity-50 disabled:cursor-not-allowed text-center mb-1"
+                                                  >
+                                                    {syncItemsLoadingReceiptId === r.id ? '写入中…' : '写入商品到列表'}
+                                                  </button>
+                                                )}
                                                 <button
                                                   type="button"
                                                   disabled={smartCategorizeLoading}
@@ -1518,6 +1546,10 @@ export default function DashboardPage() {
                                             const cancelEdit = () => { setEditingItemId(null); setCategoryUpdateMessage(null) }
                                             const confirmEdit = async () => {
                                               if (!r.id || !token) return
+                                              if (!itemId) {
+                                                setCategoryUpdateMessage('Item not saved yet; complete review first')
+                                                return
+                                              }
                                               setCategoryUpdateMessage(null)
                                               const toSend = editCatL3 || editCatL2 || editCatL1 || null
                                               try {
@@ -1575,11 +1607,13 @@ export default function DashboardPage() {
                                                   {isEditing ? (
                                                     <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200 w-5 h-5 flex items-center justify-center" onClick={confirmEdit} title="Confirm">✓</button>
                                                   ) : (
-                                                    <label className="relative cursor-pointer flex items-center justify-center w-5 h-5 rounded border border-theme-mid bg-white has-[:checked]:bg-theme-orange has-[:checked]:border-theme-orange">
+                                                    <label className={`relative flex items-center justify-center w-5 h-5 rounded border border-theme-mid bg-white has-[:checked]:bg-theme-orange has-[:checked]:border-theme-orange ${itemId ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`} title={!itemId ? 'Item not saved yet' : undefined}>
                                                       <input
                                                         type="checkbox"
+                                                        disabled={!itemId}
                                                         checked={selectedIdsForReceipt(r.id).has(itemId)}
                                                         onChange={(e) => {
+                                                          if (!itemId) return
                                                           setSelectedIdsForReceipt(r.id, (prev) => {
                                                             const next = new Set(prev)
                                                             if (e.target.checked) next.add(itemId)
@@ -1597,7 +1631,7 @@ export default function DashboardPage() {
                                                   {isEditing ? (
                                                     <button type="button" className="p-1 bg-theme-light-gray text-theme-dark/90 rounded hover:bg-theme-mid/30 w-5 h-5 flex items-center justify-center" onClick={cancelEdit} title="Cancel">✕</button>
                                                   ) : (
-                                                    <button type="button" className="p-1 text-theme-dark/90 hover:text-theme-dark hover:bg-theme-light-gray rounded w-5 h-5 flex items-center justify-center" onClick={startEdit} title="Edit">✏️</button>
+                                                    <button type="button" className={`p-1 rounded w-5 h-5 flex items-center justify-center ${itemId ? 'text-theme-dark/90 hover:text-theme-dark hover:bg-theme-light-gray' : 'text-theme-mid cursor-not-allowed opacity-50'}`} onClick={itemId ? startEdit : undefined} title={itemId ? 'Edit' : 'Item not saved yet; complete review first'}>✏️</button>
                                                   )}
                                                 </div>
                                               </React.Fragment>

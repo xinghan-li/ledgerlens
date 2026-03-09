@@ -5,10 +5,10 @@ Flow:
 1. Duplicate / rate-limit / user checks  (mirrors legacy)
 2. Create receipt_status row with pipeline_version='vision_b'
 3. PRIMARY: Gemini vision call → structured JSON
-4. If familiar store (e.g. Costco, Trader Joe's): optional Vision 2 (store-specific second round)
+4. Resolve merchant to chain_id; if this chain has a receipt_parse_second (chain-scoped) prompt in DB, run second round once.
 5. Backend sum check + item count check (independent of model self-report)
-6. If PASS → save, categorize; if model set needs_review (e.g. item count only) → needs_review, no escalation.
-7. If FAIL → ESCALATION: Gemini only (e.g. Gemini 2.5 Pro). If still wrong → needs_review (ask user).
+6. If PASS → save, categorize; if model set needs_review → needs_review, no escalation.
+7. If FAIL → ESCALATION: Gemini only. If sum check failed and chain has second-round prompt but not run yet, retry store second round; else escalate.
 8. Shadow legacy runs in background for A/B comparison (optional).
 """
 
@@ -47,15 +47,12 @@ from ..services.llm.gemini_client import (
     parse_receipt_with_gemini_vision_escalation,
 )
 from ..services.ocr.documentai_client import parse_receipt_documentai
+from ..prompts.prompt_loader import has_chain_second_round_prompt
 from ..services.llm.receipt_llm_processor import (
     process_receipt_with_llm_from_docai,
     _is_costco_usa_receipt,
-    _items_has_negative_line_total,
-    _is_trader_joes_receipt,
-    _has_item_count_mismatch,
     _detect_cc_rewards_and_fix_totals,
-    run_costco_second_round,
-    run_trader_joes_second_round,
+    run_store_second_round,
 )
 # ---------------------------------------------------------------------------
 # File system helpers (inlined from former workflow_common.py)
@@ -471,7 +468,7 @@ def _resolve_costco_store_ids(
     return chain_id, location_id
 
 
-async def _run_and_save_costco_second_round(
+async def _run_and_save_store_second_round(
     primary_result: Dict,
     chain_id: str,
     location_id: Optional[str],
@@ -481,14 +478,8 @@ async def _run_and_save_costco_second_round(
     image_bytes: Optional[bytes] = None,
     mime_type: str = "image/jpeg",
 ) -> Tuple[Optional[Dict], Optional[str]]:
-    """Execute the Costco second-round LLM call and persist the processing run.
-
-    image_bytes and mime_type are forwarded so the second-round call re-reads
-    the original receipt image alongside the first-pass JSON.
-    Returns ``(second_result, run_id)`` on success, or ``(None, None)`` when
-    the call produced no result or the database write failed.
-    """
-    second_result = await run_costco_second_round(
+    """Execute the store second-round LLM call (prompt loaded from DB by chain_id) and persist the run."""
+    second_result = await run_store_second_round(
         primary_result, chain_id, location_id, "gemini",
         image_bytes=image_bytes, mime_type=mime_type,
     )
@@ -513,70 +504,16 @@ async def _run_and_save_costco_second_round(
         )
         append_workflow_step(db_receipt_id, "vision_store_specific", "pass", run_id=run_id)
         logger.info(
-            "[vision] Saved Costco second-round (%s) run for receipt %s: run_id=%s",
+            "[vision] Saved store second-round (%s) run for receipt %s chain_id=%s: run_id=%s",
             trigger,
             db_receipt_id,
+            chain_id,
             run_id,
         )
         return second_result, run_id
     except Exception as e:
         logger.warning(
-            "[vision] Failed to save Costco second-round (%s) processing run: %s",
-            trigger,
-            e,
-        )
-        return None, None
-
-
-async def _run_and_save_trader_joes_second_round(
-    primary_result: Dict,
-    chain_id: str,
-    location_id: Optional[str],
-    db_receipt_id: str,
-    primary_run_id: Optional[str],
-    trigger: str,
-    image_bytes: Optional[bytes] = None,
-    mime_type: str = "image/jpeg",
-) -> Tuple[Optional[Dict], Optional[str]]:
-    """Execute the Trader Joe's second-round LLM call and persist the processing run.
-
-    image_bytes and mime_type are forwarded so the second-round call re-reads
-    the original receipt image alongside the first-pass JSON.
-    """
-    second_result = await run_trader_joes_second_round(
-        primary_result, chain_id, location_id, "gemini",
-        image_bytes=image_bytes, mime_type=mime_type,
-    )
-    if not second_result:
-        return None, None
-    try:
-        run_id = save_processing_run(
-            receipt_id=db_receipt_id,
-            stage="vision_store_specific",
-            model_provider="gemini",
-            model_name=settings.gemini_model,
-            model_version="round_2",
-            input_payload={
-                "second_round": True,
-                "trigger": trigger,
-                "first_round_run_id": primary_run_id,
-            },
-            output_payload=second_result,
-            output_schema_version="0.1",
-            status="pass",
-            error_message=None,
-        )
-        append_workflow_step(db_receipt_id, "vision_store_specific", "pass", run_id=run_id)
-        logger.info(
-            "[vision] Saved Trader Joe's second-round (%s) run for receipt %s: run_id=%s",
-            trigger,
-            db_receipt_id,
-            run_id,
-        )
-        return second_result, run_id
-    except Exception as e:
-        logger.warning(
-            "[vision] Failed to save Trader Joe's second-round (%s) processing run: %s",
+            "[vision] Failed to save store second-round (%s) processing run: %s",
             trigger,
             e,
         )
@@ -684,8 +621,7 @@ async def process_receipt_workflow_vision(
     primary_error: Optional[str] = None
     primary_usage: Optional[Dict[str, int]] = None
     primary_run_id: Optional[str] = None
-    ran_costco_second_round = False
-    ran_trader_joes_second_round = False
+    ran_store_second_round = False
     try:
         primary_instruction = REFERENCE_DATE_INSTRUCTION.format(reference_date=_get_reference_date()) + _get_vision_primary_prompt()
         primary_result, primary_usage = await parse_receipt_with_gemini_vision_escalation(
@@ -734,42 +670,18 @@ async def process_receipt_workflow_vision(
             )
             append_workflow_step(db_receipt_id, "vision_primary", "pass", run_id=primary_run_id)
 
-            # Costco second round: if any item has negative line_total, merge discounts and save round-2 run
-            is_costco = _is_costco_usa_receipt(primary_result)
-            has_negative = _items_has_negative_line_total(primary_result)
-            logger.info(
-                "[vision] Costco second-round check: is_costco=%s has_negative_item=%s items_count=%s",
-                is_costco,
-                has_negative,
-                len(primary_result.get("items") or []),
-            )
-            if is_costco and has_negative:
-                chain_id, location_id = _resolve_costco_store_ids(primary_result)
-                logger.info(
-                    "[vision] Costco store match: chain_id=%s",
-                    chain_id,
+            # Second round: if primary result's merchant matches a chain that has a receipt_parse_second (chain-scoped) prompt in DB, run it once
+            chain_id, location_id = _resolve_costco_store_ids(primary_result)
+            if chain_id and has_chain_second_round_prompt(chain_id):
+                logger.info("[vision] Chain chain_id=%s has second-round prompt, running store second round", chain_id)
+                second_result, _ = await _run_and_save_store_second_round(
+                    primary_result, chain_id, location_id, db_receipt_id,
+                    primary_run_id, "store_second_round",
+                    image_bytes=image_bytes, mime_type=mime_type,
                 )
-                if chain_id:
-                    second_result, _ = await _run_and_save_costco_second_round(
-                        primary_result, chain_id, location_id, db_receipt_id,
-                        primary_run_id, "costco_discount_merge",
-                        image_bytes=image_bytes, mime_type=mime_type,
-                    )
-                    if second_result:
-                        primary_result = second_result
-                        ran_costco_second_round = True
-            # Trader Joe's second round: when item count mismatch, re-extract with item count by unit
-            if not ran_costco_second_round and _is_trader_joes_receipt(primary_result) and _has_item_count_mismatch(primary_result):
-                chain_id, location_id = _resolve_costco_store_ids(primary_result)
-                if chain_id:
-                    second_result, _ = await _run_and_save_trader_joes_second_round(
-                        primary_result, chain_id, location_id, db_receipt_id,
-                        primary_run_id, "trader_joes_item_count",
-                        image_bytes=image_bytes, mime_type=mime_type,
-                    )
-                    if second_result:
-                        primary_result = second_result
-                        ran_trader_joes_second_round = True
+                if second_result:
+                    primary_result = second_result
+                    ran_store_second_round = True
             # Costco USA: use first (pre-reward) total only; if model wrote amount-after-CC-Rewards, overwrite to first total
             if primary_result:
                 _detect_cc_rewards_and_fix_totals(primary_result)
@@ -850,35 +762,26 @@ async def process_receipt_workflow_vision(
     sum_check_passed, sum_check_details = check_receipt_sums(primary_result)
     timeline.end("sum_check")
 
-    # If sum check failed but we have Costco USA + store matched and did NOT run the second round yet,
-    # try Costco-specific second round now. The primary may have missed negative discount lines or merged
-    # them wrongly; the second round re-parses with Costco rules and can fix the totals so we avoid escalation.
-    if (
-        not sum_check_passed
-        and db_receipt_id
-        and _is_costco_usa_receipt(primary_result)
-        and not ran_costco_second_round
-    ):
-        chain_id, location_id = _resolve_costco_store_ids(primary_result)
-        if chain_id:
+    # If sum check failed and this chain has a second-round prompt but we did NOT run it yet, try store second round (e.g. Costco discount merge can fix totals).
+    if not sum_check_passed and db_receipt_id and not ran_store_second_round:
+        chain_id_retry, location_id_retry = _resolve_costco_store_ids(primary_result)
+        if chain_id_retry and has_chain_second_round_prompt(chain_id_retry):
             logger.info(
-                f"[vision] Sum check failed but Costco store matched; running Costco second round for {receipt_id}"
+                "[vision] Sum check failed but chain has second-round prompt; running store second round for receipt %s",
+                receipt_id,
             )
-            second_result, _ = await _run_and_save_costco_second_round(
-                primary_result, chain_id, location_id, db_receipt_id,
-                primary_run_id, "sum_check_fail_costco",
+            second_result, _ = await _run_and_save_store_second_round(
+                primary_result, chain_id_retry, location_id_retry, db_receipt_id,
+                primary_run_id, "sum_check_fail_retry",
                 image_bytes=image_bytes, mime_type=mime_type,
             )
             if second_result:
                 primary_result = second_result
-                ran_costco_second_round = True
-                _detect_cc_rewards_and_fix_totals(primary_result)
+                ran_store_second_round = True
                 timeline.start("sum_check")
                 sum_check_passed, sum_check_details = check_receipt_sums(primary_result)
                 timeline.end("sum_check")
-                logger.info(
-                    f"[vision] After Costco second round: sum_check_passed={sum_check_passed}"
-                )
+                logger.info("[vision] After store second round: sum_check_passed=%s", sum_check_passed)
 
     # Escalation only when backend sum check actually failed (numbers don't add up). Item-count mismatch
     # or model needs_review alone (e.g. receipt says 10 items, we got 9 — often deposit/fee or count difference)
@@ -902,7 +805,7 @@ async def process_receipt_workflow_vision(
 
         # If model asked for needs_review (e.g. item count 9 vs 10) but numbers are correct: needs_review only, no escalation
         status_for_receipt = "success" if model_validation_status != "needs_review" else "needs_review"
-        stage_for_receipt = "vision_store_specific" if (ran_costco_second_round or ran_trader_joes_second_round) else "vision_primary"
+        stage_for_receipt = "vision_store_specific" if ran_store_second_round else "vision_primary"
         if db_receipt_id:
             try:
                 update_receipt_status(
@@ -920,7 +823,7 @@ async def process_receipt_workflow_vision(
             except Exception as exc:
                 logger.warning(f"[vision] Failed to update receipt status: {exc}")
 
-            # Categorize
+            # Categorize (writes record_summaries + record_items from run; if this fails, frontend falls back to run payload and shows "Item not saved yet")
             try:
                 logger.info(f"[vision] Calling categorize_receipt for receipt_id={db_receipt_id} (after vision_primary pass)")
                 cat_result = await asyncio.to_thread(categorize_receipt, db_receipt_id)
@@ -928,9 +831,12 @@ async def process_receipt_workflow_vision(
                 if cat_result.get("success"):
                     logger.info(f"[vision] Categorization completed for {db_receipt_id}")
                 else:
-                    logger.warning(f"[vision] Categorization skipped: {cat_result.get('message')}")
+                    logger.warning(
+                        "[vision] Categorization did not write record_items: success=False, message=%r (receipt will show run fallback / Item not saved yet)",
+                        cat_result.get("message"),
+                    )
             except Exception as cat_err:
-                logger.warning(f"[vision] Categorization failed: {cat_err}", exc_info=True)
+                logger.warning(f"[vision] Categorization failed (record_items not written): {cat_err}", exc_info=True)
 
             # Save JSON output file
             try:

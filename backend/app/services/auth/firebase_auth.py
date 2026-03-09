@@ -40,8 +40,13 @@ def _get_firebase_app():
             _firebase_app = firebase_admin.initialize_app(cred)
             logger.info("Firebase Admin SDK initialized from FIREBASE_SERVICE_ACCOUNT_JSON")
             return _firebase_app
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"FIREBASE_SERVICE_ACCOUNT_JSON is invalid JSON: {e}. "
+                "In .env use a single-line JSON (keep \\n in private_key), or set FIREBASE_SERVICE_ACCOUNT_PATH to a .json file."
+            )
         except Exception as e:
-            raise ValueError(f"Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON: {e}")
+            raise ValueError(f"Failed to use FIREBASE_SERVICE_ACCOUNT_JSON: {e}")
 
     # Priority 2: file path (local dev)
     cred_path = (
