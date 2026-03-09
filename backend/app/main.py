@@ -1607,10 +1607,10 @@ async def require_admin(user_id: str = Depends(get_current_user)) -> str:
         if user_class >= _REQUIRE_ADMIN_MIN_TIER:
             logger.debug("require_admin: user_id=%s user_class=%s OK", user_id, user_class)
             return user_id
-        # Log at WARNING so it appears in production when LOG_LEVEL=WARNING; search for "require_admin" in logs
+        # Log at WARNING so it appears in production; search logs for "REQUIRE_ADMIN_403" or "require_admin"
         logger.warning(
-            "require_admin: user_id=%s user_class=%s (need>=%s) — access denied",
-            user_id, user_class, _REQUIRE_ADMIN_MIN_TIER,
+            "REQUIRE_ADMIN_403 require_admin: user_id=%s user_class=%s (need>=%s) — run in DB: UPDATE users SET user_class=7 WHERE id='%s'",
+            user_id, user_class, _REQUIRE_ADMIN_MIN_TIER, user_id,
         )
         # Use structured detail so frontend shows "code: REQUIRE_ADMIN_DENIED" (not "7" as error code).
         # Include user_id so operator can verify in DB: SELECT id, user_class FROM users WHERE id = '<user_id>'
