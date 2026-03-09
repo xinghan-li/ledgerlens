@@ -157,8 +157,11 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
-# CORS configuration - allow common development ports + CORS_ORIGINS (comma-separated) for mobile/ngrok
+# CORS configuration - production domains + common dev ports + CORS_ORIGINS (comma-separated) for mobile/ngrok
 _default_origins = [
+    "https://ledgerlens.net",
+    "https://www.ledgerlens.net",
+    "https://ledgerlens.vercel.app",
     "http://localhost:3000",
     "http://localhost:3001",
     "http://localhost:8000",

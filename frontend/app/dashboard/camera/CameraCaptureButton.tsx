@@ -7,9 +7,10 @@ import { authFetch } from '@/lib/auth-context'
 
 function normalizeNetworkError(msg: string, apiBaseUrl: string): string {
   if (msg === 'Load failed' || msg === 'Load failed.' || msg.includes('Failed to fetch')) {
-    const tip = typeof window !== 'undefined' && (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
-      ? '当前是从其他地址访问的，请把 .env.local 的 NEXT_PUBLIC_API_URL 设为后端真实地址（ngrok 或 http://后端电脑IP:8000）。'
-      : '请确认后端在 ' + apiBaseUrl + ' 运行；若从手机访问请用 ngrok 并设置 NEXT_PUBLIC_API_URL。'
+    const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    const tip = isLocal
+      ? '请确认后端在 ' + apiBaseUrl + ' 运行；若从手机访问请用 ngrok 并设置 NEXT_PUBLIC_API_URL。'
+      : '后端暂时不可用，请稍后再试。如果持续出现，请联系管理员。当前 API: ' + apiBaseUrl
     return '无法连接后端。' + tip
   }
   return msg

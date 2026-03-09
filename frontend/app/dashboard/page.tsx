@@ -522,9 +522,10 @@ export default function DashboardPage() {
           if (error.name === 'AbortError') {
             setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
           } else if (error.message.includes('Failed to fetch') || error.message === 'Load failed' || error.message === 'Load failed.') {
-            const tip = typeof window !== 'undefined' && (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
-              ? '当前是从其他地址访问前端的（非 localhost），浏览器里的 localhost 指向的是当前设备而非后端所在电脑。请把 .env.local 的 NEXT_PUBLIC_API_URL 设为后端真实地址（例如 ngrok 或 http://后端电脑IP:8000），重启前端后再试。'
-              : '请确认：(1) 后端在 ' + apiBaseUrl + ' 运行 (2) 在新标签页打开 ' + apiBaseUrl + '/health 应看到 {"status":"ok"} (3) 若后端因端口占用改到 8081，前端会自动读 backend-port.json 使用正确端口。当前 API: ' + apiBaseUrl
+            const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+            const tip = isLocal
+              ? '请确认：(1) 后端在 ' + apiBaseUrl + ' 运行 (2) 在新标签页打开 ' + apiBaseUrl + '/health 应看到 {"status":"ok"} (3) 若后端因端口占用改到 8081，前端会自动读 backend-port.json 使用正确端口。当前 API: ' + apiBaseUrl
+              : '后端暂时不可用，请稍后再试。如果持续出现，请联系管理员。当前 API: ' + apiBaseUrl
             setUploadError('无法连接后端。' + tip)
           } else {
             setUploadError(error.message)
