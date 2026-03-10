@@ -33,7 +33,8 @@ interface Props {
   placeholder?: string
   disabled?: boolean
   onRefetchCategories?: () => Promise<void>
-  onCreateCategory?: (parentId: string, name: string) => Promise<string | null>
+  onCreateCategory?: (parentId: string, name: string) => Promise<string | UserCat | null>
+  onCategoryCreated?: (cat: UserCat) => void
 }
 
 export default function SystemCategorySubSelector({
@@ -44,6 +45,7 @@ export default function SystemCategorySubSelector({
   disabled = false,
   onRefetchCategories,
   onCreateCategory,
+  onCategoryCreated,
 }: Props) {
   // L1 nodes (locked system categories)
   const l1Nodes = useMemo(
@@ -164,6 +166,7 @@ export default function SystemCategorySubSelector({
             rootParentId={selectedL1Id}
             onCreateCategory={onCreateCategory}
             onRefetchCategories={onRefetchCategories}
+            onCategoryCreated={onCategoryCreated}
           />
         ) : (
           <div className="w-full px-2 py-1 border rounded text-xs text-theme-mid border-theme-light-gray bg-white min-h-7 flex items-center opacity-50">

@@ -80,14 +80,19 @@ export default function DashboardPage() {
   const [editItems, setEditItems] = useState<Array<{ id?: string; product_name: string; quantity: string; unit: string; unit_price: string; line_total: string; on_sale: boolean; original_price: string; discount_amount: string }>>([])
   const [correctSubmitting, setCorrectSubmitting] = useState(false)
   const [correctMessage, setCorrectMessage] = useState<string | null>(null)
-  const [categoriesList, setCategoriesList] = useState<Array<{ id: string; parent_id: string | null; name: string; path: string; level: number; is_locked?: boolean; sort_order?: number }>>([])
+  const [categoriesList, setCategoriesList] = useState<Array<{ id: string; parent_id: string | null; name: string; path: string | null; level: number; is_locked?: boolean; sort_order?: number }>>([])
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
   const [editCatId, setEditCatId] = useState<string | null>(null)
+  /** Item ids currently in "classification edit" (multi-select); user can change category on several rows then Confirm once at bottom. */
+  const [classificationEditingItemIds, setClassificationEditingItemIds] = useState<Set<string>>(new Set())
+  /** Pending category id per item id (for batch confirm). */
+  const [pendingCategoryByItemId, setPendingCategoryByItemId] = useState<Record<string, string | null>>({})
+  /** Per-receipt: indices of item rows currently in "item edit" (quantity/price inputs). Multiple rows stay active until Confirm. */
+  const [editingItemIndicesByReceipt, setEditingItemIndicesByReceipt] = useState<Record<string, number[]>>({})
   const [categoryUpdateMessage, setCategoryUpdateMessage] = useState<string | null>(null)
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
   const [smartCategorizeSelectedIds, setSmartCategorizeSelectedIds] = useState<Record<string, Set<string>>>({})
-  const [syncItemsLoadingReceiptId, setSyncItemsLoadingReceiptId] = useState<string | null>(null)
   const [userClass, setUserClass] = useState<number | null>(null)
   const [processingRunsModalReceiptId, setProcessingRunsModalReceiptId] = useState<string | null>(null)
   const [processingRunsData, setProcessingRunsData] = useState<{ track: string; track_method: string | null; runs: Array<Record<string, unknown>>; workflow_steps: Array<Record<string, unknown>>; pipeline_version?: string | null } | null>(null)
@@ -438,7 +443,7 @@ export default function DashboardPage() {
   }, [editingSection?.section, editingSection?.receiptId, editingSection?.index, fetchCategories])
 
   const createCategory = useCallback(
-    async (parentId: string, name: string): Promise<string | null> => {
+    async (parentId: string, name: string) => {
       if (!auth?.token) return null
       try {
         const res = await authFetch(
@@ -449,7 +454,16 @@ export default function DashboardPage() {
         )
         if (!res.ok) return null
         const row = await res.json()
-        return row?.id ?? null
+        if (!row?.id) return null
+        return {
+          id: row.id,
+          parent_id: row.parent_id ?? null,
+          name: row.name ?? '',
+          path: row.path ?? null,
+          level: row.level ?? 2,
+          is_locked: row.is_locked,
+          sort_order: row.sort_order,
+        }
       } catch {
         return null
       }
@@ -1069,6 +1083,9 @@ export default function DashboardPage() {
                                                   if (editModeReceiptId === r.id) {
                                                     setEditModeReceiptId(null)
                                                     setEditingSection(null)
+                                                    setClassificationEditingItemIds(new Set())
+                                                    setPendingCategoryByItemId({})
+                                                    setEditingItemIndicesByReceipt((prev) => { const next = { ...prev }; delete next[r.id]; return next })
                                                   } else {
                                                     setEditModeReceiptId(r.id)
                                                     setEditingSection(null)
@@ -1103,16 +1120,20 @@ export default function DashboardPage() {
                                               const catL1L2 = parts.length >= 2 ? parts.slice(0, 2).join(' / ') : catLine
                                               const catL3 = parts.length >= 3 ? parts[2] : ''
                                               const showQtyUnit = Number.isFinite(qty) && qty > 1 && (u && u !== '');
-                                              const isMobileEditingItem = editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'item' && editingSection?.index === i
+                                              const isMobileEditingItem = editModeReceiptId === r.id && (editingItemIndicesByReceipt[r.id]?.includes(i) ?? false)
                                               const mobileRowItem = editModeReceiptId === r.id && editItems[i] != null ? editItems[i] : null
+                                              const activateItemRowEditMobile = () => {
+                                                setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: prev[r.id]?.includes(i) ? prev[r.id] : [...(prev[r.id] || []), i] }))
+                                                setEditingSection((prev) => (prev?.receiptId === r.id && prev?.section === 'item' ? prev : { receiptId: r.id, section: 'item' }))
+                                              }
                                               return (
                                                 <div
                                                   key={it.id ?? i}
                                                   className={`border-b border-theme-light-gray/50 pb-2 last:border-0 ${editModeReceiptId === r.id && !isMobileEditingItem ? 'cursor-pointer rounded active:bg-theme-light-gray/30' : ''}`}
                                                   role={editModeReceiptId === r.id && !isMobileEditingItem ? 'button' : undefined}
                                                   tabIndex={editModeReceiptId === r.id && !isMobileEditingItem ? 0 : undefined}
-                                                  onClick={(e) => { if (editModeReceiptId === r.id && !isMobileEditingItem) { e.stopPropagation(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}
-                                                  onKeyDown={(e) => { if (editModeReceiptId === r.id && !isMobileEditingItem && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}
+                                                  onClick={(e) => { if (editModeReceiptId === r.id && !isMobileEditingItem) { e.stopPropagation(); activateItemRowEditMobile(); } }}
+                                                  onKeyDown={(e) => { if (editModeReceiptId === r.id && !isMobileEditingItem && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEditMobile(); } }}
                                                 >
                                                   {isMobileEditingItem && mobileRowItem ? (
                                                     <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
@@ -1211,14 +1232,14 @@ export default function DashboardPage() {
                                                 >
                                                   {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
                                                   {$(rec.card_last4) && <div>Card: ****{String(rec.card_last4).replace(/\D/g, '').slice(-4)}</div>}
-                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
+                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1 text-theme-mid text-[10px]">(est.)</span>}</div>}
                                                   <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
                                                 </div>
                                               ) : (
                                                 <>
                                                   {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
                                                   {$(rec.card_last4) && <div>Card: ****{String(rec.card_last4).replace(/\D/g, '').slice(-4)}</div>}
-                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
+                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1 text-theme-mid text-[10px]">(est.)</span>}</div>}
                                                   <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
                                                 </>
                                               )}
@@ -1226,18 +1247,19 @@ export default function DashboardPage() {
                                           )}
                                           <div className="border-t border-theme-ivory-dark pt-3 flex flex-col gap-2">
                                             <p className="text-xs font-medium text-theme-mid uppercase tracking-wide">Smart Categorization</p>
+                                            {r.current_status === 'needs_review' ? (
+                                              <p className="text-xs text-amber-700 leading-snug">Please complete the receipt review first before running categorization.</p>
+                                            ) : (
                                             <div className="flex flex-col gap-1.5 w-full">
-                                              {items.some((it: any) => !it.id) && (
-                                                <button type="button" disabled={smartCategorizeLoading || syncItemsLoadingReceiptId === r.id} onClick={async () => { if (!r.id || !token) return; setSyncItemsLoadingReceiptId(r.id); setCategoryUpdateMessage(null); setSmartCategorizeMessage(null); try { const res = await fetch(`${apiBaseUrl}/api/receipt/categorize/${r.id}`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { setSmartCategorizeMessage(data.items_count != null ? `已写入 ${data.items_count} 条商品` : '已写入商品'); await refetchReceiptDetail(r.id) } else setSmartCategorizeMessage(data.message || data.detail || '写入失败'); } catch { setSmartCategorizeMessage('Network error'); } finally { setSyncItemsLoadingReceiptId(null); } }} className="w-full text-sm text-amber-800 bg-amber-100 hover:bg-amber-200 py-2 rounded border border-amber-300 disabled:opacity-50 disabled:cursor-not-allowed">{syncItemsLoadingReceiptId === r.id ? '写入中…' : '写入商品到列表'}</button>
-                                              )}
                                               <button type="button" disabled={smartCategorizeLoading} onClick={async () => { if (!r.id || !token) return; setSmartCategorizeLoading(true); setSmartCategorizeMessage(null); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({}) }); const data = await res.json().catch(() => ({})); if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); await refetchReceiptDetail(r.id) } else setSmartCategorizeMessage(data.detail || 'Failed'); } catch { setSmartCategorizeMessage('Network error'); } finally { setSmartCategorizeLoading(false); } }} className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed">{smartCategorizeLoading ? 'Running…' : 'All'}</button>
                                               <button type="button" disabled={smartCategorizeLoading || selectedIdsForReceipt(r.id).size === 0} onClick={async () => { if (!r.id || !token || selectedIdsForReceipt(r.id).size === 0) return; setSmartCategorizeLoading(true); setSmartCategorizeMessage(null); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/smart-categorize`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ item_ids: Array.from(selectedIdsForReceipt(r.id)) }) }); const data = await res.json().catch(() => ({})); if (res.ok) { setSmartCategorizeMessage(data.updated_count != null ? `Updated ${data.updated_count} item(s)` : (data.message || 'Done')); setSmartCategorizeSelectedIds((prev) => ({ ...prev, [r.id]: new Set() })); await refetchReceiptDetail(r.id) } else setSmartCategorizeMessage(data.detail || 'Failed'); } catch { setSmartCategorizeMessage('Network error'); } finally { setSmartCategorizeLoading(false); } }} className="w-full text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 py-2 rounded border border-theme-mid disabled:opacity-50 disabled:cursor-not-allowed">{smartCategorizeLoading ? 'Running…' : 'Selected Only'}</button>
                                             </div>
+                                            )}
                                             {(categoryUpdateMessage || smartCategorizeMessage) && (
                                               <p className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage?.startsWith?.('Updated')) ? 'text-green-600' : 'text-theme-red'}`}>{categoryUpdateMessage || smartCategorizeMessage}</p>
                                             )}
                                           </div>
-                                          {editModeReceiptId === r.id && editingSection?.receiptId === r.id && (
+                                          {editModeReceiptId === r.id && (editingSection?.receiptId === r.id || items.some((it: { id?: string }) => it.id && classificationEditingItemIds.has(it.id))) && (
                                             <div className="mt-4 pt-4 border-t border-theme-light-gray">
                                               {correctMessage && (
                                                 <div className={`mb-2 p-2 rounded text-sm ${correctMessage.startsWith('Saved') ? 'bg-green-100 text-green-800' : 'bg-theme-red/15 text-theme-red'}`}>{correctMessage}</div>
@@ -1248,34 +1270,33 @@ export default function DashboardPage() {
                                                 disabled={correctSubmitting}
                                                 onClick={async (e) => {
                                                   e.stopPropagation()
-                                                  if (!token || !r.id || !editingSection) return
+                                                  if (!token || !r.id) return
                                                   setCorrectSubmitting(true)
                                                   setCorrectMessage(null)
                                                   setCategoryUpdateMessage(null)
                                                   try {
-                                                    if (editingSection.section === 'classification' && editingSection.index != null) {
-                                                      const it = items[editingSection.index]
-                                                      const itemId = it?.id
-                                                      if (!itemId) {
-                                                        setCategoryUpdateMessage('Item not saved yet; complete review first')
-                                                        return
-                                                      }
-                                                      const toSend = editCatId || null
-                                                      const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`, {
+                                                    const receiptItemIds = items.map((it: { id?: string }) => it.id).filter(Boolean) as string[]
+                                                    const toSaveCat = receiptItemIds.filter((id) => classificationEditingItemIds.has(id))
+                                                    if (toSaveCat.length > 0) {
+                                                      const batchRes = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/items/categories`, {
                                                         method: 'PATCH',
                                                         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                        body: JSON.stringify({ user_category_id: toSend }),
+                                                        body: JSON.stringify({
+                                                          updates: toSaveCat.map((itemId) => ({ item_id: itemId, user_category_id: pendingCategoryByItemId[itemId] ?? null })),
+                                                        }),
                                                       })
-                                                      if (res.ok) {
-                                                        setCategoryUpdateMessage('Saved')
-                                                        await refetchReceiptDetail(r.id)
-                                                        setEditingItemId(null)
-                                                        setEditingSection(null)
-                                                      } else {
-                                                        const err = await res.json().catch(() => ({}))
+                                                      if (!batchRes.ok) {
+                                                        const err = await batchRes.json().catch(() => ({}))
                                                         setCategoryUpdateMessage(err?.detail ?? 'Save failed')
+                                                        return
                                                       }
-                                                    } else {
+                                                      setCategoryUpdateMessage('Saved')
+                                                      await refetchReceiptDetail(r.id)
+                                                      setClassificationEditingItemIds((prev) => { const n = new Set(prev); toSaveCat.forEach((id) => n.delete(id)); return n })
+                                                      setPendingCategoryByItemId((prev) => { const o = { ...prev }; toSaveCat.forEach((id) => delete o[id]); return o })
+                                                      if (editingSection?.receiptId === r.id && editingSection?.section === 'classification') setEditingSection(null)
+                                                    }
+                                                    if (editingSection?.receiptId === r.id && editingSection?.section !== 'classification') {
                                                       const totalNum = editTotal.trim() ? parseFloat(editTotal) : NaN
                                                       if (isNaN(totalNum)) { setCorrectMessage('Please enter Total'); setCorrectSubmitting(false); return }
                                                       const summary = {
@@ -1321,6 +1342,7 @@ export default function DashboardPage() {
                                                         setExpandedReceiptData((prev) => ({ ...prev, [r.id]: detailJson }))
                                                       }
                                                       setEditingSection(null)
+                                                      setEditingItemIndicesByReceipt((prev) => { const next = { ...prev }; delete next[r.id]; return next })
                                                     }
                                                   } catch (err) {
                                                     setCorrectMessage(err instanceof Error ? err.message : 'Submit failed')
@@ -1731,6 +1753,9 @@ export default function DashboardPage() {
                                                   if (editModeReceiptId === r.id) {
                                                     setEditModeReceiptId(null)
                                                     setEditingSection(null)
+                                                    setClassificationEditingItemIds(new Set())
+                                                    setPendingCategoryByItemId({})
+                                                    setEditingItemIndicesByReceipt((prev) => { const next = { ...prev }; delete next[r.id]; return next })
                                                   } else {
                                                     setEditModeReceiptId(r.id)
                                                     setEditingSection(null)
@@ -1746,33 +1771,15 @@ export default function DashboardPage() {
                                           <div className="col-span-5 p-4 border-b border-theme-light-gray bg-theme-cream/50 flex flex-row justify-between items-start gap-4">
                                             <div className="flex flex-col gap-1">
                                               <p className="text-xs font-medium text-theme-mid uppercase tracking-wide">Classification</p>
-                                              <span className="text-sm text-theme-black font-medium">Run Smart Categorization on</span>
+                                              {r.current_status === 'needs_review' ? (
+                                                <span className="text-xs text-amber-700 max-w-56 leading-snug">Please complete the receipt review first before running categorization.</span>
+                                              ) : (
+                                                <span className="text-sm text-theme-black font-medium">Run Smart Categorization on</span>
+                                              )}
                                             </div>
                                             <div className="flex flex-col gap-1.5 items-end shrink-0 min-w-[7.5rem]">
-                                                {items.some((it: any) => !it.id) && (
-                                                  <button
-                                                    type="button"
-                                                    disabled={smartCategorizeLoading || syncItemsLoadingReceiptId === r.id}
-                                                    onClick={async () => {
-                                                      if (!r.id || !token) return
-                                                      setSyncItemsLoadingReceiptId(r.id)
-                                                      setCategoryUpdateMessage(null)
-                                                      setSmartCategorizeMessage(null)
-                                                      try {
-                                                        const res = await fetch(`${apiBaseUrl}/api/receipt/categorize/${r.id}`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
-                                                        const data = await res.json().catch(() => ({}))
-                                                        if (res.ok && data.success) {
-                                                          setSmartCategorizeMessage(data.items_count != null ? `已写入 ${data.items_count} 条商品` : '已写入商品')
-                                                          await refetchReceiptDetail(r.id)
-                                                        } else setSmartCategorizeMessage(data.message || data.detail || '写入失败')
-                                                      } catch { setSmartCategorizeMessage('Network error') }
-                                                      finally { setSyncItemsLoadingReceiptId(null) }
-                                                    }}
-                                                    className="w-full text-sm text-amber-800 bg-amber-100 hover:bg-amber-200 px-3 py-1 rounded border border-amber-300 disabled:opacity-50 disabled:cursor-not-allowed text-center mb-1"
-                                                  >
-                                                    {syncItemsLoadingReceiptId === r.id ? '写入中…' : '写入商品到列表'}
-                                                  </button>
-                                                )}
+                                              {r.current_status === 'needs_review' ? null : (
+                                                <>
                                                 <button
                                                   type="button"
                                                   disabled={smartCategorizeLoading}
@@ -1815,6 +1822,8 @@ export default function DashboardPage() {
                                                 >
                                                   {smartCategorizeLoading ? 'Running…' : 'Selected Only'}
                                                 </button>
+                                                </>
+                                              )}
                                             </div>
                                           </div>
 
@@ -1848,48 +1857,32 @@ export default function DashboardPage() {
                                             const sysCat = parts[0] ?? ''
                                             const subCat = parts.length > 1 ? parts.slice(1).join(' / ') : ''
                                             const itemId = it.id
-                                            const isEditing = editingItemId === itemId
-                                            const startEdit = () => {
-                                              setEditingItemId(itemId)
-                                              setEditCatId(it.user_category_id ?? it.category_id ?? null)
-                                            }
-                                            const cancelEdit = () => { setEditingItemId(null); setCategoryUpdateMessage(null) }
-                                            const isEditModeClassification = editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'classification' && editingSection?.index === i
-                                            const isEditingCat = isEditing || isEditModeClassification
+                                            const isEditingCat = Boolean(itemId && classificationEditingItemIds.has(itemId))
                                             const onOpenClassificationSection = () => {
-                                              if (editModeReceiptId !== r.id) return
+                                              if (editModeReceiptId !== r.id || !itemId) return
                                               setEditingSection({ receiptId: r.id, section: 'classification', index: i })
-                                              setEditingItemId(itemId)
-                                              setEditCatId(it.user_category_id ?? it.category_id ?? null)
+                                              setClassificationEditingItemIds((prev) => new Set(prev).add(itemId))
+                                              setPendingCategoryByItemId((prev) => (itemId in prev ? prev : { ...prev, [itemId]: it.user_category_id ?? it.category_id ?? null }))
                                             }
-                                            const confirmEdit = async () => {
-                                              if (!r.id || !token) return
-                                              if (!itemId) {
-                                                setCategoryUpdateMessage('Item not saved yet; complete review first')
-                                                return
-                                              }
-                                              setCategoryUpdateMessage(null)
-                                              try {
-                                                const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`, {
-                                                  method: 'PATCH',
-                                                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                  body: JSON.stringify({ user_category_id: editCatId ?? null }),
-                                                })
-                                                if (res.ok) {
-                                                  setCategoryUpdateMessage('Saved')
-                                                  await refetchReceiptDetail(r.id)
-                                                  setEditingItemId(null)
-                                                  setEditingSection(null)
-                                                } else {
-                                                  const err = await res.json().catch(() => ({}))
-                                                  setCategoryUpdateMessage(err?.detail ?? 'Save failed')
-                                                }
-                                              } catch (e) {
-                                                setCategoryUpdateMessage('Network error')
+                                            const deactivateClassificationRow = () => {
+                                              if (itemId) {
+                                                setClassificationEditingItemIds((prev) => { const n = new Set(prev); n.delete(itemId); return n })
+                                                setPendingCategoryByItemId((prev) => { const o = { ...prev }; delete o[itemId]; return o })
                                               }
                                             }
-                                            const isEditingItemRow = editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'item' && editingSection?.index === i
+                                            const isEditingItemRow = editModeReceiptId === r.id && (editingItemIndicesByReceipt[r.id]?.includes(i) ?? false)
                                             const rowItem = editModeReceiptId === r.id && editItems[i] != null ? editItems[i] : null
+                                            const activateItemRowEdit = () => {
+                                              setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: prev[r.id]?.includes(i) ? prev[r.id] : [...(prev[r.id] || []), i] }))
+                                              setEditingSection((prev) => (prev?.receiptId === r.id && prev?.section === 'item' ? prev : { receiptId: r.id, section: 'item' }))
+                                            }
+                                            const deactivateItemRowEdit = () => {
+                                              setEditingItemIndicesByReceipt((prev) => {
+                                                const arr = (prev[r.id] || []).filter((x) => x !== i)
+                                                if (arr.length === 0) { const next = { ...prev }; delete next[r.id]; return next }
+                                                return { ...prev, [r.id]: arr }
+                                              })
+                                            }
                                             return (
                                               <React.Fragment key={itemId ?? i}>
                                                 {isEditingItemRow && rowItem ? (
@@ -1909,24 +1902,28 @@ export default function DashboardPage() {
                                                   </>
                                                 ) : (
                                                   <>
-                                                    <div role="button" tabIndex={0} className={`py-1.5 px-3 truncate min-w-0 text-theme-dark ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} title={name} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'item', index: i }) }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}>{name}</div>
-                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-center tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'item', index: i }) }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}>{Number.isFinite(qty) ? qty : ''}</div>
-                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'item', index: i }) }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}>{u}</div>
-                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'item', index: i }) }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}>{p}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 px-3 truncate min-w-0 text-theme-dark ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} title={name} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEdit(); } }}>{name}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-center tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEdit(); } }}>{Number.isFinite(qty) ? qty : ''}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEdit(); } }}>{u}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEdit(); } }}>{p}</div>
                                                   </>
                                                 )}
                                                 <div className="bg-theme-cream" />
                                                 {/* System Category + Sub Categories: col-span-2 when editing, split when displaying */}
                                                 {isEditingCat ? (
                                                   <>
-                                                    <div className="col-span-2 py-1 px-1 min-w-0" onClick={(e) => e.stopPropagation()}>
-                                                      <SystemCategorySubSelector
-                                                        categories={categoriesList}
-                                                        value={editCatId}
-                                                        onChange={(val) => setEditCatId(val)}
-                                                        onRefetchCategories={fetchCategories}
-                                                        onCreateCategory={createCategory}
-                                                      />
+                                                    <div className="col-span-2 py-1 px-1 min-w-0 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                                      <div className="min-w-0 flex-1">
+                                                        <SystemCategorySubSelector
+                                                          categories={categoriesList}
+                                                          value={pendingCategoryByItemId[itemId] ?? it.user_category_id ?? it.category_id ?? null}
+                                                          onChange={(val) => setPendingCategoryByItemId((prev) => ({ ...prev, [itemId]: val }))}
+                                                          onRefetchCategories={fetchCategories}
+                                                          onCreateCategory={createCategory}
+                                                          onCategoryCreated={(cat) => setCategoriesList((prev) => [...prev, cat])}
+                                                        />
+                                                      </div>
+                                                      <button type="button" className="p-1 text-theme-mid hover:text-theme-red rounded shrink-0" onClick={(e) => { e.stopPropagation(); deactivateClassificationRow(); }} title="Remove from batch">✕</button>
                                                     </div>
                                                   </>
                                                 ) : (
@@ -1936,7 +1933,7 @@ export default function DashboardPage() {
                                                         type="button"
                                                         className={`text-left w-full text-xs text-theme-dark truncate ${itemId ? 'hover:text-theme-orange cursor-pointer' : 'cursor-default'}`}
                                                         title={sysCat || 'No category'}
-                                                        onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) onOpenClassificationSection(); else if (itemId) startEdit(); }}
+                                                        onClick={(e) => { e.stopPropagation(); if (!itemId) return; if (editModeReceiptId !== r.id) { setEditModeReceiptId(r.id); initEditFormFromJson(expandedReceiptData[r.id]); } setEditingSection({ receiptId: r.id, section: 'classification', index: i }); setClassificationEditingItemIds((prev) => new Set(prev).add(itemId)); setPendingCategoryByItemId((prev) => (itemId in prev ? prev : { ...prev, [itemId]: it.user_category_id ?? it.category_id ?? null })); }}
                                                       >
                                                         {sysCat || <span className="text-theme-mid">—</span>}
                                                       </button>
@@ -1946,7 +1943,7 @@ export default function DashboardPage() {
                                                         type="button"
                                                         className={`text-left w-full text-xs text-theme-dark truncate ${itemId ? 'hover:text-theme-orange cursor-pointer' : 'cursor-default'}`}
                                                         title={subCat || ''}
-                                                        onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) onOpenClassificationSection(); else if (itemId) startEdit(); }}
+                                                        onClick={(e) => { e.stopPropagation(); if (!itemId) return; if (editModeReceiptId !== r.id) { setEditModeReceiptId(r.id); initEditFormFromJson(expandedReceiptData[r.id]); } setEditingSection({ receiptId: r.id, section: 'classification', index: i }); setClassificationEditingItemIds((prev) => new Set(prev).add(itemId)); setPendingCategoryByItemId((prev) => (itemId in prev ? prev : { ...prev, [itemId]: it.user_category_id ?? it.category_id ?? null })); }}
                                                       >
                                                         {subCat || <span className="text-theme-mid">—</span>}
                                                       </button>
@@ -1960,7 +1957,7 @@ export default function DashboardPage() {
                                                 </div>
                                                 <div className="py-1.5 px-1 flex items-center justify-center">
                                                   {isEditingCat ? (
-                                                    <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200 w-5 h-5 flex items-center justify-center" onClick={(e) => { e.stopPropagation(); confirmEdit(); }} title="Confirm">✓</button>
+                                                    <span className="text-theme-mid text-xs">Editing</span>
                                                   ) : (
                                                     <label className={`relative flex items-center justify-center w-5 h-5 rounded border border-theme-mid bg-white has-[:checked]:bg-theme-orange has-[:checked]:border-theme-orange ${itemId ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`} title={!itemId ? 'Item not saved yet' : undefined} onClick={(e) => e.stopPropagation()}>
                                                       <input
@@ -1984,9 +1981,9 @@ export default function DashboardPage() {
                                                 </div>
                                                 <div className="py-1.5 px-2 flex items-center justify-center">
                                                   {isEditingCat ? (
-                                                    <button type="button" className="p-1 bg-theme-light-gray text-theme-dark/90 rounded hover:bg-theme-mid/30 w-5 h-5 flex items-center justify-center" onClick={(e) => { e.stopPropagation(); cancelEdit(); if (editModeReceiptId === r.id) setEditingSection(null); }} title="Cancel">✕</button>
+                                                    <button type="button" className="p-1 bg-theme-light-gray text-theme-dark/90 rounded hover:bg-theme-mid/30 w-5 h-5 flex items-center justify-center" onClick={(e) => { e.stopPropagation(); deactivateClassificationRow(); }} title="Remove from batch">✕</button>
                                                   ) : (
-                                                    <button type="button" className={`p-1 rounded w-5 h-5 flex items-center justify-center ${itemId ? 'text-theme-dark/90 hover:text-theme-dark hover:bg-theme-light-gray' : 'text-theme-mid cursor-not-allowed opacity-50'}`} onClick={(e) => { e.stopPropagation(); if (itemId) startEdit(); }} title={itemId ? 'Edit' : 'Item not saved yet; complete review first'}>✏️</button>
+                                                    <button type="button" className={`p-1 rounded w-5 h-5 flex items-center justify-center ${itemId ? 'text-theme-dark/90 hover:text-theme-dark hover:bg-theme-light-gray' : 'text-theme-mid cursor-not-allowed opacity-50'}`} onClick={(e) => { e.stopPropagation(); if (!itemId) return; if (editModeReceiptId !== r.id) { setEditModeReceiptId(r.id); initEditFormFromJson(expandedReceiptData[r.id]); } setEditingSection({ receiptId: r.id, section: 'classification', index: i }); setClassificationEditingItemIds((prev) => new Set(prev).add(itemId)); setPendingCategoryByItemId((prev) => (itemId in prev ? prev : { ...prev, [itemId]: it.user_category_id ?? it.category_id ?? null })); }} title={itemId ? 'Edit category' : r.current_status === 'needs_review' ? 'Complete the receipt review first before editing categories' : 'Category data not yet initialized — click "All" in Smart Categorization above to set up'}>✏️</button>
                                                   )}
                                                 </div>
                                               </React.Fragment>
@@ -2042,14 +2039,14 @@ export default function DashboardPage() {
                                                       >
                                                         {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
                                                         {$(rec.card_last4) && <div>Payment Card: {rec.payment_method ? `${rec.payment_method} ` : ''}****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
-                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
+                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1 text-theme-mid text-[10px]">(est.)</span>}</div>}
                                                         <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
                                                       </div>
                                                     ) : (
                                                       <>
                                                         {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
                                                         {$(rec.card_last4) && <div>Payment Card: {rec.payment_method ? `${rec.payment_method} ` : ''}****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
-                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
+                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1 text-theme-mid text-[10px]">(est.)</span>}</div>}
                                                         <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
                                                       </>
                                                     )}
@@ -2088,7 +2085,7 @@ export default function DashboardPage() {
                                                 )}
                                               </>
                                             )}
-                                            {editModeReceiptId === r.id && editingSection?.receiptId === r.id && (
+                                            {editModeReceiptId === r.id && (editingSection?.receiptId === r.id || items.some((it: { id?: string }) => it.id && classificationEditingItemIds.has(it.id))) && (
                                               <div className="mt-4 pt-4 border-t border-theme-light-gray">
                                                 {correctMessage && (
                                                   <div className={`mb-2 p-2 rounded text-sm ${correctMessage.startsWith('Saved') ? 'bg-green-100 text-green-800' : 'bg-theme-red/15 text-theme-red'}`}>{correctMessage}</div>
@@ -2099,33 +2096,33 @@ export default function DashboardPage() {
                                                   disabled={correctSubmitting}
                                                   onClick={async (e) => {
                                                     e.stopPropagation()
-                                                    if (!token || !r.id || !editingSection) return
+                                                    if (!token || !r.id) return
                                                     setCorrectSubmitting(true)
                                                     setCorrectMessage(null)
                                                     setCategoryUpdateMessage(null)
                                                     try {
-                                                      if (editingSection.section === 'classification' && editingSection.index != null) {
-                                                        const it = items[editingSection.index]
-                                                        const itemId = it?.id
-                                                        if (!itemId) {
-                                                          setCategoryUpdateMessage('Item not saved yet; complete review first')
-                                                          return
-                                                        }
-                                                        const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`, {
+                                                      const receiptItemIds = items.map((it: { id?: string }) => it.id).filter(Boolean) as string[]
+                                                      const toSaveCat = receiptItemIds.filter((id) => classificationEditingItemIds.has(id))
+                                                      if (toSaveCat.length > 0) {
+                                                        const batchRes = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/items/categories`, {
                                                           method: 'PATCH',
                                                           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                          body: JSON.stringify({ user_category_id: editCatId ?? null }),
+                                                          body: JSON.stringify({
+                                                            updates: toSaveCat.map((itemId) => ({ item_id: itemId, user_category_id: pendingCategoryByItemId[itemId] ?? null })),
+                                                          }),
                                                         })
-                                                        if (res.ok) {
-                                                          setCategoryUpdateMessage('Saved')
-                                                          await refetchReceiptDetail(r.id)
-                                                          setEditingItemId(null)
-                                                          setEditingSection(null)
-                                                        } else {
-                                                          const err = await res.json().catch(() => ({}))
+                                                        if (!batchRes.ok) {
+                                                          const err = await batchRes.json().catch(() => ({}))
                                                           setCategoryUpdateMessage(err?.detail ?? 'Save failed')
+                                                          return
                                                         }
-                                                      } else {
+                                                        setCategoryUpdateMessage('Saved')
+                                                        await refetchReceiptDetail(r.id)
+                                                        setClassificationEditingItemIds((prev) => { const n = new Set(prev); toSaveCat.forEach((id) => n.delete(id)); return n })
+                                                        setPendingCategoryByItemId((prev) => { const o = { ...prev }; toSaveCat.forEach((id) => delete o[id]); return o })
+                                                        if (editingSection?.receiptId === r.id && editingSection?.section === 'classification') setEditingSection(null)
+                                                      }
+                                                      if (editingSection?.receiptId === r.id && editingSection?.section !== 'classification') {
                                                         const totalNum = editTotal.trim() ? parseFloat(editTotal) : NaN
                                                         if (isNaN(totalNum)) { setCorrectMessage('Please enter Total'); setCorrectSubmitting(false); return }
                                                         const summary = {
@@ -2171,6 +2168,7 @@ export default function DashboardPage() {
                                                           setExpandedReceiptData((prev) => ({ ...prev, [r.id]: detailJson }))
                                                         }
                                                         setEditingSection(null)
+                                                        setEditingItemIndicesByReceipt((prev) => { const next = { ...prev }; delete next[r.id]; return next })
                                                       }
                                                     } catch (err) {
                                                       setCorrectMessage(err instanceof Error ? err.message : 'Submit failed')
