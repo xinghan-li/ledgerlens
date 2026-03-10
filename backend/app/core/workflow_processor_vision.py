@@ -726,8 +726,11 @@ async def process_receipt_workflow_vision(
                     image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
                     if image_path:
                         update_receipt_file_url(db_receipt_id, image_path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(
+                        f"Failed to update status or save image for failed receipt {db_receipt_id}: {e}",
+                        exc_info=True,
+                    )
             return {
                 "success": False,
                 "receipt_id": db_receipt_id or receipt_id,
@@ -750,8 +753,11 @@ async def process_receipt_workflow_vision(
                 image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
                 if image_path:
                     update_receipt_file_url(db_receipt_id, image_path)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(
+                    f"Failed to update status or save image for failed receipt {db_receipt_id}: {e}",
+                    exc_info=True,
+                )
         return {
             "success": False,
             "receipt_id": db_receipt_id or receipt_id,

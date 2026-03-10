@@ -2958,39 +2958,30 @@ def get_user_analytics_summary(
 
     by_user_category: list = []
     if user_cat_totals:
-        # Fetch leaf nodes (those with direct spending)
         uc_ids = list(user_cat_totals.keys())
-        uc_res = (
+        # Fetch all user_categories for this user once; then resolve ancestors in memory (avoids N+1 per level)
+        all_uc_res = (
             supabase.table("user_categories")
             .select("id, name, path, parent_id, level, is_locked")
-            .in_("id", uc_ids)
+            .eq("user_id", user_id)
             .execute()
         )
-        all_uc_nodes: Dict[str, Any] = {}
-        if uc_res.data:
-            for uc in uc_res.data:
-                all_uc_nodes[str(uc["id"])] = uc
-
-        # Iteratively fetch ancestor nodes so the frontend can build the full tree
-        ancestors_to_fetch: set = set()
-        for uc in list(all_uc_nodes.values()):
-            if uc.get("parent_id") and str(uc["parent_id"]) not in all_uc_nodes:
-                ancestors_to_fetch.add(str(uc["parent_id"]))
-        while ancestors_to_fetch:
-            anc_res = (
-                supabase.table("user_categories")
-                .select("id, name, path, parent_id, level, is_locked")
-                .in_("id", list(ancestors_to_fetch))
-                .execute()
-            )
-            next_fetch: set = set()
-            for anc in (anc_res.data or []):
-                aid = str(anc["id"])
-                if aid not in all_uc_nodes:
-                    all_uc_nodes[aid] = anc
-                if anc.get("parent_id") and str(anc["parent_id"]) not in all_uc_nodes:
-                    next_fetch.add(str(anc["parent_id"]))
-            ancestors_to_fetch = next_fetch
+        full_uc_by_id: Dict[str, Any] = {}
+        if all_uc_res.data:
+            for uc in all_uc_res.data:
+                full_uc_by_id[str(uc["id"])] = uc
+        # Collect uc_ids and all their ancestors
+        needed_ids: set = set(uc_ids)
+        prev_size = 0
+        while len(needed_ids) > prev_size:
+            prev_size = len(needed_ids)
+            for nid in list(needed_ids):
+                node = full_uc_by_id.get(nid)
+                if node and node.get("parent_id"):
+                    pid = str(node["parent_id"])
+                    if pid in full_uc_by_id:
+                        needed_ids.add(pid)
+        all_uc_nodes = {k: full_uc_by_id[k] for k in needed_ids if k in full_uc_by_id}
 
         for nid, uc in all_uc_nodes.items():
             by_user_category.append({

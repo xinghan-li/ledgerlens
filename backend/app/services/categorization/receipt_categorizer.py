@@ -157,12 +157,45 @@ def _resolve_category_id_by_path(supabase: Any, category_path: str) -> Optional[
     return None
 
 
-def _resolve_to_l1_category_id(supabase: Any, category_id: str) -> Optional[str]:
+def _get_categories_l1_cache(supabase: Any) -> Dict[str, Dict[str, Any]]:
+    """Fetch all categories (id, level, parent_id) once for in-memory L1 resolution. Returns dict id -> {level, parent_id}."""
+    try:
+        r = supabase.table("categories").select("id, level, parent_id").execute()
+        if not r.data:
+            return {}
+        return {
+            str(row["id"]): {"level": row.get("level"), "parent_id": row.get("parent_id")}
+            for row in r.data
+        }
+    except Exception as e:
+        logger.debug("_get_categories_l1_cache failed: %s", e)
+        return {}
+
+
+def _resolve_to_l1_category_id(
+    supabase: Any,
+    category_id: str,
+    categories_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[str]:
     """
     Walk up the categories tree to get the L1 (root) category id.
     Used when smart categorization should only assign L1 (no historical store+product match).
+    If categories_cache is provided (id -> {level, parent_id}), walks in memory to avoid N+1 queries.
     """
     if not category_id:
+        return None
+    if categories_cache is not None:
+        cid = category_id
+        for _ in range(10):
+            if cid not in categories_cache:
+                return None
+            node = categories_cache[cid]
+            if node.get("level") == 1:
+                return str(cid)
+            parent_id = node.get("parent_id")
+            if not parent_id:
+                return str(cid)
+            cid = str(parent_id)
         return None
     for _ in range(10):
         try:
@@ -184,7 +217,7 @@ def _resolve_to_l1_category_id(supabase: Any, category_id: str) -> Optional[str]
                 return str(row["id"])
             category_id = str(parent_id)
         except Exception as e:
-            logger.debug(f"resolve_to_l1_category_id failed for {category_id}: {e}")
+            logger.debug("resolve_to_l1_category_id failed for %s: %s", category_id, e)
             return None
     return None
 
@@ -704,6 +737,7 @@ async def smart_categorize_receipt_items(
     await _enrich_items_category_from_llm(items_data, store_name)
 
     # Non-historical (universal rule / fuzzy / LLM): only assign L1. Store-specific exact = keep full L2/L3/L4.
+    l1_cache = _get_categories_l1_cache(supabase)
     for it in items_data:
         cid = it.get("category_id")
         if not cid:
@@ -711,7 +745,7 @@ async def smart_categorize_receipt_items(
         source = (it.get("_category_source") or "").strip()
         from_store_specific = it.get("_from_store_specific") is True
         if source in ("rule_fuzzy", "llm") or (source == "rule_exact" and not from_store_specific):
-            l1_id = _resolve_to_l1_category_id(supabase, cid)
+            l1_id = _resolve_to_l1_category_id(supabase, cid, l1_cache)
             if l1_id:
                 it["category_id"] = l1_id
 
@@ -1035,6 +1069,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     _enrich_items_category_from_llm_sync(items_data, receipt_data.get("merchant_name"))
 
     # Non-historical (universal rule / fuzzy / LLM): only assign L1. Store-specific exact = keep full L2/L3/L4.
+    l1_cache = _get_categories_l1_cache(supabase)
     for it in items_data:
         cid = it.get("category_id")
         if not cid:
@@ -1042,7 +1077,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         source = (it.get("_category_source") or "").strip()
         from_store_specific = it.get("_from_store_specific") is True
         if source in ("rule_fuzzy", "llm") or (source == "rule_exact" and not from_store_specific):
-            l1_id = _resolve_to_l1_category_id(supabase, cid)
+            l1_id = _resolve_to_l1_category_id(supabase, cid, l1_cache)
             if l1_id:
                 it["category_id"] = l1_id
 

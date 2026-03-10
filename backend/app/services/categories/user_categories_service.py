@@ -267,10 +267,8 @@ def delete_user_category(
         all_ids.append(cat_id)
         # Null out record_items.user_category_id for any of these
         supabase.table("record_items").update({"user_category_id": None}).eq("user_id", user_id).in_("user_category_id", all_ids).execute()
-        # Delete descendants first (children before parents via sort by level desc)
-        # CASCADE on user_categories.parent_id would handle this, but do it explicitly
-        for cid in all_ids:
-            supabase.table("user_categories").delete().eq("id", cid).eq("user_id", user_id).execute()
+        # Delete all nodes in one query (id in all_ids, user_id match)
+        supabase.table("user_categories").delete().in_("id", all_ids).eq("user_id", user_id).execute()
         return {"deleted_count": len(all_ids)}
 
     else:

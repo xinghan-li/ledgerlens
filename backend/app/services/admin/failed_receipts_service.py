@@ -132,20 +132,24 @@ def list_failed_receipts(
         else:
             runs_by_receipt[rid] = {"failure_reason": "No processing run", "stage": None, "provider": None, "run_created_at": None}
 
-    # Latest escalation notes per receipt (user_escalated)
+    # Latest escalation notes per receipt (user_escalated) — single query to avoid N+1
     escalations_by_receipt: Dict[str, str] = {}
     try:
-        for rid in receipt_ids:
-            esc = (
+        if receipt_ids:
+            esc_res = (
                 supabase.table("receipt_escalations")
-                .select("notes")
-                .eq("receipt_id", rid)
+                .select("receipt_id, notes, created_at")
+                .in_("receipt_id", list(receipt_ids))
                 .order("created_at", desc=True)
-                .limit(1)
                 .execute()
             )
-            if esc.data and esc.data[0].get("notes"):
-                escalations_by_receipt[rid] = (esc.data[0].get("notes") or "").strip()
+            if esc_res.data:
+                for row in esc_res.data:
+                    rid = row.get("receipt_id")
+                    if rid is not None and rid not in escalations_by_receipt:
+                        notes = (row.get("notes") or "").strip()
+                        if notes:
+                            escalations_by_receipt[rid] = notes
     except Exception as e:
         logger.warning("list_failed_receipts: receipt_escalations not available: %s", e)
 

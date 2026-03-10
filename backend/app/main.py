@@ -692,7 +692,10 @@ async def create_my_category(
     from .services.categories.user_categories_service import create_user_category
     parent_id = body.get("parent_id")
     name = body.get("name", "")
-    sort_order = int(body.get("sort_order", 0))
+    try:
+        sort_order = int(body.get("sort_order", 0))
+    except (ValueError, TypeError):
+        sort_order = 0
     if not parent_id:
         raise HTTPException(status_code=400, detail="parent_id required (users cannot create L1 categories)")
     try:
