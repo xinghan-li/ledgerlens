@@ -76,8 +76,11 @@ interface Props {
   disabled?: boolean
   /** When set, show "+ Create Sub Category at this level" at top and allow creating under this parent (L1 id). */
   rootParentId?: string
-  onCreateCategory?: (parentId: string, name: string) => Promise<string | null>
+  /** Create category via API. May return new id (string) or full category object for optimistic UI. */
+  onCreateCategory?: (parentId: string, name: string) => Promise<string | UserCat | null>
   onRefetchCategories?: () => Promise<void>
+  /** Called when a new category is created so parent can add it to the list optimistically. */
+  onCategoryCreated?: (cat: UserCat) => void
 }
 
 export default function CategoryTreeSelector({
@@ -89,6 +92,7 @@ export default function CategoryTreeSelector({
   rootParentId,
   onCreateCategory,
   onRefetchCategories,
+  onCategoryCreated,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -144,13 +148,27 @@ export default function CategoryTreeSelector({
   const handleCreateSubmit = async () => {
     const parentId = creatingUnder ?? rootParentId
     const name = newCategoryName.trim()
-    if (!name || !parentId || !onCreateCategory || !onRefetchCategories) return
+    if (!name || !parentId || !onCreateCategory) return
     setCreating(true)
     setCreateError(null)
     try {
-      const newId = await onCreateCategory(parentId, name)
-      if (newId) {
-        await onRefetchCategories()
+      const result = await onCreateCategory(parentId, name)
+      if (result != null) {
+        const newId = typeof result === 'string' ? result : result.id
+        const fullCat: UserCat | null =
+          typeof result === 'object' && result && 'id' in result && 'name' in result
+            ? {
+                id: result.id,
+                parent_id: result.parent_id ?? null,
+                name: result.name,
+                path: result.path ?? null,
+                level: result.level ?? 2,
+                is_locked: result.is_locked,
+                sort_order: result.sort_order,
+              }
+            : null
+        if (fullCat) onCategoryCreated?.(fullCat)
+        if (onRefetchCategories) await onRefetchCategories()
         onChange(newId)
         setNewCategoryName('')
         setCreatingUnder(null)
@@ -165,7 +183,7 @@ export default function CategoryTreeSelector({
     }
   }
 
-  const canCreate = Boolean(rootParentId && onCreateCategory && onRefetchCategories && !disabled)
+  const canCreate = Boolean(rootParentId && onCreateCategory && !disabled)
 
   return (
     <div ref={containerRef} className="relative w-full">
