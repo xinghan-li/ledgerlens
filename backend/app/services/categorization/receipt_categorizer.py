@@ -664,11 +664,13 @@ async def smart_categorize_receipt_items(
     For this receipt, run rules + LLM to suggest category and update record_items.
     - If item_ids is provided (non-empty): fetch only those items and re-run on them (overwrite category).
     - Otherwise: only items with no category_id (unchanged behavior). Returns { "success", "updated_count", "message" }.
+    Auto-recovers if record_summaries/record_items are missing for a 'success' receipt (e.g. categorize_receipt
+    failed silently after escalation) by re-running categorize_receipt before proceeding.
     """
     supabase = _get_client()
     rec = (
         supabase.table("receipt_status")
-        .select("id")
+        .select("id, current_status")
         .eq("id", receipt_id)
         .eq("user_id", user_id)
         .limit(1)
@@ -676,6 +678,44 @@ async def smart_categorize_receipt_items(
     )
     if not rec.data:
         return {"success": False, "updated_count": 0, "message": "Receipt not found or access denied"}
+
+    receipt_status = (rec.data[0].get("current_status") or "").strip()
+
+    # Auto-recovery: if receipt is 'success' but record_summaries or record_items are missing,
+    # re-run categorize_receipt to write them (handles silent categorize failure after escalation)
+    if receipt_status == "success":
+        summary_check = (
+            supabase.table("record_summaries")
+            .select("id")
+            .eq("receipt_id", receipt_id)
+            .limit(1)
+            .execute()
+        )
+        items_check = (
+            supabase.table("record_items")
+            .select("id")
+            .eq("receipt_id", receipt_id)
+            .limit(1)
+            .execute()
+        )
+        if not summary_check.data or not items_check.data:
+            logger.info(
+                "[SMART_CAT] receipt %s is 'success' but missing record_summaries/record_items; "
+                "triggering categorize_receipt to auto-recover before smart categorization",
+                receipt_id,
+            )
+            try:
+                import asyncio
+                recover_result = await asyncio.to_thread(categorize_receipt, receipt_id, False)
+                if recover_result.get("success"):
+                    logger.info("[SMART_CAT] Auto-recovery categorize_receipt succeeded for %s", receipt_id)
+                else:
+                    logger.warning(
+                        "[SMART_CAT] Auto-recovery categorize_receipt failed for %s: %s",
+                        receipt_id, recover_result.get("message"),
+                    )
+            except Exception as _e:
+                logger.warning("[SMART_CAT] Auto-recovery categorize_receipt exception for %s: %s", receipt_id, _e)
 
     summary = (
         supabase.table("record_summaries")

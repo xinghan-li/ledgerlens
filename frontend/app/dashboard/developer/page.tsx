@@ -342,7 +342,7 @@ export default function DeveloperDashboardPage() {
   }, [fetchCategories])
 
   const createCategory = useCallback(
-    async (parentId: string, name: string): Promise<string | null> => {
+    async (parentId: string, name: string) => {
       if (!token) return null
       try {
         const res = await fetch(`${apiBaseUrl}/api/me/categories`, {
@@ -352,7 +352,16 @@ export default function DeveloperDashboardPage() {
         })
         if (!res.ok) return null
         const row = await res.json()
-        return row?.id ?? null
+        if (!row?.id) return null
+        return {
+          id: row.id,
+          parent_id: row.parent_id ?? null,
+          name: row.name ?? '',
+          path: row.path ?? null,
+          level: row.level ?? 2,
+          is_locked: row.is_locked,
+          sort_order: row.sort_order,
+        }
       } catch {
         return null
       }
@@ -1048,6 +1057,7 @@ export default function DeveloperDashboardPage() {
                                                         onChange={(val) => setEditCatId(val)}
                                                         onRefetchCategories={fetchCategories}
                                                         onCreateCategory={createCategory}
+                                                        onCategoryCreated={(cat) => setCategoriesList((prev) => [...prev, cat])}
                                                       />
                                                     </div>
                                                     <div className="flex items-center gap-0.5 w-14">

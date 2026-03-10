@@ -1090,6 +1090,61 @@ def _build_information_json(
     return {"other_info": other_info, "items": items}
 
 
+def _today_in_receipt_timezone(
+    country_code: Optional[str],
+    state_code: Optional[str],
+) -> str:
+    """
+    Return today's date (YYYY-MM-DD) in the receipt's local timezone.
+    Used when purchase_date is missing so we don't use server UTC.
+    """
+    tz_name: Optional[str] = None
+    if country_code:
+        cc = (country_code or "").strip().upper()[:2]
+        sc = (state_code or "").strip().upper()[:2] if state_code else ""
+        if cc == "US":
+            eastern = ("CT", "DE", "GA", "ME", "MD", "MA", "NH", "NJ", "NY", "NC", "OH", "PA", "RI", "SC", "VT", "VA", "WV", "DC", "FL")
+            central = ("AL", "AR", "IL", "IA", "KS", "KY", "LA", "MN", "MS", "MO", "OK", "TN", "TX", "WI")
+            mountain = ("AZ", "CO", "ID", "MT", "NM", "UT", "WY")
+            if sc in eastern:
+                tz_name = "America/New_York"
+            elif sc in central:
+                tz_name = "America/Chicago"
+            elif sc in mountain:
+                tz_name = "America/Denver"
+            elif sc == "AK":
+                tz_name = "America/Anchorage"
+            elif sc == "HI":
+                tz_name = "Pacific/Honolulu"
+            else:
+                tz_name = "America/Los_Angeles"
+        elif cc == "CA":
+            if sc == "BC":
+                tz_name = "America/Vancouver"
+            elif sc == "AB":
+                tz_name = "America/Edmonton"
+            elif sc in ("SK", "MB"):
+                tz_name = "America/Winnipeg"
+            elif sc in ("ON", "QC"):
+                tz_name = "America/Toronto"
+            elif sc in ("NB", "NS", "PE"):
+                tz_name = "America/Halifax"
+            elif sc == "NL":
+                tz_name = "America/St_Johns"
+            else:
+                tz_name = "America/Vancouver"
+        else:
+            tz_name = "UTC"
+    if not tz_name:
+        tz_name = "UTC"
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(tz_name)).date().isoformat()
+    except Exception:
+        from datetime import date
+        return date.today().isoformat()
+
+
 def save_receipt_summary(
     receipt_id: str,
     user_id: str,
@@ -1143,6 +1198,8 @@ def save_receipt_summary(
     # store_address and location phone: from store_locations when store_location_id set
     store_address: Optional[str] = None
     location_phone: Optional[str] = None
+    receipt_country: Optional[str] = None
+    receipt_state: Optional[str] = None
     if store_location_id:
         try:
             loc = supabase.table("store_locations").select("address_line1, address_line2, city, state, zip_code, country_code, phone").eq("id", store_location_id).limit(1).execute()
@@ -1159,10 +1216,18 @@ def save_receipt_summary(
                 else:
                     store_address = canonical_addr
                 location_phone = (loc_row.get("phone") or "").strip() or None
+                receipt_country = (loc_row.get("country_code") or "").strip().upper() or None
+                receipt_state = (loc_row.get("state") or "").strip() or None
         except Exception as e:
             logger.warning(f"Failed to get store_location for address: {e}")
     if store_address is None:
         store_address = merchant_address
+    if not receipt_country and receipt_data.get("country"):
+        receipt_country = (str(receipt_data.get("country")) or "").strip().upper()[:2] or None
+    if not receipt_country and (store_address or merchant_address):
+        parsed = _parse_state_country_from_address(store_address or merchant_address)
+        if parsed:
+            receipt_country, receipt_state = parsed
     _store_addr_preview = (store_address[:100] + "...") if store_address and len(store_address) > 100 else store_address
     logger.info(
         "[STORE_DEBUG] save_receipt_summary OUT: store_chain_id=%s, store_location_id=%s, store_address=%r",
@@ -1189,12 +1254,39 @@ def save_receipt_summary(
         receipt_for_info["merchant_phone"] = location_phone
     information = _build_information_json(receipt_for_info, items_data or [], supabase, store_chain_id)
     
-    # record_summaries.receipt_date 是 NOT NULL，无日期时用当天避免 insert 失败导致整条不写 record_items
+    # record_summaries.receipt_date 是 NOT NULL。只写入小票上的时间（purchase_date）；小票无日期时用小票当地的「当天」占位（不用 UTC）。
+    # 列表展示“无小票日期时显示上传时间”应在 list 或前端用 receipt_date ?? uploaded_at 处理，避免在未产生小票日期时就把 uploaded_at 写入 receipt_date。
     receipt_date_value = purchase_date
+    receipt_date_is_estimated = False
     if receipt_date_value is None or (isinstance(receipt_date_value, str) and not receipt_date_value.strip()):
-        from datetime import date
-        receipt_date_value = date.today().isoformat()
-        logger.info("[SAVE_SUMMARY_DEBUG] receipt_id=%s missing purchase_date, using today: %s", receipt_id, receipt_date_value)
+        # Prefer uploaded_at date as fallback (more accurate than today, which may be re-processing day)
+        try:
+            uploaded_row = supabase.table("receipt_status").select("uploaded_at").eq("id", receipt_id).limit(1).execute()
+            if uploaded_row.data and uploaded_row.data[0].get("uploaded_at"):
+                uploaded_at_str = str(uploaded_row.data[0]["uploaded_at"])
+                receipt_date_value = uploaded_at_str[:10]  # YYYY-MM-DD
+                logger.info(
+                    "[SAVE_SUMMARY_DEBUG] receipt_id=%s missing purchase_date, using uploaded_at date as placeholder: %s",
+                    receipt_id, receipt_date_value,
+                )
+            else:
+                receipt_date_value = _today_in_receipt_timezone(receipt_country, receipt_state)
+                logger.info(
+                    "[SAVE_SUMMARY_DEBUG] receipt_id=%s missing purchase_date and uploaded_at, using today (receipt local): %s",
+                    receipt_id, receipt_date_value,
+                )
+        except Exception as _e:
+            receipt_date_value = _today_in_receipt_timezone(receipt_country, receipt_state)
+            logger.info(
+                "[SAVE_SUMMARY_DEBUG] receipt_id=%s missing purchase_date, uploaded_at lookup failed (%s), using today: %s",
+                receipt_id, _e, receipt_date_value,
+            )
+        receipt_date_is_estimated = True
+        # Mark date as estimated in information so frontend can display a note
+        if isinstance(information.get("other_info"), dict):
+            information["other_info"]["receipt_date_is_estimated"] = True
+        else:
+            information["other_info"] = {"receipt_date_is_estimated": True}
 
     payload = {
         "receipt_id": receipt_id,
@@ -1279,6 +1371,17 @@ def update_receipt_summary(
 
     if items_data is not None:
         information = _build_information_json(receipt_for_info, items_data, supabase, store_chain_id)
+        # Preserve or clear receipt_date_is_estimated flag based on whether a real date is provided
+        if isinstance(information.get("other_info"), dict):
+            if receipt_data.get("purchase_date"):
+                # Real date provided: clear the estimated flag
+                information["other_info"].pop("receipt_date_is_estimated", None)
+            else:
+                # No new date: preserve the existing estimated flag from the old information
+                old_info = (existing.data[0].get("information") or {})
+                old_other = old_info.get("other_info") or {}
+                if old_other.get("receipt_date_is_estimated"):
+                    information["other_info"]["receipt_date_is_estimated"] = True
     else:
         info = (existing.data[0].get("information") or {}).copy()
         other = dict(info.get("other_info") or {})
@@ -1288,6 +1391,9 @@ def update_receipt_summary(
             other["merchant_phone"] = receipt_data.get("merchant_phone")
         if receipt_data.get("cashier") is not None:
             other["cashier"] = receipt_data.get("cashier")
+        # Clear estimated flag when a real purchase_date is being saved
+        if receipt_data.get("purchase_date") is not None:
+            other.pop("receipt_date_is_estimated", None)
         info["other_info"] = other
         information = info
 
@@ -2485,7 +2591,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
     def _fetch_items() -> Any:
         return (
             supabase.table("record_items")
-            .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount, item_index, category_id, category_source")
+            .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount, item_index, category_id, category_source, user_category_id")
             .eq("receipt_id", receipt_id)
             .order("item_index")
             .execute()
@@ -2508,9 +2614,11 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
         return s_val if s_val else ""
 
     cat_ids: List[str] = []
+    user_cat_ids: List[str] = []
     if items.data:
         cat_ids = list({_norm_cat_key(it.get("category_id")) for it in items.data if it.get("category_id")})
         cat_ids = [x for x in cat_ids if x]
+        user_cat_ids = list({str(it["user_category_id"]) for it in items.data if it.get("user_category_id")})
 
     needs_review = status_row.get("current_status") == "needs_review"
     # When record_summaries or record_items are missing, fill from latest pass run so UI shows receipt/items (e.g. vision wrote run but categorize failed).
@@ -2524,6 +2632,17 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
         if not cat_ids:
             return None
         return supabase.table("categories").select("id, path").in_("id", cat_ids).execute()
+
+    def _fetch_user_categories() -> Any:
+        if not user_cat_ids:
+            return None
+        return (
+            supabase.table("user_categories")
+            .select("id, path")
+            .eq("user_id", user_id)
+            .in_("id", user_cat_ids)
+            .execute()
+        )
 
     def _fetch_runs() -> Any:
         if not needs_review and not need_run_fallback:
@@ -2539,24 +2658,96 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
             .execute()
         )
 
-    with ThreadPoolExecutor(max_workers=2) as ex2:
+    with ThreadPoolExecutor(max_workers=3) as ex2:
         futures = []
         if cat_ids:
             futures.append(("cats", ex2.submit(_fetch_categories)))
+        if user_cat_ids:
+            futures.append(("user_cats", ex2.submit(_fetch_user_categories)))
         if needs_review or need_run_fallback:
             futures.append(("runs", ex2.submit(_fetch_runs)))
+        user_cats_result: Any = None
         for key, fut in futures:
             res = fut.result()
             if key == "cats":
                 cats_result = res
+            elif key == "user_cats":
+                user_cats_result = res
             elif key == "runs":
                 runs_result = res
+
+    # When we have summary and run output but no record_items (e.g. escalation resolved before items were written),
+    # backfill record_items from run so the UI gets real ids and the pencil/edit is enabled.
+    if not (items.data or []) and s is not None and runs_result and runs_result.data:
+        try:
+            out = runs_result.data[0].get("output_payload") or {}
+            if isinstance(out, str):
+                out = json.loads(out) if out else {}
+            run_items = out.get("items") or []
+            if run_items:
+                # Run payload amounts are typically in cents; save_receipt_items expects dollars.
+                backfill_payload: List[Dict[str, Any]] = []
+                for it in run_items:
+                    product_name = (it.get("product_name") or "").strip()
+                    if not product_name:
+                        continue
+                    unit_price = it.get("unit_price")
+                    line_total = it.get("line_total")
+                    if line_total is None and it.get("quantity") is not None and unit_price is not None:
+                        try:
+                            line_total = round(float(it["quantity"]) * float(unit_price), 2)
+                        except (TypeError, ValueError):
+                            pass
+                    if line_total is None:
+                        continue
+                    # Prefer cents→dollars; if value is small float (e.g. 4.98), treat as dollars
+                    def _run_amt_to_dollars(val: Any) -> Optional[float]:
+                        if val is None:
+                            return None
+                        try:
+                            v = float(val)
+                            if v >= 100 or (0 < v < 1):
+                                return v / 100.0
+                            return v
+                        except (TypeError, ValueError):
+                            return None
+                    unit_price_dollars = _run_amt_to_dollars(unit_price)
+                    line_total_dollars = _run_amt_to_dollars(line_total)
+                    if line_total_dollars is None:
+                        continue
+                    backfill_payload.append({
+                        "product_name": product_name,
+                        "quantity": it.get("quantity"),
+                        "unit": it.get("unit"),
+                        "unit_price": unit_price_dollars,
+                        "line_total": line_total_dollars,
+                        "on_sale": it.get("on_sale") or it.get("is_on_sale") or False,
+                        "original_price": _run_amt_to_dollars(it.get("original_price")),
+                        "discount_amount": _run_amt_to_dollars(it.get("discount_amount")),
+                    })
+                if backfill_payload:
+                    save_receipt_items(receipt_id, user_id, backfill_payload)
+                    items = _fetch_items()
+                    if items.data:
+                        cat_ids = list({_norm_cat_key(it.get("category_id")) for it in items.data if it.get("category_id")})
+                        cat_ids = [x for x in cat_ids if x]
+                        user_cat_ids = list({str(it["user_category_id"]) for it in items.data if it.get("user_category_id")})
+                        cats_result = _fetch_categories() if cat_ids else None
+                        user_cats_result = _fetch_user_categories() if user_cat_ids else None
+        except Exception as e:
+            logger.warning("Backfill record_items from run for receipt %s failed: %s", receipt_id, e)
 
     category_path_by_id: Dict[str, str] = {}
     if cats_result and cats_result.data:
         for c in cats_result.data:
             if c.get("id") is not None and c.get("path") is not None:
                 category_path_by_id[_norm_cat_key(c["id"])] = c["path"]
+
+    user_category_path_by_id: Dict[str, str] = {}
+    if user_cats_result and user_cats_result.data:
+        for uc in user_cats_result.data:
+            if uc.get("id") is not None and uc.get("path") is not None:
+                user_category_path_by_id[str(uc["id"])] = (uc["path"] or "").strip()
 
     if s:
         raw_from_db = s.get("store_name")
@@ -2566,6 +2757,8 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
             "[STORE_NAME_DEBUG] get_receipt_detail receipt_id=%s display_store_name=%r",
             receipt_id, display_store_name,
         )
+        info = s.get("information") or {}
+        other = info.get("other_info") or {}
         receipt_data = {
             "merchant_name": display_store_name,
             "merchant_address": display_address,
@@ -2573,6 +2766,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
             "country": None,
             "currency": s.get("currency") or "USD",
             "purchase_date": s.get("receipt_date"),
+            "purchase_date_is_estimated": bool(other.get("receipt_date_is_estimated", False)),
             "purchase_time": None,
             "subtotal": _cents_to_dollars(s.get("subtotal")) if s.get("subtotal") is not None else None,
             "tax": _cents_to_dollars(s.get("tax")) if s.get("tax") is not None else None,
@@ -2580,8 +2774,6 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
             "payment_method": s.get("payment_method"),
             "card_last4": s.get("payment_last4"),
         }
-        info = s.get("information") or {}
-        other = info.get("other_info") or {}
         if other.get("merchant_phone"):
             receipt_data["merchant_phone"] = other["merchant_phone"]
         if other.get("purchase_time"):
@@ -2590,7 +2782,9 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
     if items.data:
         for it in items.data:
             cid = it.get("category_id")
+            ucid = it.get("user_category_id")
             path = category_path_by_id.get(_norm_cat_key(cid)) if cid else None
+            user_path = user_category_path_by_id.get(str(ucid)) if ucid else None
             items_data.append({
                 "id": str(it["id"]) if it.get("id") else None,
                 "product_name": it.get("product_name"),
@@ -2603,6 +2797,8 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
                 "discount_amount": _cents_to_dollars(it.get("discount_amount")),
                 "category_path": path,
                 "category_id": str(cid) if cid else None,
+                "user_category_id": str(ucid) if ucid else None,
+                "user_category_path": user_path,
                 "category_source": it.get("category_source"),
             })
 

@@ -567,7 +567,7 @@ function SubCatRow({
   const rowSort = createSortFn(grandTotal, parentTotal)
   const sortedChildren = hasChildren ? [...node.children].sort(rowSort) : []
 
-  // Indent: base 8px + 20px per depth level; right padding for alignment. On mobile (indentScale=0.5) halved.
+  // Indent: base 8px + 20px per depth level; right padding for amount alignment by depth.
   const baseLeft = 8 + depth * 20
   const basePrPx = 12
   const numPrPx = basePrPx + (maxDepth - depth) * 20
@@ -603,7 +603,10 @@ function SubCatRow({
             </span>
           </div>
         </td>
-        <td className={`py-1.5 text-right tabular-nums text-sm whitespace-nowrap ${depthOpacity} ${depthWeight}`} style={{ paddingRight: `${numPrPx * indentScale}px` }}>
+        <td
+          className={`py-1.5 text-right tabular-nums text-sm whitespace-nowrap ${depthOpacity} ${depthWeight}`}
+          style={{ paddingRight: `${numPrPx * indentScale}px` }}
+        >
           {displayValue}
         </td>
       </tr>
@@ -757,14 +760,14 @@ function SubCategorySection({
                 Category
               </th>
               <th
-                className={`${thBase} ${sortCol === 'value' ? thActive : thInactive} pr-0 text-right`}
+                className={`${thBase} ${sortCol === 'value' ? thActive : thInactive} text-right pr-[52px]`}
                 onClick={(e) => { if (!(e.target as HTMLElement).closest('button')) handleSortClick('value') }}
               >
                 <div className="relative inline-block text-right">
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); setValueDropdownOpen((o) => !o) }}
-                    className="inline-flex items-center gap-1 rounded border border-theme-mid/50 bg-white px-1.5 py-0.5 text-xs font-medium text-theme-dark hover:bg-theme-cream focus:outline-none focus:ring-1 focus:ring-theme-orange"
+                    className="inline-flex items-center gap-1 font-medium text-theme-dark hover:text-theme-orange focus:outline-none focus:ring-0"
                     aria-haspopup="listbox"
                     aria-expanded={valueDropdownOpen}
                   >

@@ -2495,7 +2495,8 @@ async def categorize_single_receipt(
     }
     """
     try:
-        result = categorize_receipt(receipt_id, force=force)
+        # categorize_receipt is sync and may call asyncio.run() internally; run in thread to avoid "asyncio.run() cannot be called from a running event loop"
+        result = await asyncio.to_thread(categorize_receipt, receipt_id, force=force)
         
         if not result.get("success"):
             raise HTTPException(
@@ -2532,9 +2533,11 @@ async def categorize_batch_receipts(
     }
     """
     try:
-        result = categorize_receipts_batch(
+        # Run in thread so internal asyncio.run() (e.g. in categorize_receipt) does not conflict with the event loop
+        result = await asyncio.to_thread(
+            categorize_receipts_batch,
             receipt_ids=request.receipt_ids,
-            force=request.force
+            force=request.force,
         )
         return result
     except Exception as e:

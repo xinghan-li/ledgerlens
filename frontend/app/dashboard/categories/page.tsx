@@ -262,7 +262,7 @@ export default function CategoriesPage() {
       </div>
 
       <p className="text-sm text-theme-dark/70 mb-4">
-        Customize your category tree. <strong>System categories</strong> (marked &quot;system&quot;) are your L1 roots and cannot be renamed or deleted. Add as many subcategories as you like beneath them.
+        <strong>System categories</strong> are global categories on high level. Under each category, feel free to build your own subcategories in your own way to get more insights. It's yours to discover.
       </p>
 
       {error && (
