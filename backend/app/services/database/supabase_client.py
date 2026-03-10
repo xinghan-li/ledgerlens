@@ -2685,7 +2685,35 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
                 out = json.loads(out) if out else {}
             run_items = out.get("items") or []
             if run_items:
-                # Run payload amounts are typically in cents; save_receipt_items expects dollars.
+                # Determine if payload amounts are already in dollars or still in cents.
+                # Mirrors the heuristic in receipt_categorizer._payload_already_in_dollars:
+                #   total >= 1000  → cents (e.g. 1204 = $12.04)
+                #   total < 100    → dollars (e.g. 12.04)
+                #   100 <= t < 1000 with decimal part → dollars (e.g. 199.99)
+                _ref_total = out.get("total")
+                if _ref_total is None:
+                    _ref_amounts = [it.get("line_total") for it in run_items if it.get("line_total") is not None]
+                    _ref_total = max(_ref_amounts) if _ref_amounts else None
+                _run_from_cents = True
+                if _ref_total is not None:
+                    try:
+                        _t = float(_ref_total)
+                        if _t < 100:
+                            _run_from_cents = False
+                        elif _t < 1000 and _t != int(round(_t)):
+                            _run_from_cents = False
+                    except (TypeError, ValueError):
+                        pass
+
+                def _run_amt_to_dollars(val: Any) -> Optional[float]:
+                    if val is None:
+                        return None
+                    try:
+                        f = float(val)
+                        return round(f / 100.0, 2) if _run_from_cents else round(f, 2)
+                    except (TypeError, ValueError):
+                        return None
+
                 backfill_payload: List[Dict[str, Any]] = []
                 for it in run_items:
                     product_name = (it.get("product_name") or "").strip()
@@ -2700,17 +2728,6 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
                             pass
                     if line_total is None:
                         continue
-                    # Prefer cents→dollars; if value is small float (e.g. 4.98), treat as dollars
-                    def _run_amt_to_dollars(val: Any) -> Optional[float]:
-                        if val is None:
-                            return None
-                        try:
-                            v = float(val)
-                            if v >= 100 or (0 < v < 1):
-                                return v / 100.0
-                            return v
-                        except (TypeError, ValueError):
-                            return None
                     unit_price_dollars = _run_amt_to_dollars(unit_price)
                     line_total_dollars = _run_amt_to_dollars(line_total)
                     if line_total_dollars is None:
@@ -2950,6 +2967,67 @@ def update_record_item_category(
     }
     supabase.table("record_items").update(payload).eq("id", item_id).eq("receipt_id", receipt_id).execute()
     return True
+
+
+def update_record_items_categories_batch(
+    receipt_id: str,
+    user_id: str,
+    updates: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Batch-update user_category_id for multiple record_items in one call.
+    `updates` is a list of {"item_id": str, "user_category_id": str | None}.
+    Verifies receipt ownership once, validates all item IDs and category IDs up front,
+    then applies updates. Returns {"updated": int, "failed": list[item_id]}.
+    """
+    supabase = _get_client()
+    rec = supabase.table("receipt_status").select("id").eq("id", receipt_id).eq("user_id", user_id).limit(1).execute()
+    if not rec.data:
+        return {"updated": 0, "failed": [u["item_id"] for u in updates], "error": "receipt_not_found"}
+
+    item_ids = [u["item_id"] for u in updates if u.get("item_id")]
+    if not item_ids:
+        return {"updated": 0, "failed": []}
+
+    valid_items_res = (
+        supabase.table("record_items")
+        .select("id")
+        .in_("id", item_ids)
+        .eq("receipt_id", receipt_id)
+        .execute()
+    )
+    valid_item_ids = {row["id"] for row in (valid_items_res.data or [])}
+
+    cat_ids = list({u["user_category_id"] for u in updates if u.get("user_category_id")})
+    valid_cat_ids: set = set()
+    if cat_ids:
+        valid_cats_res = (
+            supabase.table("user_categories")
+            .select("id")
+            .in_("id", cat_ids)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        valid_cat_ids = {row["id"] for row in (valid_cats_res.data or [])}
+
+    updated = 0
+    failed: List[str] = []
+    for u in updates:
+        item_id = u.get("item_id")
+        cat_id = u.get("user_category_id")
+        if not item_id or item_id not in valid_item_ids:
+            failed.append(item_id or "")
+            continue
+        if cat_id and cat_id not in valid_cat_ids:
+            failed.append(item_id)
+            continue
+        supabase.table("record_items").update({
+            "user_category_id": cat_id or None,
+            "category_source": "user_override",
+        }).eq("id", item_id).eq("receipt_id", receipt_id).execute()
+        updated += 1
+
+    return {"updated": updated, "failed": failed}
 
 
 def _parse_analytics_period(period: str, value: str) -> Tuple[Optional[str], Optional[str]]:

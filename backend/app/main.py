@@ -35,6 +35,7 @@ from .services.database.supabase_client import (
     list_receipts_by_user,
     get_receipt_detail_for_user,
     update_record_item_category,
+    update_record_items_categories_batch,
     get_user_analytics_summary,
     get_user_unclassified_items,
     mark_item_idk,
@@ -1476,6 +1477,43 @@ async def update_item_category(
     return {"success": True}
 
 
+@app.patch("/api/receipt/{receipt_id}/items/categories", tags=["Receipts - Other"])
+async def update_items_categories_batch(
+    receipt_id: str,
+    body: dict = Body(...),
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Batch-update user_category_id for multiple record_items in one request.
+    Body: { "updates": [{ "item_id": "uuid", "user_category_id": "uuid" | null }] }
+    Auth required; verifies receipt and category ownership.
+    """
+    if not _is_valid_uuid(receipt_id):
+        raise HTTPException(status_code=400, detail="Invalid receipt_id")
+    updates = body.get("updates")
+    if not isinstance(updates, list) or not updates:
+        raise HTTPException(status_code=400, detail="updates must be a non-empty list")
+    for u in updates:
+        if not isinstance(u, dict) or not u.get("item_id"):
+            raise HTTPException(status_code=400, detail="Each update must have item_id")
+        if not _is_valid_uuid(u["item_id"]):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid item_id {u['item_id']}. The item may not be saved yet; complete review first.",
+            )
+        cat_id = u.get("user_category_id")
+        if cat_id is not None and not _is_valid_uuid(str(cat_id)):
+            raise HTTPException(status_code=400, detail=f"Invalid user_category_id {cat_id}")
+    result = update_record_items_categories_batch(
+        receipt_id=receipt_id,
+        user_id=user_id,
+        updates=updates,
+    )
+    if result.get("error") == "receipt_not_found":
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
+    return result
+
+
 @app.post("/api/receipt/coordinate-sum-check", tags=["Receipts - Other"])
 async def coordinate_sum_check_endpoint(
     file: UploadFile = File(...)
@@ -2471,20 +2509,20 @@ class CategorizeReceiptsBatchRequest(BaseModel):
 async def categorize_single_receipt(
     receipt_id: str,
     force: bool = False,
-    current_user: dict = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
     """
     将 receipt_processing_runs.output_payload 标准化并保存到 record_items/record_summaries
-    
+
     前置条件：
-    1. Receipt 必须存在
+    1. Receipt 必须存在且属于当前用户
     2. current_status 必须是 'success' (通过了 sum check)
     3. 必须有成功的 LLM processing run
-    
+
     参数：
     - receipt_id: Receipt UUID
     - force: 如果为 True，重新处理已经 categorize 过的小票
-    
+
     返回：
     {
         "success": bool,
@@ -2494,16 +2532,21 @@ async def categorize_single_receipt(
         "message": str
     }
     """
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    owns = supabase.table("receipt_status").select("id").eq("id", receipt_id).eq("user_id", user_id).limit(1).execute()
+    if not owns.data:
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
     try:
         # categorize_receipt is sync and may call asyncio.run() internally; run in thread to avoid "asyncio.run() cannot be called from a running event loop"
         result = await asyncio.to_thread(categorize_receipt, receipt_id, force=force)
-        
+
         if not result.get("success"):
             raise HTTPException(
                 status_code=400,
                 detail=result.get("message", "Categorization failed")
             )
-        
+
         return result
     except HTTPException:
         raise
@@ -2515,15 +2558,15 @@ async def categorize_single_receipt(
 @app.post("/api/receipt/categorize-batch", tags=["Receipts - Categorization"])
 async def categorize_batch_receipts(
     request: CategorizeReceiptsBatchRequest,
-    current_user: dict = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
     """
     批量 categorize 多张小票
-    
+
     参数：
     - receipt_ids: List of receipt UUIDs
     - force: 如果为 True，重新处理已经 categorize 过的小票
-    
+
     返回：
     {
         "total": int,
@@ -2532,11 +2575,22 @@ async def categorize_batch_receipts(
         "results": [...]
     }
     """
+    if not request.receipt_ids:
+        return {"total": 0, "success": 0, "failed": 0, "results": []}
+
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    owned_rows = supabase.table("receipt_status").select("id").in_("id", request.receipt_ids).eq("user_id", user_id).execute()
+    owned_ids = {row["id"] for row in (owned_rows.data or [])}
+    unauthorized = [rid for rid in request.receipt_ids if rid not in owned_ids]
+    if unauthorized:
+        raise HTTPException(status_code=403, detail=f"Access denied for {len(unauthorized)} receipt(s)")
+
     try:
         # Run in thread so internal asyncio.run() (e.g. in categorize_receipt) does not conflict with the event loop
         result = await asyncio.to_thread(
             categorize_receipts_batch,
-            receipt_ids=request.receipt_ids,
+            receipt_ids=list(owned_ids),
             force=request.force,
         )
         return result
@@ -2564,23 +2618,28 @@ async def smart_categorize_my_receipt(
 @app.get("/api/receipt/categorize/check/{receipt_id}", tags=["Receipts - Categorization"])
 async def check_can_categorize(
     receipt_id: str,
-    current_user: dict = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
     """
     检查小票是否可以被 categorize
-    
+
     返回：
     {
         "can_categorize": bool,
         "reason": str
     }
     """
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    owns = supabase.table("receipt_status").select("id").eq("id", receipt_id).eq("user_id", user_id).limit(1).execute()
+    if not owns.data:
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
     try:
         can_categorize, reason = can_categorize_receipt(receipt_id)
         return {
             "receipt_id": receipt_id,
             "can_categorize": can_categorize,
-            "reason": reason
+            "reason": reason,
         }
     except Exception as e:
         logger.error(f"Error checking receipt {receipt_id}: {e}")

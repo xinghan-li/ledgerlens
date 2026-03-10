@@ -1278,17 +1278,17 @@ export default function DashboardPage() {
                                                     const receiptItemIds = items.map((it: { id?: string }) => it.id).filter(Boolean) as string[]
                                                     const toSaveCat = receiptItemIds.filter((id) => classificationEditingItemIds.has(id))
                                                     if (toSaveCat.length > 0) {
-                                                      for (const itemId of toSaveCat) {
-                                                        const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`, {
-                                                          method: 'PATCH',
-                                                          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                          body: JSON.stringify({ user_category_id: pendingCategoryByItemId[itemId] ?? null }),
-                                                        })
-                                                        if (!res.ok) {
-                                                          const err = await res.json().catch(() => ({}))
-                                                          setCategoryUpdateMessage(err?.detail ?? 'Save failed')
-                                                          return
-                                                        }
+                                                      const batchRes = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/items/categories`, {
+                                                        method: 'PATCH',
+                                                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                        body: JSON.stringify({
+                                                          updates: toSaveCat.map((itemId) => ({ item_id: itemId, user_category_id: pendingCategoryByItemId[itemId] ?? null })),
+                                                        }),
+                                                      })
+                                                      if (!batchRes.ok) {
+                                                        const err = await batchRes.json().catch(() => ({}))
+                                                        setCategoryUpdateMessage(err?.detail ?? 'Save failed')
+                                                        return
                                                       }
                                                       setCategoryUpdateMessage('Saved')
                                                       await refetchReceiptDetail(r.id)
@@ -2104,17 +2104,17 @@ export default function DashboardPage() {
                                                       const receiptItemIds = items.map((it: { id?: string }) => it.id).filter(Boolean) as string[]
                                                       const toSaveCat = receiptItemIds.filter((id) => classificationEditingItemIds.has(id))
                                                       if (toSaveCat.length > 0) {
-                                                        for (const itemId of toSaveCat) {
-                                                          const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`, {
-                                                            method: 'PATCH',
-                                                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                            body: JSON.stringify({ user_category_id: pendingCategoryByItemId[itemId] ?? null }),
-                                                          })
-                                                          if (!res.ok) {
-                                                            const err = await res.json().catch(() => ({}))
-                                                            setCategoryUpdateMessage(err?.detail ?? 'Save failed')
-                                                            return
-                                                          }
+                                                        const batchRes = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/items/categories`, {
+                                                          method: 'PATCH',
+                                                          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                          body: JSON.stringify({
+                                                            updates: toSaveCat.map((itemId) => ({ item_id: itemId, user_category_id: pendingCategoryByItemId[itemId] ?? null })),
+                                                          }),
+                                                        })
+                                                        if (!batchRes.ok) {
+                                                          const err = await batchRes.json().catch(() => ({}))
+                                                          setCategoryUpdateMessage(err?.detail ?? 'Save failed')
+                                                          return
                                                         }
                                                         setCategoryUpdateMessage('Saved')
                                                         await refetchReceiptDetail(r.id)
