@@ -274,6 +274,22 @@ def load_classification_prompt() -> Optional[str]:
     return None
 
 
+def load_subcategory_prompt() -> Optional[str]:
+    """
+    Load the system prompt for user subcategory suggestion (subcategory_classification).
+    Returns the prompt content or None if not found.
+    """
+    _populate_binding_cache()
+    bindings = _binding_cache.get("subcategory_classification", [])
+    if not bindings:
+        logger.warning("[PromptLoader] No bindings for prompt_key=subcategory_classification")
+        return None
+    for _pri, entry in bindings:
+        if entry.get("content_role") == "system":
+            return entry.get("content") or ""
+    return None
+
+
 def _load_prompt_by_key(key: str) -> Optional[str]:
     """
     Load prompt content directly from prompt_library by key (bypasses binding routing).

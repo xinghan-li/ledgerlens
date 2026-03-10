@@ -6,19 +6,6 @@ import { useApiUrl } from '@/lib/api-url-context'
 
 type PeriodType = '' | 'month' | 'quarter' | 'year'
 
-/** Inline SVG circles for Top 3 rank — same look on all platforms (no emoji) */
-function RankCircle({ rank }: { rank: 0 | 1 | 2 }) {
-  const colors = ['#FFD700', '#9CA3AF', '#B87333'] as const // gold (emoji-style), silver, bronze
-  const fill = colors[rank]
-  const size = 18
-  return (
-    <span className="inline-flex shrink-0 items-center justify-center" aria-hidden style={{ width: size, height: size }}>
-      <svg width={size} height={size} viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" className="block">
-        <circle cx="9" cy="9" r="8" fill={fill} stroke="#fff" strokeWidth="1.5" />
-      </svg>
-    </span>
-  )
-}
 
 function buildMonthOptions(): { value: string; label: string }[] {
   const out: { value: string; label: string }[] = []
@@ -80,7 +67,6 @@ function formatDollars(cents: number): string {
   return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
 }
 
-const TABLE_DEFAULT_MOBILE = 5
 const TABLE_DEFAULT_DESKTOP = 10
 
 /** Returns 0.5 on narrow viewport (e.g. mobile) for half indentation, 1 otherwise. */
@@ -96,28 +82,627 @@ function useIndentScale(): number {
   return scale
 }
 
+// ===== Visualization: Color Palette =====
+
+const CAT_PALETTE = [
+  '#3B82F6', // blue
+  '#F97316', // orange
+  '#22C55E', // green
+  '#EF4444', // red
+  '#A855F7', // purple
+  '#06B6D4', // cyan
+  '#EAB308', // yellow
+  '#EC4899', // pink
+  '#14B8A6', // teal
+  '#F59E0B', // amber
+  '#6366F1', // indigo
+  '#84CC16', // lime
+]
+const CAT_COLOR_OVERRIDES: Record<string, string> = {
+  grocery: '#22C55E', groceries: '#22C55E',
+  household: '#6366F1',
+  health: '#F97316', healthcare: '#F97316',
+  'personal care': '#EF4444', beauty: '#EF4444',
+  tax: '#94A3B8', fees: '#94A3B8', 'tax & fees': '#94A3B8',
+  restaurant: '#F43F5E', dining: '#F43F5E', 'food & dining': '#F43F5E',
+  entertainment: '#A855F7',
+  transport: '#3B82F6', transportation: '#3B82F6',
+  clothing: '#EC4899', apparel: '#EC4899',
+  electronics: '#06B6D4',
+}
+
+function getCatColor(name: string, idx: number): string {
+  return CAT_COLOR_OVERRIDES[name.toLowerCase().trim()] ?? CAT_PALETTE[idx % CAT_PALETTE.length]
+}
+
+
+type SpendingSegment = { name: string; amount_cents: number; color: string; pct: number }
+
+function buildSegments(
+  cats: Array<{ name: string; amount_cents: number }>,
+  totalCents: number,
+): SpendingSegment[] {
+  const total = totalCents || 1
+  const sorted = [...cats].sort((a, b) => b.amount_cents - a.amount_cents)
+  const main: SpendingSegment[] = []
+  let otherCents = 0
+  sorted.forEach((cat, i) => {
+    const pct = (cat.amount_cents / total) * 100
+    if (pct < 2) { otherCents += cat.amount_cents; return }
+    main.push({ name: cat.name, amount_cents: cat.amount_cents, color: getCatColor(cat.name, i), pct })
+  })
+  if (otherCents > 0)
+    main.push({ name: 'Other', amount_cents: otherCents, color: '#9E9E9E', pct: (otherCents / total) * 100 })
+  return main
+}
+
+// ===== Feature 1: Stacked Horizontal Progress Bar =====
+
+function StackedProgressBar({ segments }: { segments: SpendingSegment[] }) {
+  const [hovered, setHovered] = useState<number | null>(null)
+  if (segments.length === 0) return null
+  return (
+    <div className="mt-5 pt-4 border-t border-theme-light-gray">
+      <p className="text-xs font-medium text-theme-mid mb-2">Spending by category</p>
+      <div
+        className="flex w-full rounded-full overflow-hidden h-4"
+        role="img"
+        aria-label="Spending category breakdown"
+        style={{ gap: 2 }}
+      >
+        {segments.map((seg, i) => (
+          <div
+            key={seg.name}
+            style={{
+              width: `${seg.pct}%`,
+              backgroundColor: seg.color,
+              opacity: hovered !== null && hovered !== i ? 0.45 : 1,
+              transition: 'opacity 150ms ease-out',
+              minWidth: 2,
+            }}
+            title={`${seg.name}: ${formatDollars(seg.amount_cents)} (${seg.pct.toFixed(1)}%)`}
+            aria-label={`${seg.name}: ${formatDollars(seg.amount_cents)}, ${seg.pct.toFixed(1)}%`}
+            onMouseEnter={() => setHovered(i)}
+            onMouseLeave={() => setHovered(null)}
+            className="h-full cursor-pointer"
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3">
+        {segments.map((seg, i) => (
+          <div
+            key={seg.name}
+            className="flex items-center gap-1.5 text-xs cursor-default"
+            style={{ opacity: hovered !== null && hovered !== i ? 0.4 : 1, transition: 'opacity 150ms ease-out' }}
+            onMouseEnter={() => setHovered(i)}
+            onMouseLeave={() => setHovered(null)}
+          >
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: seg.color }} aria-hidden />
+            <span className="text-theme-dark/80">{seg.name}</span>
+            <span className="tabular-nums text-theme-mid">{formatDollars(seg.amount_cents)}</span>
+            <span className="tabular-nums text-theme-mid/60">{seg.pct.toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ===== Feature 3: Drillable Donut Chart =====
+
+function polarToXY(cx: number, cy: number, r: number, deg: number) {
+  const rad = ((deg - 90) * Math.PI) / 180
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) }
+}
+
+function donutArcPath(cx: number, cy: number, oR: number, iR: number, s: number, e: number): string {
+  if (e - s >= 360) e = s + 359.9
+  const large = e - s > 180 ? 1 : 0
+  const o1 = polarToXY(cx, cy, oR, s)
+  const o2 = polarToXY(cx, cy, oR, e)
+  const i1 = polarToXY(cx, cy, iR, e)
+  const i2 = polarToXY(cx, cy, iR, s)
+  return `M${o1.x} ${o1.y}A${oR} ${oR} 0 ${large} 1 ${o2.x} ${o2.y}L${i1.x} ${i1.y}A${iR} ${iR} 0 ${large} 0 ${i2.x} ${i2.y}Z`
+}
+
+type DonutSeg = SpendingSegment & { id: string; hasChildren: boolean }
+type ArcSeg = DonutSeg & { startDeg: number; endDeg: number; midDeg: number }
+type DrillItem = { id: string; name: string; color: string }
+
+function DonutChartCard({ summary }: { summary: Summary }) {
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null)
+  const [drillPath, setDrillPath] = useState<DrillItem[]>([])
+
+  // Stat cards data
+  const avgPerTrip = summary.total_receipts > 0 ? Math.round(summary.total_amount_cents / summary.total_receipts) : 0
+  const topStore = [...(summary.by_store ?? [])].sort((a, b) => (b.count ?? 0) - (a.count ?? 0))[0] ?? null
+  const topCat = [...(summary.by_category_l1 ?? [])].sort((a, b) => b.amount_cents - a.amount_cents)[0] ?? null
+
+  const ucTree = useMemo(
+    () => (summary.by_user_category && summary.by_user_category.length > 0 ? buildUCTree(summary.by_user_category) : []),
+    [summary.by_user_category]
+  )
+  const hasUCTree = ucTree.length > 0
+
+  const findById = useCallback((nodes: UCTreeNode[], id: string): UCTreeNode | null => {
+    for (const n of nodes) {
+      if (n.user_category_id === id) return n
+      const found = findById(n.children, id)
+      if (found) return found
+    }
+    return null
+  }, [])
+
+  const { segs, levelTotal, canDrill } = useMemo((): { segs: DonutSeg[]; levelTotal: number; canDrill: boolean } => {
+    if (hasUCTree) {
+      let currentNodes: UCTreeNode[] = ucTree
+      if (drillPath.length > 0) {
+        const last = drillPath[drillPath.length - 1]
+        const parentNode = findById(ucTree, last.id)
+        currentNodes = parentNode ? parentNode.children : []
+      }
+
+      const sorted = [...currentNodes].sort((a, b) => b.amount_cents - a.amount_cents).filter(c => c.amount_cents > 0)
+      const levelTotal = sorted.reduce((s, c) => s + c.amount_cents, 0) || 1
+
+      const segs: DonutSeg[] = sorted.map((node, i) => {
+        let color: string
+        color = getCatColor(node.name, i)
+        return {
+          id: node.user_category_id,
+          name: node.name,
+          amount_cents: node.amount_cents,
+          color,
+          pct: (node.amount_cents / levelTotal) * 100,
+          hasChildren: node.children.filter(c => c.amount_cents > 0).length > 0,
+        }
+      })
+
+      return { segs, levelTotal, canDrill: true }
+    }
+
+    // Fallback: system L1 categories, non-drillable
+    const total = summary.total_amount_cents || 1
+    const segs: DonutSeg[] = buildSegments(summary.by_category_l1, total).map(s => ({
+      ...s,
+      id: s.name,
+      hasChildren: false,
+    }))
+    return { segs, levelTotal: total, canDrill: false }
+  }, [hasUCTree, ucTree, drillPath, summary, findById])
+
+  const SIZE = 260
+  const CX = SIZE / 2
+  const CY = SIZE / 2
+  const OUTER_R = 108
+  const INNER_R = 64
+  const PULL = 8
+
+  let cumDeg = 0
+  const arcSegs: ArcSeg[] = segs.map((seg) => {
+    const spanDeg = (seg.amount_cents / levelTotal) * 360
+    const start = cumDeg
+    cumDeg += spanDeg
+    return { ...seg, startDeg: start, endDeg: cumDeg, midDeg: start + spanDeg / 2 }
+  })
+
+  const handleSegClick = (seg: ArcSeg) => {
+    if (!canDrill || !seg.hasChildren) return
+    setDrillPath(prev => [...prev, { id: seg.id, name: seg.name, color: drillPath.length === 0 ? seg.color : drillPath[0].color }])
+    setHoveredIdx(null)
+  }
+
+  const handleBreadcrumb = (idx: number) => {
+    setDrillPath(prev => prev.slice(0, idx))
+    setHoveredIdx(null)
+  }
+
+  const centerLabel = drillPath.length > 0 ? drillPath[drillPath.length - 1].name : 'Total'
+  const centerValue = formatDollars(levelTotal)
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6 lg:items-stretch">
+
+      {/* Donut card — spans 2 of 3 cols on lg */}
+      <div className="lg:col-span-2 bg-white rounded-xl shadow p-4 sm:p-6 flex flex-col">
+          <h3 className="text-sm font-semibold text-theme-dark/90 mb-2 shrink-0">Spending Breakdown</h3>
+
+          {/* Breadcrumb */}
+          {drillPath.length > 0 && (
+            <nav className="flex items-center gap-1 text-xs text-theme-mid mb-3 flex-wrap shrink-0" aria-label="Category navigation">
+              <button type="button" className="hover:text-theme-orange transition-colors" onClick={() => handleBreadcrumb(0)}>
+                All Categories
+              </button>
+              {drillPath.map((item, i) => (
+                <span key={item.id} className="flex items-center gap-1">
+                  <span className="text-theme-light-gray">›</span>
+                  <button
+                    type="button"
+                    className={`hover:text-theme-orange transition-colors ${i === drillPath.length - 1 ? 'text-theme-dark font-medium' : ''}`}
+                    onClick={() => handleBreadcrumb(i + 1)}
+                  >
+                    {item.name}
+                  </button>
+                </span>
+              ))}
+            </nav>
+          )}
+
+          {segs.length === 0 ? (
+            <p className="text-sm text-theme-mid py-6 text-center">No spending data available.</p>
+          ) : (
+            <div className="flex-1 flex flex-col sm:flex-row items-center gap-4">
+              {/* Donut SVG */}
+              <div className="relative shrink-0" style={{ width: SIZE, height: SIZE }}>
+                <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} role="img" aria-label="Spending breakdown donut chart">
+                  {arcSegs.map((seg, i) => {
+                    const isHovered = hoveredIdx === i
+                    const mid = seg.midDeg
+                    const rad = ((mid - 90) * Math.PI) / 180
+                    const dx = isHovered ? Math.cos(rad) * PULL : 0
+                    const dy = isHovered ? Math.sin(rad) * PULL : 0
+                    const clickable = canDrill && seg.hasChildren
+                    return (
+                      <path
+                        key={seg.name}
+                        d={donutArcPath(CX, CY, OUTER_R, INNER_R, seg.startDeg, seg.endDeg)}
+                        fill={seg.color}
+                        transform={`translate(${dx},${dy})`}
+                        style={{
+                          transition: 'transform 200ms ease-out, opacity 150ms ease-out',
+                          cursor: clickable ? 'pointer' : 'default',
+                          opacity: hoveredIdx !== null && hoveredIdx !== i ? 0.72 : 1,
+                        }}
+                        onMouseEnter={() => setHoveredIdx(i)}
+                        onMouseLeave={() => setHoveredIdx(null)}
+                        onClick={() => handleSegClick(seg)}
+                        aria-label={`${seg.name}: ${formatDollars(seg.amount_cents)}, ${seg.pct.toFixed(1)}%`}
+                        role={clickable ? 'button' : undefined}
+                        tabIndex={clickable ? 0 : undefined}
+                        onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') handleSegClick(seg) } : undefined}
+                      />
+                    )
+                  })}
+                  <text x={CX} y={CY - 10} textAnchor="middle" style={{ fontSize: 11, fill: '#b0aea5', fontFamily: 'inherit' }}>
+                    {centerLabel}
+                  </text>
+                  <text x={CX} y={CY + 12} textAnchor="middle" style={{ fontSize: 16, fontWeight: 700, fill: '#141413', fontFamily: 'inherit' }}>
+                    {centerValue}
+                  </text>
+                </svg>
+                {hoveredIdx !== null && arcSegs[hoveredIdx] && (
+                  <div
+                    className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-2 bg-theme-dark text-white text-xs rounded px-2.5 py-1.5 pointer-events-none whitespace-nowrap shadow-lg"
+                    style={{ zIndex: 10 }}
+                  >
+                    <span className="font-medium">{arcSegs[hoveredIdx].name}</span>
+                    {' · '}{formatDollars(arcSegs[hoveredIdx].amount_cents)}
+                    {' · '}{arcSegs[hoveredIdx].pct.toFixed(1)}%
+                    {canDrill && arcSegs[hoveredIdx].hasChildren && (
+                      <span className="ml-1 opacity-60"> — click to expand</span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Legend */}
+              <div className="flex-1 min-w-0 w-full sm:pt-2">
+                <div className="space-y-0.5">
+                  {arcSegs.map((seg, i) => (
+                    <div
+                      key={seg.name}
+                      className="flex items-center gap-2 text-sm rounded px-2 py-1.5 transition-colors duration-100"
+                      style={{
+                        backgroundColor: hoveredIdx === i ? '#faf9f5' : 'transparent',
+                        cursor: canDrill && seg.hasChildren ? 'pointer' : 'default',
+                      }}
+                      onMouseEnter={() => setHoveredIdx(i)}
+                      onMouseLeave={() => setHoveredIdx(null)}
+                      onClick={() => handleSegClick(seg)}
+                    >
+                      <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: seg.color }} aria-hidden />
+                      <span className="flex-1 truncate text-theme-dark/90 min-w-0">{seg.name}</span>
+                      <span className="tabular-nums text-theme-dark font-medium shrink-0">{formatDollars(seg.amount_cents)}</span>
+                      <span className="tabular-nums text-theme-mid shrink-0 w-12 text-right">{seg.pct.toFixed(1)}%</span>
+                      {canDrill && seg.hasChildren && (
+                        <span className="text-theme-mid/60 text-xs shrink-0">›</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {drillPath.length > 0 && (
+                  <button
+                    type="button"
+                    className="mt-3 text-xs text-theme-orange hover:underline px-2"
+                    onClick={() => handleBreadcrumb(drillPath.length - 1)}
+                  >
+                    ← {drillPath.length > 1 ? `Back to ${drillPath[drillPath.length - 2].name}` : 'All Categories'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+      {/* Stat cards — stacked in 1/3 column on lg */}
+      <div className="flex flex-row lg:flex-col gap-6">
+        <div className="flex-1 bg-white rounded-xl shadow p-4 sm:p-6">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-theme-mid mb-1">AVG PER TRIP</p>
+          <p className="text-2xl font-bold text-theme-dark">{formatDollars(avgPerTrip)}</p>
+          <p className="text-xs text-theme-mid/80 mt-0.5">{summary.total_receipts} receipt{summary.total_receipts !== 1 ? 's' : ''}</p>
+        </div>
+        {topStore && (
+          <div className="flex-1 bg-white rounded-xl shadow p-4 sm:p-6">
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-theme-mid mb-1">MOST VISITED</p>
+            <p className="text-xl font-bold text-theme-dark truncate" title={topStore.name}>{topStore.name}</p>
+            <p className="text-xs text-theme-mid/80 mt-0.5">{topStore.count ?? 0} visit{(topStore.count ?? 0) !== 1 ? 's' : ''} · {formatDollars(topStore.amount_cents)}</p>
+          </div>
+        )}
+        {topCat && (
+          <div className="flex-1 bg-white rounded-xl shadow p-4 sm:p-6">
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-theme-mid mb-1">TOP CATEGORY</p>
+            <p className="text-xl font-bold text-theme-dark truncate" title={topCat.name}>{topCat.name}</p>
+            <p className="text-xs text-theme-mid/80 mt-0.5">{formatDollars(topCat.amount_cents)}</p>
+          </div>
+        )}
+      </div>
+
+    </div>
+  )
+}
+
+// ===== Feature 0: Monthly Spending Bar Chart =====
+
+type MonthPoint = { month: string; label: string; total_cents: number; segments: SpendingSegment[] }
+type ChartTooltip = { x: number; y: number; point: MonthPoint }
+
+function niceChartMax(maxCents: number): { ceilCents: number; stepCents: number } {
+  const d = maxCents / 100
+  let step: number
+  if (d <= 200) step = 50
+  else if (d <= 500) step = 100
+  else if (d <= 2000) step = 500
+  else if (d <= 10000) step = 1000
+  else if (d <= 20000) step = 2000
+  else step = 5000
+  const ceil = Math.ceil(Math.max(d, step) / step) * step
+  return { ceilCents: ceil * 100, stepCents: step * 100 }
+}
+
+function fmtAxisLabel(cents: number): string {
+  const d = cents / 100
+  return '$' + Math.round(d).toLocaleString('en-US')
+}
+
+function MonthlySpendingChart({ token, apiBaseUrl }: { token: string | null; apiBaseUrl: string }) {
+  const [data, setData] = useState<MonthPoint[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
+  const [tooltip, setTooltip] = useState<ChartTooltip | null>(null)
+  const [isMobile, setIsMobile] = useState(false)
+
+  useEffect(() => {
+    const m = window.matchMedia('(max-width: 639px)')
+    const update = () => setIsMobile(m.matches)
+    update()
+    m.addEventListener('change', update)
+    return () => m.removeEventListener('change', update)
+  }, [])
+
+  const allMonths = useMemo(() => {
+    const result: string[] = []
+    const now = new Date()
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+      result.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+    }
+    return result
+  }, [])
+
+  useEffect(() => {
+    if (!token) { setLoading(false); return }
+    let cancelled = false
+    Promise.all(
+      allMonths.map(m =>
+        fetch(`${apiBaseUrl}/api/analytics/summary?period=month&value=${m}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }).then(r => r.ok ? r.json() : null).catch(() => null)
+      )
+    ).then(results => {
+      if (cancelled) return
+      setData(allMonths.map((m, i) => {
+        const r = results[i]
+        const [yr, mo] = m.split('-')
+        const label = new Date(+yr, +mo - 1, 1).toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
+        if (!r?.total_amount_cents) return { month: m, label, total_cents: 0, segments: [] }
+        return { month: m, label, total_cents: r.total_amount_cents, segments: buildSegments(r.by_category_l1 ?? [], r.total_amount_cents) }
+      }))
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [token, apiBaseUrl, allMonths])
+
+  const visibleData = isMobile ? data.slice(-6) : data
+  const hasData = data.some(d => d.total_cents > 0)
+  const selectedData = visibleData.find(d => d.month === selectedMonth)
+  const maxCents = Math.max(...data.map(d => d.total_cents), 1)
+  const { ceilCents, stepCents } = niceChartMax(maxCents)
+
+  const CHART_H = 160
+  const Y_AXIS_W = 58
+  const BAR_GAP = 8
+  const numTicks = Math.round(ceilCents / stepCents)
+  const yTicks = Array.from({ length: numTicks }, (_, i) => {
+    const v = stepCents * (i + 1)
+    return { v, label: fmtAxisLabel(v), top: Math.round(CHART_H * (1 - v / ceilCents)) }
+  })
+
+  const legendItems = useMemo(() => {
+    const seen = new Map<string, string>()
+    data.forEach(p => p.segments.forEach(s => { if (!seen.has(s.name)) seen.set(s.name, s.color) }))
+    return [...seen.entries()].map(([name, color]) => ({ name, color }))
+  }, [data])
+
+  if (loading) {
+    return (
+      <div className="h-36 flex items-center justify-center text-theme-mid text-sm gap-2">
+        <span className="inline-block animate-spin">⏳</span> Loading…
+      </div>
+    )
+  }
+  if (!hasData) return <p className="text-sm text-theme-mid py-4 text-center">No spending history yet.</p>
+
+  return (
+    <div onMouseLeave={() => setTooltip(null)}>
+      {/* Chart: Y-axis + bars area */}
+      <div style={{ position: 'relative', paddingLeft: Y_AXIS_W }}>
+        {/* Y-axis labels (absolutely on the left strip) */}
+        <div style={{ position: 'absolute', left: 0, top: 0, width: Y_AXIS_W, height: CHART_H }}>
+          {yTicks.map(t => (
+            <div key={t.v} style={{ position: 'absolute', top: t.top - 8, right: 6, whiteSpace: 'nowrap' }}
+              className="text-[10px] text-theme-mid">{t.label}</div>
+          ))}
+        </div>
+        {/* Bars area fills remaining width */}
+        <div style={{ position: 'relative', height: CHART_H }}>
+          {/* Gridlines */}
+          {yTicks.map(t => (
+            <div key={t.v} style={{ position: 'absolute', top: t.top, left: 0, right: 0 }}
+              className="border-t border-theme-light-gray/60 pointer-events-none" />
+          ))}
+          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0 }}
+            className="border-t border-theme-light-gray pointer-events-none" />
+          {/* Bars — flex:1 fills full width */}
+          <div className="absolute inset-0 flex items-end" style={{ gap: BAR_GAP, paddingLeft: '7%', paddingRight: '7%' }}>
+            {visibleData.map(point => {
+              const barH = (point.total_cents / ceilCents) * CHART_H
+              const isSelected = selectedMonth === point.month
+              return (
+                <div key={point.month} style={{ flex: 0.9, height: '100%', minWidth: 20 }}
+                  className="relative flex flex-col justify-end">
+                  {point.total_cents > 0 ? (
+                    <div
+                      style={{ height: barH }}
+                      className={`w-full flex flex-col-reverse overflow-hidden rounded-t cursor-pointer transition-all duration-150 ${isSelected ? 'shadow-[0_0_0_2px_#d97757,0_0_0_3px_white]' : 'hover:brightness-105'}`}
+                      onClick={() => setSelectedMonth(prev => prev === point.month ? null : point.month)}
+                      onMouseEnter={e => {
+                        const rect = e.currentTarget.getBoundingClientRect()
+                        setTooltip({ x: rect.left + rect.width / 2, y: rect.top, point })
+                      }}
+                      onMouseLeave={() => setTooltip(null)}
+                    >
+                      {point.segments.map(seg => (
+                        <div
+                          key={seg.name}
+                          style={{
+                            height: `${seg.pct}%`,
+                            backgroundColor: seg.color,
+                            flexShrink: 0,
+                            transition: 'opacity 150ms',
+                            opacity: tooltip && tooltip.point.month !== point.month ? 0.55 : 1,
+                          }}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ height: 3, backgroundColor: '#e8e6dc', borderRadius: 2 }} className="w-full" />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+        {/* X-axis labels — flex:1 mirrors bars */}
+        <div className="flex mt-1.5" style={{ gap: BAR_GAP, paddingLeft: '7%', paddingRight: '7%' }}>
+          {visibleData.map(point => (
+            <div
+              key={point.month}
+              style={{ flex: 0.9, minWidth: 20 }}
+              className={`text-center text-[10px] cursor-pointer select-none ${selectedMonth === point.month ? 'text-theme-orange font-semibold' : 'text-theme-mid'}`}
+              onClick={() => setSelectedMonth(prev => prev === point.month ? null : point.month)}
+            >
+              {point.label}
+              {selectedMonth === point.month && <div className="w-1.5 h-1.5 rounded-full bg-theme-orange mx-auto mt-0.5" />}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Legend */}
+      {legendItems.length > 0 && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-3 pt-3 border-t border-theme-light-gray/60">
+          {legendItems.map(item => (
+            <div key={item.name} className="flex items-center gap-1.5 text-xs">
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} aria-hidden />
+              <span className="text-theme-dark/70">{item.name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Selected month breakdown */}
+      {selectedData && selectedData.total_cents > 0 && (
+        <div className="mt-3 p-3 rounded-lg bg-theme-cream-alt">
+          <p className="text-xs font-semibold text-theme-dark mb-2">{selectedData.label} — {formatDollars(selectedData.total_cents)}</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+            {selectedData.segments.map(seg => (
+              <div key={seg.name} className="flex items-center gap-2 text-xs">
+                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: seg.color }} aria-hidden />
+                <span className="flex-1 text-theme-dark/80 min-w-0 truncate">{seg.name}</span>
+                <span className="tabular-nums text-theme-dark font-medium shrink-0">{formatDollars(seg.amount_cents)}</span>
+                <span className="tabular-nums text-theme-mid/80 shrink-0 w-9 text-right">{seg.pct.toFixed(1)}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Floating tooltip */}
+      {tooltip && (
+        <div
+          style={{ position: 'fixed', left: tooltip.x, top: tooltip.y - 6, transform: 'translate(-50%, -100%)', zIndex: 1000, pointerEvents: 'none' }}
+          className="bg-theme-dark text-white text-xs rounded px-3 py-2 shadow-xl whitespace-nowrap"
+        >
+          <p className="font-semibold mb-1.5 text-white/80">{tooltip.point.label}</p>
+          {tooltip.point.segments.map(seg => (
+            <div key={seg.name} className="flex items-center gap-2 py-0.5">
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: seg.color }} />
+              <span className="flex-1">{seg.name}</span>
+              <span className="text-white/50 tabular-nums w-10 text-right">{seg.pct.toFixed(1)}%</span>
+              <span className="tabular-nums text-right">{formatDollars(seg.amount_cents)}</span>
+            </div>
+          ))}
+          <div className="mt-1.5 pt-1.5 border-t border-white/20 flex justify-between gap-4">
+            <span className="text-white/60">Total</span>
+            <span className="tabular-nums font-semibold">{formatDollars(tooltip.point.total_cents)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TableWithPct({
   title,
   rows,
   totalCents,
   showCount = false,
-  showAllDesktop,
 }: {
   title: string
   rows: Array<{ name: string; amount_cents: number; count?: number }>
   totalCents: number
   showCount?: boolean
-  showAllDesktop: boolean
 }) {
-  const [showAllMobile, setShowAllMobile] = useState(false)
+  const [showAll, setShowAll] = useState(false)
 
   if (rows.length === 0) return null
   const total = totalCents || 1
-  const mobileHiddenCount = Math.max(0, rows.length - TABLE_DEFAULT_MOBILE)
+  const hiddenCount = Math.max(0, rows.length - TABLE_DEFAULT_DESKTOP)
+  const displayRows = showAll ? rows : rows.slice(0, TABLE_DEFAULT_DESKTOP)
   return (
-    <div className="bg-white rounded-xl shadow p-3 sm:p-4 mb-4 overflow-hidden w-full min-w-0">
+    <div className="bg-white rounded-xl shadow p-3 sm:p-4 overflow-hidden w-full min-w-0 h-full flex flex-col">
       <h3 className="text-sm font-semibold text-theme-dark/90 mb-3">{title}</h3>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto flex-1">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-theme-light-gray text-left text-theme-mid">
@@ -128,39 +713,30 @@ function TableWithPct({
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => {
-              const mobileVisible = showAllMobile || i < TABLE_DEFAULT_MOBILE
-              const desktopVisible = showAllDesktop || i < TABLE_DEFAULT_DESKTOP
-              let rowClass = ''
-              if (!mobileVisible && !desktopVisible) rowClass = 'hidden'
-              else if (!mobileVisible && desktopVisible) rowClass = 'hidden sm:table-row'
-              else if (mobileVisible && !desktopVisible) rowClass = 'sm:hidden'
-              return (
-                <tr key={i} className={`border-b border-theme-light-gray/50 hover:bg-theme-cream/50 transition-colors duration-150 ${rowClass}`}>
-                  <td className="py-2 pr-4 font-medium text-theme-dark">{r.name}</td>
-                  {showCount && (
-                    <td className="py-2 pr-4 text-right tabular-nums text-theme-dark/90">
-                      {(r as { count?: number }).count ?? '—'}
-                    </td>
-                  )}
-                  <td className="py-2 pr-4 text-right tabular-nums">{formatDollars(r.amount_cents)}</td>
-                  <td className="py-2 text-right tabular-nums text-theme-dark/90">
-                    {((r.amount_cents / total) * 100).toFixed(1)}%
+            {displayRows.map((r, i) => (
+              <tr key={i} className="border-b border-theme-light-gray/50 hover:bg-theme-cream/50 transition-colors duration-150">
+                <td className="py-2 pr-4 font-medium text-theme-dark">{r.name}</td>
+                {showCount && (
+                  <td className="py-2 pr-4 text-right tabular-nums text-theme-dark/90">
+                    {(r as { count?: number }).count ?? '—'}
                   </td>
-                </tr>
-              )
-            })}
+                )}
+                <td className="py-2 pr-4 text-right tabular-nums">{formatDollars(r.amount_cents)}</td>
+                <td className="py-2 text-right tabular-nums text-theme-dark/90">
+                  {((r.amount_cents / total) * 100).toFixed(1)}%
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
-      {/* Mobile: per-card Show more/less, only if > 5 rows */}
-      {mobileHiddenCount > 0 && (
+      {hiddenCount > 0 && (
         <button
           type="button"
-          onClick={() => setShowAllMobile((v) => !v)}
-          className="sm:hidden mt-2 text-sm text-theme-orange hover:underline px-1 py-1"
+          onClick={() => setShowAll((v) => !v)}
+          className="mt-2 text-xs text-theme-orange hover:underline px-1 py-1"
         >
-          {showAllMobile ? 'Show less' : `Show ${mobileHiddenCount} more`}
+          {showAll ? 'Show less' : `View ${hiddenCount} more`}
         </button>
       )}
     </div>
@@ -184,9 +760,6 @@ export default function DataAnalysisSection({ token }: { token: string | null })
   // Session-level dismiss for the unclassified banner (reappears on page refresh)
   const [unclassifiedBannerDismissed, setUnclassifiedBannerDismissed] = useState(false)
 
-  // Shared show-all for By store + By payment card (same toggle keeps them aligned)
-  const [showAllStores, setShowAllStores] = useState(false)
-
   useEffect(() => {
     setMonthOptions(buildMonthOptions())
     setQuarterOptions(buildQuarterOptions())
@@ -207,6 +780,7 @@ export default function DataAnalysisSection({ token }: { token: string | null })
     let cancelled = false
     setLoading(true)
     setError(null)
+    setSummary(null)
     const params = new URLSearchParams()
     if (periodType && periodValue) {
       params.set('period', periodType)
@@ -238,11 +812,17 @@ export default function DataAnalysisSection({ token }: { token: string | null })
 
   return (
     <div className="mb-6 sm:mb-8 w-full max-w-full">
-      <div className="bg-white rounded-xl shadow p-4 sm:p-6 mb-6 sm:mb-4 w-full">
-        <h2 className="font-heading text-xl font-semibold mb-4 text-theme-dark">Spending Analysis</h2>
-        <p className="text-sm text-theme-dark/90 mb-4">
+      <div className="bg-white rounded-xl shadow p-4 sm:p-6 mb-6 w-full">
+        <h2 className="font-heading text-xl font-semibold mb-1 text-theme-dark">Spending Analysis</h2>
+        <p className="text-sm text-theme-dark/90 mb-5">
           Spending data summary from your receipts by store, payment type, and category.
         </p>
+
+        {/* Monthly chart — always visible, independent of period filter */}
+        <MonthlySpendingChart token={token} apiBaseUrl={apiBaseUrl} />
+      </div>
+
+      <div className="bg-white rounded-xl shadow p-4 sm:p-6 mb-6 w-full">
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <label className="flex items-center gap-2 text-sm text-theme-dark/90">
             <span>Filter:</span>
@@ -285,118 +865,47 @@ export default function DataAnalysisSection({ token }: { token: string | null })
           </div>
         )}
         {error && !loading && <p className="text-theme-red text-sm">{error}</p>}
-        {!loading && !error && (!summary || (summary.total_receipts === 0 && summary.by_store.length === 0)) && (
+        {!loading && !error && (!summary || (summary.total_receipts === 0 && summary.total_amount_cents === 0)) && (
           <p className="text-theme-mid text-sm">No receipt data for this period. Upload receipts or choose another period.</p>
         )}
-        {!loading && !error && summary && (summary.total_receipts > 0 || summary.by_store.length > 0) && (
+        {!loading && !error && summary && (summary.total_receipts > 0 || summary.total_amount_cents > 0) && (
           <>
-            {/* Mobile: 2 cols, Top 3 full width below */}
-            <div className="grid grid-cols-2 sm:hidden gap-x-6 gap-y-2 text-sm items-end">
+            {/* Total Receipts + Total Amount */}
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm items-end">
               <div>
                 <span className="text-theme-mid block">Total Receipts</span>
                 <p className="font-semibold text-theme-dark">{summary.total_receipts}</p>
               </div>
               <div>
                 <span className="text-theme-mid block">Total Amount</span>
-                <p className="font-semibold text-theme-dark">{formatDollars(summary.total_amount_cents)}</p>
-              </div>
-              <div className="col-span-2">
-                <span className="text-theme-mid block">Top 3 Spending</span>
-                {summary.by_category_l1.length > 0 ? (
-                  <div className="grid grid-cols-[auto_1fr_5.5rem_2.5rem] gap-x-2 items-center font-medium text-theme-dark tabular-nums">
-                    {[...summary.by_category_l1]
-                      .sort((a, b) => b.amount_cents - a.amount_cents)
-                      .slice(0, 3)
-                      .map((r, i) => {
-                        const total = summary.by_category_l1.reduce((s, x) => s + x.amount_cents, 0) || summary.total_amount_cents || 1
-                        const pct = ((r.amount_cents / total) * 100).toFixed(1)
-                        return (
-                          <span key={i} className="contents">
-                            <RankCircle rank={i as 0 | 1 | 2} />
-                            <span className="truncate min-w-0" title={r.name}>{r.name}</span>
-                            <span className="text-right">{formatDollars(r.amount_cents)}</span>
-                            <span className="text-right text-theme-dark/90">{pct}%</span>
-                          </span>
-                        )
-                      })}
-                  </div>
-                ) : (
-                  <p className="font-semibold text-theme-dark">—</p>
-                )}
+                <p className="font-semibold text-theme-dark tabular-nums">{formatDollars(summary.total_amount_cents)}</p>
               </div>
             </div>
-            {/* Desktop: left = Total Receipts + Total Amount stacked; right = Top 3 Spending */}
-            <div className="hidden sm:grid sm:grid-cols-2 gap-6 text-sm items-start">
-              <div className="space-y-3">
-                <div>
-                  <span className="text-theme-mid block">Total Receipts</span>
-                  <p className="font-semibold text-theme-dark">{summary.total_receipts}</p>
-                </div>
-                <div>
-                  <span className="text-theme-mid block">Total Amount</span>
-                  <p className="font-semibold text-theme-dark tabular-nums">{formatDollars(summary.total_amount_cents)}</p>
-                </div>
-              </div>
-              <div>
-                <span className="text-theme-mid block mb-1">Top 3 Spending</span>
-                {summary.by_category_l1.length > 0 ? (
-                  <div className="grid grid-cols-[auto_1fr_auto_auto] gap-x-2 items-center font-medium text-theme-dark tabular-nums">
-                    {[...summary.by_category_l1]
-                      .sort((a, b) => b.amount_cents - a.amount_cents)
-                      .slice(0, 3)
-                      .map((r, i) => {
-                        const total = summary.by_category_l1.reduce((s, x) => s + x.amount_cents, 0) || summary.total_amount_cents || 1
-                        const pct = ((r.amount_cents / total) * 100).toFixed(1)
-                        return (
-                          <span key={i} className="contents">
-                            <RankCircle rank={i as 0 | 1 | 2} />
-                            <span className="truncate min-w-0" title={r.name}>{r.name}</span>
-                            <span className="text-right shrink-0">{formatDollars(r.amount_cents)}</span>
-                            <span className="text-right shrink-0 text-theme-dark/90">{pct}%</span>
-                          </span>
-                        )
-                      })}
-                  </div>
-                ) : (
-                  <p className="font-semibold text-theme-dark">—</p>
-                )}
-              </div>
-            </div>
+            {/* Feature 1: Stacked Progress Bar */}
+            {summary.by_category_l1.length > 0 && (
+              <StackedProgressBar segments={buildSegments(summary.by_category_l1, summary.total_amount_cents)} />
+            )}
           </>
         )}
       </div>
 
       {!loading && !error && summary && (summary.total_receipts > 0 || summary.by_store.length > 0) && (
         <>
+          {/* Donut + Stat Cards */}
+          <DonutChartCard summary={summary} />
+
           {/* Top 3 columns: By Store | By Payment Type | By System Category */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-full">
-            <div className="w-full min-w-0">
-              <TableWithPct title="By store" rows={summary.by_store} totalCents={summary.total_amount_cents} showCount showAllDesktop={showAllStores} />
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full max-w-full items-stretch">
+            <div className="w-full min-w-0 h-full">
+              <TableWithPct title="By store" rows={summary.by_store} totalCents={summary.total_amount_cents} showCount />
             </div>
-            <div className="w-full min-w-0">
-              <TableWithPct title="By payment type" rows={summary.by_payment} totalCents={summary.total_amount_cents} showCount showAllDesktop={showAllStores} />
+            <div className="w-full min-w-0 h-full">
+              <TableWithPct title="By payment type" rows={summary.by_payment} totalCents={summary.total_amount_cents} showCount />
             </div>
-            <div className="w-full min-w-0">
+            <div className="w-full min-w-0 h-full">
               <SystemCategoryCard rows={summary.by_category_l1} totalCents={summary.total_amount_cents} />
             </div>
           </div>
-          {/* Desktop: shared Show more/less for store + payment only */}
-          {(summary.by_store.length > TABLE_DEFAULT_DESKTOP || summary.by_payment.length > TABLE_DEFAULT_DESKTOP) && (
-            <div className="hidden sm:flex justify-center -mt-2 mb-2">
-              <button
-                type="button"
-                onClick={() => setShowAllStores((v) => !v)}
-                className="text-sm text-theme-orange hover:underline px-3 py-1"
-              >
-                {showAllStores
-                  ? 'Show less'
-                  : `Show ${Math.max(
-                      Math.max(0, summary.by_store.length - TABLE_DEFAULT_DESKTOP),
-                      Math.max(0, summary.by_payment.length - TABLE_DEFAULT_DESKTOP)
-                    )} more`}
-              </button>
-            </div>
-          )}
 
           {/* Unclassified banner */}
           {(summary.unclassified_count ?? 0) > 0 && !unclassifiedBannerDismissed && (
@@ -451,9 +960,9 @@ function SystemCategoryCard({
   if (rows.length === 0) return null
 
   return (
-    <div className="bg-white rounded-xl shadow p-3 sm:p-4 mb-4 overflow-hidden w-full min-w-0">
+    <div className="bg-white rounded-xl shadow p-3 sm:p-4 overflow-hidden w-full min-w-0 h-full flex flex-col">
       <h3 className="text-sm font-semibold text-theme-dark/90 mb-3">By system category</h3>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto flex-1">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-theme-light-gray text-left text-theme-mid">
