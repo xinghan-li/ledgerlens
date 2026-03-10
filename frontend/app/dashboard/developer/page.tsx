@@ -1057,7 +1057,7 @@ export default function DeveloperDashboardPage() {
                                                         onChange={(val) => setEditCatId(val)}
                                                         onRefetchCategories={fetchCategories}
                                                         onCreateCategory={createCategory}
-                                                        onCategoryCreated={(cat) => setCategoriesList((prev) => [...prev, cat])}
+                                                        onCategoryCreated={(cat) => setCategoriesList((prev) => [...prev, { ...cat, path: cat.path ?? '' }])}
                                                       />
                                                     </div>
                                                     <div className="flex items-center gap-0.5 w-14">
