@@ -10,6 +10,8 @@ import { CameraCaptureButton } from './camera'
 import { useApiUrl } from '@/lib/api-url-context'
 import { useAuth, authFetch } from '@/lib/auth-context'
 import { useDashboardActions } from './dashboard-actions-context'
+import CategoryTreeSelector from './CategoryTreeSelector'
+import SystemCategorySubSelector from './SystemCategorySubSelector'
 
 const MAX_PROCESSING = 5
 
@@ -55,10 +57,16 @@ export default function DashboardPage() {
   const [expandedReceiptData, setExpandedReceiptData] = useState<Record<string, any>>({})
   const [showRawJson, setShowRawJson] = useState(false)
   const [correctionOpenReceiptId, setCorrectionOpenReceiptId] = useState<string | null>(null)
+  /** Edit mode: when set, user can click sections to edit inline. Toggle replaces former Edit Fields / Hide Edits. */
+  const [editModeReceiptId, setEditModeReceiptId] = useState<string | null>(null)
+  /** Which section is currently in "editing" state (showing inputs). */
+  const [editingSection, setEditingSection] = useState<{ receiptId: string; section: 'store' | 'address' | 'item' | 'classification' | 'payment_date'; index?: number } | null>(null)
   const [editStoreName, setEditStoreName] = useState('')
   const [editAddressLine1, setEditAddressLine1] = useState('')
   const [editAddressLine2, setEditAddressLine2] = useState('')
-  const [editAddressCityStateZip, setEditAddressCityStateZip] = useState('')
+  const [editAddressCity, setEditAddressCity] = useState('')
+  const [editAddressState, setEditAddressState] = useState('')
+  const [editAddressZip, setEditAddressZip] = useState('')
   const [editAddressCountry, setEditAddressCountry] = useState('')
   const [editReceiptDate, setEditReceiptDate] = useState('')
   const [editPurchaseTime, setEditPurchaseTime] = useState('')
@@ -72,11 +80,9 @@ export default function DashboardPage() {
   const [editItems, setEditItems] = useState<Array<{ id?: string; product_name: string; quantity: string; unit: string; unit_price: string; line_total: string; on_sale: boolean; original_price: string; discount_amount: string }>>([])
   const [correctSubmitting, setCorrectSubmitting] = useState(false)
   const [correctMessage, setCorrectMessage] = useState<string | null>(null)
-  const [categoriesList, setCategoriesList] = useState<Array<{ id: string; parent_id: string | null; name: string; path: string; level: number }>>([])
+  const [categoriesList, setCategoriesList] = useState<Array<{ id: string; parent_id: string | null; name: string; path: string; level: number; is_locked?: boolean; sort_order?: number }>>([])
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
-  const [editCatL1, setEditCatL1] = useState<string>('')
-  const [editCatL2, setEditCatL2] = useState<string>('')
-  const [editCatL3, setEditCatL3] = useState<string>('')
+  const [editCatId, setEditCatId] = useState<string | null>(null)
   const [categoryUpdateMessage, setCategoryUpdateMessage] = useState<string | null>(null)
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
@@ -91,6 +97,9 @@ export default function DashboardPage() {
   /** needs_review 小票的 LLM reasoning 是否折叠（可再展开），不隐藏 */
   const [collapsedReviewReasoningReceiptIds, setCollapsedReviewReasoningReceiptIds] = useState<Set<string>>(new Set())
   const [reviewCompleteLoading, setReviewCompleteLoading] = useState<string | null>(null)
+  const [escalationReceiptId, setEscalationReceiptId] = useState<string | null>(null)
+  const [escalationNotes, setEscalationNotes] = useState('')
+  const [escalationSubmitting, setEscalationSubmitting] = useState(false)
 
   const toggleReviewReasoningCollapsed = useCallback((receiptId: string) => {
     setCollapsedReviewReasoningReceiptIds((prev) => {
@@ -174,6 +183,13 @@ export default function DashboardPage() {
     return /^[A-Za-z\s\-'.]+,\s*[A-Z]{2}\s+\d{5}(-\d{4})?$/i.test((s || '').trim())
   }
 
+  /** 拆解 "City, ST ZIP" 格式为三个独立字段 */
+  function parseCityStateZip(s: string): { city: string; state: string; zip: string } {
+    const m = (s || '').trim().match(/^(.+?),?\s+([A-Za-z]{1,3})\s+(\S+)$/)
+    if (m) return { city: m[1].trim(), state: m[2].trim(), zip: m[3].trim() }
+    return { city: (s || '').trim(), state: '', zip: '' }
+  }
+
   /** 根据邮编推断国家：加拿大 N0N 0N0 格式 / 美国 5 位或 9 位邮编 */
   function inferCountryFromPostal(cityStateZip: string): string {
     if (!(cityStateZip || '').trim()) return ''
@@ -183,7 +199,18 @@ export default function DashboardPage() {
     return ''
   }
 
-  /** 展示用地址：永远为 "address2 - address1"（门牌/单元 - 街道），再 cityStateZip，再 country；无 country 时按邮编推断 */
+  /** 将 reasoning 文本按 Date/time、Item Count、Sum Check 等分段，拆成可读的 bullet 行 */
+  function parseReasoningBullets(raw: string): { title: string; bullets: string[] } {
+    const text = (raw || '').replace(/\r\n/g, '\n').trim()
+    const withoutReasoning = text.replace(/^Reasoning\s*[:：]\s*/i, '').trim()
+    const sectionPattern = /(?=Date\/time\s*[:：]|Item\s+count\s*[:：]|Sum\s+check\s*[:：])/gi
+    const parts = withoutReasoning.split(sectionPattern).map((s) => s.trim().replace(/^\s*[•]\s*/, '')).filter(Boolean)
+    if (parts.length > 1) return { title: 'Reasoning:', bullets: parts }
+    const lines = withoutReasoning.split(/\r?\n/).map((s) => s.trim().replace(/^\s*[•]\s*/, '')).filter(Boolean)
+    return { title: 'Reasoning:', bullets: lines }
+  }
+
+  /** 展示用地址：line1, line2, cityStateZip + 空格 + country（US/CA 在邮编右侧空一格）；不单独一行 country */
   function formatAddressForDisplay(addr: string): string {
     const fields = parseAddressToFields(addr || '')
     let country = (fields.country || '').trim()
@@ -192,8 +219,7 @@ export default function DashboardPage() {
     if (fields.line2 && fields.line1) parts.push(`${fields.line2} - ${fields.line1}`)
     else if (fields.line1) parts.push(fields.line1)
     else if (fields.line2) parts.push(fields.line2)
-    if (fields.cityStateZip) parts.push(fields.cityStateZip)
-    if (country) parts.push(country)
+    if (fields.cityStateZip) parts.push(country ? `${fields.cityStateZip} ${country}` : fields.cityStateZip)
     return parts.join('\n')
   }
 
@@ -248,7 +274,10 @@ export default function DashboardPage() {
     const addrFields = parseAddressToFields(receipt.merchant_address ?? '')
     setEditAddressLine1(addrFields.line1)
     setEditAddressLine2(addrFields.line2)
-    setEditAddressCityStateZip(addrFields.cityStateZip)
+    const csz = parseCityStateZip(addrFields.cityStateZip)
+    setEditAddressCity(csz.city)
+    setEditAddressState(csz.state)
+    setEditAddressZip(csz.zip)
     setEditAddressCountry(addrFields.country)
     setEditReceiptDate(receipt.purchase_date ? receipt.purchase_date.slice(0, 10) : '')
     setEditPurchaseTime(formatTimeToHHmm(receipt.purchase_time ?? ''))
@@ -402,6 +431,31 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchCategories()
   }, [fetchCategories])
+
+  // Refetch categories when opening classification editor so user-created sub-categories from /dashboard/categories are visible
+  useEffect(() => {
+    if (editingSection?.section === 'classification') fetchCategories()
+  }, [editingSection?.section, editingSection?.receiptId, editingSection?.index, fetchCategories])
+
+  const createCategory = useCallback(
+    async (parentId: string, name: string): Promise<string | null> => {
+      if (!auth?.token) return null
+      try {
+        const res = await authFetch(
+          apiBaseUrl,
+          '/api/me/categories',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ parent_id: parentId, name: name.trim() }) },
+          auth
+        )
+        if (!res.ok) return null
+        const row = await res.json()
+        return row?.id ?? null
+      } catch {
+        return null
+      }
+    },
+    [apiBaseUrl, auth]
+  )
 
   const refetchReceiptDetail = useCallback(
     async (receiptId: string) => {
@@ -626,7 +680,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Processing: bookkeeper / Costco check / escalation messaging */}
+        {/* Processing: phase 1 = bookkeeper working; phase 2 = when store is detected we run extra check (no hardcoded store name) */}
         {processingCount > 0 && (
           <div className="mb-4 p-4 sm:p-5 bg-theme-light-gray/50 border border-theme-orange/30 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 animate-processing-pulse">
             <div className="flex items-center gap-2 sm:gap-3">
@@ -641,7 +695,7 @@ export default function DashboardPage() {
                 </p>
                 <p className="text-theme-orange text-sm">
                   You can upload more (up to {MAX_PROCESSING} at a time).
-                  For Costco we may run an extra check or escalate to a senior processor — sit tight, this may take a minute.
+                  For some stores we run an extra check or may escalate to a senior processor — sit tight, this may take a minute.
                 </p>
               </div>
             </div>
@@ -660,7 +714,12 @@ export default function DashboardPage() {
           <div className="mb-4 p-3 sm:p-4 bg-green-50 border border-green-200 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <span className="text-green-800 text-sm sm:text-base min-w-0">
               ✅ {uploadResult.current_stage === 'vision_store_specific'
-                ? 'Success after secondary check.'
+                ? (() => {
+                    const storeLabel = (uploadResult.store_name ?? uploadResult.data?.receipt?.merchant_name ?? '').trim()
+                    return storeLabel
+                      ? `Success after secondary check (${storeLabel}).`
+                      : 'Success after secondary check.'
+                  })()
                 : uploadResult.current_stage === 'vision_escalation' || uploadResult.status === 'escalation_success'
                   ? 'Success after escalation.'
                   : 'Success.'}
@@ -910,54 +969,120 @@ export default function DashboardPage() {
                                       {r.current_status === 'needs_review' && (
                                         <div className="mx-4 mt-4 mb-2 p-4 rounded-lg border border-amber-200 bg-amber-50 flex flex-col gap-3">
                                           <p className="text-sm text-amber-900">Unfortunately, the senior processor couldn&apos;t resolve all questions. Please review the result and make any adjustments. Thank you.</p>
-                                          <div className="flex items-center justify-between gap-2">
+                                          {escalationReceiptId === r.id ? (
+                                            <div className="flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+                                              <label className="text-xs font-medium text-amber-800">Escalation notes (admin will see):</label>
+                                              <textarea className="w-full min-h-[72px] border border-amber-300 rounded px-2 py-1.5 text-sm text-theme-dark" value={escalationNotes} onChange={(e) => setEscalationNotes(e.target.value)} placeholder="Describe what’s wrong or what to fix…" />
+                                              <div className="flex gap-2">
+                                                <button type="button" disabled={escalationSubmitting} onClick={async () => { if (!r.id || !token) return; setEscalationSubmitting(true); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/escalate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ notes: escalationNotes }) }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { setEscalationReceiptId(null); setEscalationNotes(''); await refetchReceiptDetail(r.id); fetchReceiptList(); alert('Escalated. Admin will review.'); } else { alert(data.detail || data.message || 'Escalation failed'); } } catch { alert('Network error'); } finally { setEscalationSubmitting(false); } }} className="text-xs font-medium text-white bg-theme-orange hover:bg-theme-orange/90 px-2 py-1.5 rounded disabled:opacity-50">Submit escalation</button>
+                                                <button type="button" onClick={() => { setEscalationReceiptId(null); setEscalationNotes(''); }} className="text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1.5 rounded border border-amber-300">Cancel</button>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                          <div className="flex items-center justify-between gap-2 flex-wrap">
                                             <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-left flex-1 min-w-0 flex items-center gap-2 text-sm font-medium text-amber-800">
                                               {collapsedReviewReasoningReceiptIds.has(r.id) ? (
                                                 <span aria-hidden>▶</span>
                                               ) : (
                                                 <span aria-hidden>▼</span>
                                               )}
-                                              <span>LLM reasoning</span>
+                                              <span>AI Smart Reasoning</span>
                                             </button>
-                                            <button type="button" disabled={reviewCompleteLoading === r.id} onClick={async (e) => { e.stopPropagation(); if (!r.id || !token || reviewCompleteLoading) return; setReviewCompleteLoading(r.id); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { await refetchReceiptDetail(r.id); fetchReceiptList() } else alert(data.detail || data.message || 'Failed to complete review'); } catch { alert('Network error'); } finally { setReviewCompleteLoading(null); } }} className="shrink-0 text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1.5 rounded border border-amber-300 disabled:opacity-50">{reviewCompleteLoading === r.id ? '…' : 'Review complete'}</button>
+                                            <button type="button" disabled={reviewCompleteLoading === r.id} onClick={async (e) => { e.stopPropagation(); if (!r.id || !token || reviewCompleteLoading) return; setReviewCompleteLoading(r.id); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { await refetchReceiptDetail(r.id); fetchReceiptList() } else alert(data.detail || data.message || 'Failed to complete review'); } catch { alert('Network error'); } finally { setReviewCompleteLoading(null); } }} className="shrink-0 text-xs font-medium text-white bg-green-600 hover:bg-green-700 px-2 py-1.5 rounded border border-green-700 disabled:opacity-50 disabled:cursor-not-allowed">{reviewCompleteLoading === r.id ? '…' : 'Review complete'}</button>
                                           </div>
+                                          )}
                                           {!collapsedReviewReasoningReceiptIds.has(r.id) && (
                                             <div className="text-sm text-amber-900 space-y-1.5">
-                                              {expandedReceiptData[r.id]?.review_metadata?.reasoning && <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>}
+                                              {expandedReceiptData[r.id]?.review_metadata?.reasoning && (() => {
+                                                const { title, bullets } = parseReasoningBullets(String(expandedReceiptData[r.id].review_metadata.reasoning ?? ''))
+                                                return (
+                                                  <div>
+                                                    <p className="font-medium text-amber-800">{title}</p>
+                                                    {bullets.length > 0 && <ul className="list-none pl-0 space-y-0.5">{bullets.map((line: string, i: number) => <li key={i}>• {line}</li>)}</ul>}
+                                                  </div>
+                                                )
+                                              })()}
                                               {expandedReceiptData[r.id]?.review_metadata?.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>}
                                               {(expandedReceiptData[r.id]?.review_metadata?.item_count_on_receipt != null || expandedReceiptData[r.id]?.review_metadata?.item_count_extracted != null) && <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>}
                                               {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && <p className="whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>}
                                             </div>
                                           )}
                                           {!collapsedReviewReasoningReceiptIds.has(r.id) && (
-                                            <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-xs text-amber-700 hover:text-amber-900 underline self-start">Collapse</button>
+                                            <div className="flex items-center gap-3">
+                                              <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-xs text-amber-700 hover:text-amber-900 underline">Collapse</button>
+                                              <button type="button" onClick={(e) => { e.stopPropagation(); setEscalationReceiptId(r.id); setEscalationNotes(''); }} className="text-xs text-red-600 hover:text-red-700 hover:underline">Escalate</button>
+                                            </div>
                                           )}
                                         </div>
                                       )}
                                       <div className="p-4">
                                         <div className="bg-white rounded-lg text-sm text-theme-dark overflow-hidden p-4 space-y-4" style={{ fontFamily: "'Space Mono', 'Courier New', monospace" }}>
-                                          <div className="flex items-start gap-2">
+                                          <div className="flex items-start justify-between gap-2">
                                             <div className="flex-1 min-w-0 text-theme-dark/90 text-sm whitespace-pre-line leading-5">
-                                              {address && <span>{address}</span>}
-                                              {(address && (rec?.merchant_phone)) && '\n'}
-                                              {rec?.merchant_phone && <span>Tel: {rec.merchant_phone}</span>}
-                                              {!address && !rec?.merchant_phone && <span className="text-theme-mid">No address or phone</span>}
+                                              {editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'store' ? (
+                                                <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+                                                  <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editStoreName} onChange={(e) => setEditStoreName(e.target.value)} placeholder="Store name" />
+                                                  <input type="tel" className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editMerchantPhone} onChange={(e) => setEditMerchantPhone(e.target.value)} placeholder="Telephone 000-000-0000" />
+                                                </div>
+                                              ) : editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'address' ? (
+                                                <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+                                                  <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressLine1} onChange={(e) => setEditAddressLine1(e.target.value)} placeholder="Address line 1" />
+                                                  <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressLine2} onChange={(e) => setEditAddressLine2(e.target.value)} placeholder="Address line 2" />
+                                                  <div className="grid gap-1" style={{ gridTemplateColumns: '2fr 1fr 1fr' }}>
+                                                    <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressCity} onChange={(e) => setEditAddressCity(e.target.value)} placeholder="City" />
+                                                    <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressState} onChange={(e) => setEditAddressState(e.target.value)} placeholder="ST" />
+                                                    <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressZip} onChange={(e) => setEditAddressZip(e.target.value)} placeholder="ZIP" />
+                                                  </div>
+                                                  <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressCountry} onChange={(e) => setEditAddressCountry(e.target.value)} placeholder="Country" />
+                                                  <input type="tel" className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editMerchantPhone} onChange={(e) => setEditMerchantPhone(e.target.value)} placeholder="Telephone 000-000-0000" />
+                                                </div>
+                                              ) : (
+                                                <>
+                                                  {editModeReceiptId === r.id ? (
+                                                    <div className="space-y-1">
+                                                      <div role="button" tabIndex={0} className="cursor-pointer rounded p-1 -m-1" onClick={(e) => { e.stopPropagation(); setEditingSection({ receiptId: r.id, section: 'store' }) }} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'store' }) } }}>{displayName || <span className="text-theme-mid">Store name</span>}</div>
+                                                      <div role="button" tabIndex={0} className="cursor-pointer rounded p-1 -m-1" onClick={(e) => { e.stopPropagation(); setEditingSection({ receiptId: r.id, section: 'address' }) }} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'address' }) } }}>
+                                                        {address || <span className="text-theme-mid">Address</span>}
+                                                        {rec?.merchant_phone && (!editingSection || editingSection.receiptId !== r.id || (editingSection.section !== 'store' && editingSection.section !== 'address')) && <div className="text-theme-dark/90">Tel: {rec.merchant_phone}</div>}
+                                                      </div>
+                                                    </div>
+                                                  ) : (
+                                                    <>
+                                                      {displayName && <div className="font-semibold text-theme-dark">{displayName}</div>}
+                                                      {address && <div className="whitespace-pre-line text-theme-dark/90">{address}</div>}
+                                                      {rec?.merchant_phone && <div className="text-theme-dark/90 mt-0.5">Tel: {rec.merchant_phone}</div>}
+                                                      {!displayName && !address && !rec?.merchant_phone && <span className="text-theme-mid">No address or phone</span>}
+                                                    </>
+                                                  )}
+                                                </>
+                                              )}
                                             </div>
-                                            <button
-                                              type="button"
-                                              className="shrink-0 relative z-10 min-w-[44px] min-h-[44px] flex items-center justify-center p-1.5 text-theme-dark/90 hover:bg-theme-light-gray rounded touch-manipulation"
-                                              onClick={(e) => {
-                                                e.preventDefault()
-                                                e.stopPropagation()
-                                                if (correctionOpenReceiptId === r.id) setCorrectionOpenReceiptId(null)
-                                                else { setCorrectionOpenReceiptId(r.id); initEditFormFromJson(expandedReceiptData[r.id]) }
-                                              }}
-                                              aria-label={mobileReceiptViewMode === 'classification' ? 'Edit I/II/III category' : 'Edit fields'}
-                                              title={mobileReceiptViewMode === 'classification' ? 'Edit category (I/II/III)' : 'Edit receipt fields'}
-                                            >
-                                              ✏️
-                                            </button>
+                                            <div className="shrink-0 flex items-center gap-2">
+                                              <span className="text-xs text-theme-mid whitespace-nowrap">Edit</span>
+                                              <button
+                                                type="button"
+                                                role="switch"
+                                                aria-checked={editModeReceiptId === r.id}
+                                                className={`relative inline-flex h-7 w-11 shrink-0 rounded-full border transition-colors touch-manipulation ${editModeReceiptId === r.id ? 'bg-theme-orange border-theme-orange' : 'bg-theme-light-gray border-theme-mid'}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation()
+                                                  if (editModeReceiptId === r.id) {
+                                                    setEditModeReceiptId(null)
+                                                    setEditingSection(null)
+                                                  } else {
+                                                    setEditModeReceiptId(r.id)
+                                                    setEditingSection(null)
+                                                    initEditFormFromJson(expandedReceiptData[r.id])
+                                                  }
+                                                }}
+                                              >
+                                                <span className={`inline-block h-6 w-6 rounded-full bg-white border border-theme-mid transform transition-transform ${editModeReceiptId === r.id ? 'translate-x-5' : 'translate-x-0.5'}`} style={{ marginTop: 1 }} />
+                                              </button>
+                                            </div>
                                           </div>
+                                          {editModeReceiptId === r.id && (
+                                            <p className="text-xs text-theme-mid">Tap a line to modify</p>
+                                          )}
                                           <div className="flex flex-col gap-1">
                                             <div className="flex rounded-lg border border-theme-mid p-0.5 bg-theme-light-gray/50">
                                               <button type="button" className={`flex-1 py-1.5 text-sm font-medium rounded-md transition ${mobileReceiptViewMode === 'receipt' ? 'bg-white shadow text-theme-dark' : 'text-theme-dark/90'}`} onClick={() => setMobileReceiptViewMode('receipt')}>Receipt</button>
@@ -972,15 +1097,33 @@ export default function DashboardPage() {
                                               const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
                                               const unit = (it.unit ?? '').trim() || 'each'
                                               const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
-                                              const path = (it.category_path ?? '').trim()
-                                              const parts = path ? path.split(/\s*[\/>]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
+                                              const path = (it.user_category_path ?? it.category_path ?? '').trim()
+                                              const parts = path ? path.split(/\s*[\/>\|]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
                                               const catLine = parts.length ? parts.join(' / ') : '—'
                                               const catL1L2 = parts.length >= 2 ? parts.slice(0, 2).join(' / ') : catLine
                                               const catL3 = parts.length >= 3 ? parts[2] : ''
                                               const showQtyUnit = Number.isFinite(qty) && qty > 1 && (u && u !== '');
+                                              const isMobileEditingItem = editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'item' && editingSection?.index === i
+                                              const mobileRowItem = editModeReceiptId === r.id && editItems[i] != null ? editItems[i] : null
                                               return (
-                                                <div key={it.id ?? i} className="border-b border-theme-light-gray/50 pb-2 last:border-0">
-                                                  {mobileReceiptViewMode === 'receipt' ? (
+                                                <div
+                                                  key={it.id ?? i}
+                                                  className={`border-b border-theme-light-gray/50 pb-2 last:border-0 ${editModeReceiptId === r.id && !isMobileEditingItem ? 'cursor-pointer rounded active:bg-theme-light-gray/30' : ''}`}
+                                                  role={editModeReceiptId === r.id && !isMobileEditingItem ? 'button' : undefined}
+                                                  tabIndex={editModeReceiptId === r.id && !isMobileEditingItem ? 0 : undefined}
+                                                  onClick={(e) => { if (editModeReceiptId === r.id && !isMobileEditingItem) { e.stopPropagation(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}
+                                                  onKeyDown={(e) => { if (editModeReceiptId === r.id && !isMobileEditingItem && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}
+                                                >
+                                                  {isMobileEditingItem && mobileRowItem ? (
+                                                    <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+                                                      <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border max-w-full" style={{ width: `${Math.max(12, Math.min(28, (mobileRowItem.product_name?.length || 0) + 2))}ch` }} value={mobileRowItem.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], product_name: e.target.value }; return n })} placeholder="Product name" />
+                                                      <div className="flex flex-wrap gap-2">
+                                                        <input type="text" inputMode="numeric" className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border w-14" style={{ minWidth: '3ch' }} value={mobileRowItem.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], quantity: e.target.value }; return n })} placeholder="Qty" />
+                                                        <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border w-16" style={{ minWidth: '4ch' }} value={mobileRowItem.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], unit_price: e.target.value }; return n })} placeholder="Unit $" />
+                                                        <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border w-16" style={{ minWidth: '4ch' }} value={mobileRowItem.line_total} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], line_total: e.target.value }; return n })} placeholder="Amount" />
+                                                      </div>
+                                                    </div>
+                                                  ) : mobileReceiptViewMode === 'receipt' ? (
                                                     <>
                                                       <div className="flex justify-between items-baseline gap-2">
                                                         <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
@@ -998,8 +1141,8 @@ export default function DashboardPage() {
                                                       <div className="flex justify-between items-baseline gap-2">
                                                         <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
                                                         <span className="shrink-0 flex items-center gap-1">
-                                                          {it.category_source === 'llm' && (
-                                                            <span className="inline-flex items-center justify-center rounded bg-black text-white text-[10px] font-bold px-1 py-0.5" title="AI guessed">AI</span>
+                                                          {(it.category_source === 'llm' || it.category_source === 'rule_exact' || it.category_source === 'rule_fuzzy') && (
+                                                            <span className="inline-flex items-center justify-center w-5 h-5 rounded-sm bg-black text-white text-[9px] font-bold shrink-0" title="AI 分类">AI</span>
                                                           )}
                                                           <span className="tabular-nums">{p ? `$${p}` : ''}</span>
                                                         </span>
@@ -1051,6 +1194,34 @@ export default function DashboardPage() {
                                                 <div className="flex justify-between"><span>Tax</span><span className="tabular-nums">{rec.tax != null ? `$${money(rec.tax)}` : ''}</span></div>
                                                 <div className="flex justify-between font-medium"><span>Total</span><span className="tabular-nums">{rec.total != null ? `$${money(rec.total)}` : ''}</span></div>
                                               </div>
+                                              {editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'payment_date' ? (
+                                                <div className="mt-2 space-y-2 pt-2 border-t border-dashed border-theme-mid" onClick={(e) => e.stopPropagation()}>
+                                                  <div><span className="text-xs text-theme-mid">Payment</span><br /><input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editPaymentMethod} onChange={(e) => setEditPaymentMethod(e.target.value)} placeholder="Visa" /></div>
+                                                  <div><span className="text-xs text-theme-mid">Card last 4</span><br /><input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm max-w-[5rem]" inputMode="numeric" maxLength={4} value={editPaymentLast4} onChange={(e) => setEditPaymentLast4(e.target.value)} placeholder="3719" /></div>
+                                                  <div><span className="text-xs text-theme-mid">Date</span><br /><input type="date" className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editReceiptDate} onChange={(e) => setEditReceiptDate(e.target.value)} /></div>
+                                                  <div><span className="text-xs text-theme-mid">Time (24h)</span><br /><input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm font-mono w-20" placeholder="17:37" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} maxLength={5} inputMode="numeric" /></div>
+                                                </div>
+                                              ) : editModeReceiptId === r.id ? (
+                                                <div
+                                                  role="button"
+                                                  tabIndex={0}
+                                                  className="mt-2 pt-2 border-t border-dashed border-theme-mid cursor-pointer rounded active:bg-theme-light-gray/30 space-y-0.5"
+                                                  onClick={(e) => { e.stopPropagation(); setEditingSection({ receiptId: r.id, section: 'payment_date' }) }}
+                                                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'payment_date' }) } }}
+                                                >
+                                                  {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
+                                                  {$(rec.card_last4) && <div>Card: ****{String(rec.card_last4).replace(/\D/g, '').slice(-4)}</div>}
+                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
+                                                  <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
+                                                </div>
+                                              ) : (
+                                                <>
+                                                  {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
+                                                  {$(rec.card_last4) && <div>Card: ****{String(rec.card_last4).replace(/\D/g, '').slice(-4)}</div>}
+                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
+                                                  <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
+                                                </>
+                                              )}
                                             </>
                                           )}
                                           <div className="border-t border-theme-ivory-dark pt-3 flex flex-col gap-2">
@@ -1066,6 +1237,102 @@ export default function DashboardPage() {
                                               <p className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage?.startsWith?.('Updated')) ? 'text-green-600' : 'text-theme-red'}`}>{categoryUpdateMessage || smartCategorizeMessage}</p>
                                             )}
                                           </div>
+                                          {editModeReceiptId === r.id && editingSection?.receiptId === r.id && (
+                                            <div className="mt-4 pt-4 border-t border-theme-light-gray">
+                                              {correctMessage && (
+                                                <div className={`mb-2 p-2 rounded text-sm ${correctMessage.startsWith('Saved') ? 'bg-green-100 text-green-800' : 'bg-theme-red/15 text-theme-red'}`}>{correctMessage}</div>
+                                              )}
+                                              <button
+                                                type="button"
+                                                className="w-full px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm font-medium touch-manipulation safe-area-pb"
+                                                disabled={correctSubmitting}
+                                                onClick={async (e) => {
+                                                  e.stopPropagation()
+                                                  if (!token || !r.id || !editingSection) return
+                                                  setCorrectSubmitting(true)
+                                                  setCorrectMessage(null)
+                                                  setCategoryUpdateMessage(null)
+                                                  try {
+                                                    if (editingSection.section === 'classification' && editingSection.index != null) {
+                                                      const it = items[editingSection.index]
+                                                      const itemId = it?.id
+                                                      if (!itemId) {
+                                                        setCategoryUpdateMessage('Item not saved yet; complete review first')
+                                                        return
+                                                      }
+                                                      const toSend = editCatId || null
+                                                      const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`, {
+                                                        method: 'PATCH',
+                                                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                        body: JSON.stringify({ user_category_id: toSend }),
+                                                      })
+                                                      if (res.ok) {
+                                                        setCategoryUpdateMessage('Saved')
+                                                        await refetchReceiptDetail(r.id)
+                                                        setEditingItemId(null)
+                                                        setEditingSection(null)
+                                                      } else {
+                                                        const err = await res.json().catch(() => ({}))
+                                                        setCategoryUpdateMessage(err?.detail ?? 'Save failed')
+                                                      }
+                                                    } else {
+                                                      const totalNum = editTotal.trim() ? parseFloat(editTotal) : NaN
+                                                      if (isNaN(totalNum)) { setCorrectMessage('Please enter Total'); setCorrectSubmitting(false); return }
+                                                      const summary = {
+                                                        store_name: editStoreName.trim() || undefined,
+                                                        store_address: [editAddressLine1, editAddressLine2, [editAddressCity, editAddressState, editAddressZip].filter(Boolean).join(editAddressCity && editAddressState ? ', ' : ' ').replace(/, $/, '').trim(), editAddressCountry].filter(Boolean).join('\n').trim() || undefined,
+                                                        merchant_phone: editMerchantPhone.trim() || undefined,
+                                                        receipt_date: editReceiptDate.trim() || undefined,
+                                                        purchase_time: formatTimeToHHmm(editPurchaseTime).trim() || undefined,
+                                                        subtotal: editSubtotal.trim() ? parseFloat(editSubtotal) : undefined,
+                                                        tax: editTax.trim() ? parseFloat(editTax) : undefined,
+                                                        total: totalNum,
+                                                        currency: editCurrency.trim() || 'USD',
+                                                        payment_method: editPaymentMethod.trim() || undefined,
+                                                        payment_last4: editPaymentLast4.trim() || undefined,
+                                                      }
+                                                      const itemsPayload = editItems
+                                                        .filter((it) => (it.product_name || '').trim())
+                                                        .map((it) => ({
+                                                          id: it.id || undefined,
+                                                          product_name: it.product_name.trim(),
+                                                          quantity: it.quantity.trim() ? parseFloat(it.quantity) : undefined,
+                                                          unit: it.unit.trim() || undefined,
+                                                          unit_price: it.unit_price.trim() ? parseFloat(it.unit_price) : undefined,
+                                                          line_total: it.line_total.trim() ? parseFloat(it.line_total) : undefined,
+                                                          on_sale: it.on_sale,
+                                                          original_price: it.original_price?.trim() ? parseFloat(it.original_price) : undefined,
+                                                          discount_amount: it.discount_amount?.trim() ? parseFloat(it.discount_amount) : undefined,
+                                                        }))
+                                                      const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/correct`, {
+                                                        method: 'POST',
+                                                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                        body: JSON.stringify({ summary, items: itemsPayload }),
+                                                      })
+                                                      const data = res.ok ? await res.json().catch(() => ({})) : await res.json().catch(() => ({}))
+                                                      if (!res.ok) throw new Error(data.detail || data.detail?.detail || 'Submit failed')
+                                                      setCorrectMessage('Saved. Receipt updated.')
+                                                      setUploadResult(null)
+                                                      setUploadError(null)
+                                                      fetchReceiptList()
+                                                      const detailRes = await fetch(`${apiBaseUrl}/api/receipt/${r.id}`, { headers: { Authorization: `Bearer ${token}` } })
+                                                      if (detailRes.ok) {
+                                                        const detailJson = await detailRes.json()
+                                                        setExpandedReceiptData((prev) => ({ ...prev, [r.id]: detailJson }))
+                                                      }
+                                                      setEditingSection(null)
+                                                    }
+                                                  } catch (err) {
+                                                    setCorrectMessage(err instanceof Error ? err.message : 'Submit failed')
+                                                  } finally {
+                                                    setCorrectSubmitting(false)
+                                                  }
+                                                }}
+                                              >
+                                                {correctSubmitting ? 'Saving…' : 'Confirm modification'}
+                                              </button>
+                                            </div>
+                                          )}
                                         </div>
                                       </div>
                                       {/* 手机列表展开时也渲染 Edit 面板与底部操作，与桌面共用同一 state */}
@@ -1096,10 +1363,14 @@ export default function DashboardPage() {
                                               <span className="text-xs text-theme-mid">Address line 2</span>
                                               <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressLine2} onChange={(e) => setEditAddressLine2(e.target.value)} placeholder="Unit / Suite" />
                                             </label>
-                                            <label className="flex flex-col gap-0.5">
-                                              <span className="text-xs text-theme-mid">City, State ZIP</span>
-                                              <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressCityStateZip} onChange={(e) => setEditAddressCityStateZip(e.target.value)} placeholder="Lynnwood, WA 98036" />
-                                            </label>
+                                            <div className="flex flex-col gap-0.5">
+                                              <span className="text-xs text-theme-mid">City / State / ZIP</span>
+                                              <div className="grid gap-1.5" style={{ gridTemplateColumns: '2fr 1fr 1fr' }}>
+                                                <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressCity} onChange={(e) => setEditAddressCity(e.target.value)} placeholder="City" />
+                                                <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressState} onChange={(e) => setEditAddressState(e.target.value)} placeholder="ST" />
+                                                <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressZip} onChange={(e) => setEditAddressZip(e.target.value)} placeholder="ZIP" />
+                                              </div>
+                                            </div>
                                             <label className="flex flex-col gap-0.5">
                                               <span className="text-xs text-theme-mid">Country</span>
                                               <input className="border rounded px-2 py-2 text-sm touch-manipulation" value={editAddressCountry} onChange={(e) => setEditAddressCountry(e.target.value)} placeholder="US" />
@@ -1189,7 +1460,7 @@ export default function DashboardPage() {
                                                 if (isNaN(totalNum)) { setCorrectMessage('Please enter Total'); setCorrectSubmitting(false); return }
                                                 const summary = {
                                                   store_name: editStoreName.trim() || undefined,
-                                                  store_address: [editAddressLine1, editAddressLine2, editAddressCityStateZip, editAddressCountry].filter(Boolean).join('\n').trim() || undefined,
+                                                  store_address: [editAddressLine1, editAddressLine2, [editAddressCity, editAddressState, editAddressZip].filter(Boolean).join(editAddressCity && editAddressState ? ', ' : ' ').replace(/, $/, '').trim(), editAddressCountry].filter(Boolean).join('\n').trim() || undefined,
                                                   merchant_phone: editMerchantPhone.trim() || undefined,
                                                   receipt_date: editReceiptDate.trim() || undefined,
                                                   purchase_time: formatTimeToHHmm(editPurchaseTime).trim() || undefined,
@@ -1249,8 +1520,21 @@ export default function DashboardPage() {
                                             <button type="button" className="text-sm text-theme-dark/90 hover:text-theme-dark underline" onClick={(e) => { e.stopPropagation(); if (expandedReceiptData[r.id]) navigator.clipboard.writeText(JSON.stringify(expandedReceiptData[r.id], null, 2)); alert('Copied'); }}>Copy</button>
                                           </>
                                         )}
+                                        {r.current_status === 'success' && (
+                                          <button type="button" className="text-sm text-theme-red hover:text-theme-red hover:underline" onClick={(e) => { e.stopPropagation(); setEscalationReceiptId(r.id); setEscalationNotes(''); }}>Open a review</button>
+                                        )}
                                         <button type="button" className="text-sm text-theme-red hover:text-theme-red hover:underline" onClick={(e) => { e.stopPropagation(); if (token && r.id) setDeleteConfirmReceiptId(r.id) }}>Delete this receipt</button>
                                       </div>
+                                      {r.current_status === 'success' && escalationReceiptId === r.id && (
+                                        <div className="px-4 pb-4 flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+                                          <label className="text-xs font-medium text-theme-dark/90">Escalation notes (admin will see):</label>
+                                          <textarea className="w-full min-h-[72px] border border-theme-mid rounded px-2 py-1.5 text-sm text-theme-dark" value={escalationNotes} onChange={(e) => setEscalationNotes(e.target.value)} placeholder="Describe what’s wrong or what to fix…" />
+                                          <div className="flex gap-2">
+                                            <button type="button" disabled={escalationSubmitting} onClick={async () => { if (!r.id || !token) return; setEscalationSubmitting(true); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/escalate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ notes: escalationNotes }) }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { setEscalationReceiptId(null); setEscalationNotes(''); await refetchReceiptDetail(r.id); fetchReceiptList(); alert('Escalated. Admin will review.'); } else { alert(data.detail || data.message || 'Escalation failed'); } } catch { alert('Network error'); } finally { setEscalationSubmitting(false); } }} className="text-xs font-medium text-white bg-theme-orange hover:bg-theme-orange/90 px-2 py-1.5 rounded disabled:opacity-50">Submit escalation</button>
+                                            <button type="button" onClick={() => { setEscalationReceiptId(null); setEscalationNotes(''); }} className="text-xs font-medium text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 px-2 py-1.5 rounded border border-theme-mid">Cancel</button>
+                                          </div>
+                                        </div>
+                                      )}
                                 </React.Fragment>
                                 );
                                   })()}
@@ -1389,33 +1673,77 @@ export default function DashboardPage() {
                                         <div className="hidden md:block">
                                         <div
                                           className="grid overflow-x-auto"
-                                          style={{ gridTemplateColumns: 'minmax(0,1.5fr) 5.5rem 5.5rem 5.5rem 8px minmax(0,0.9fr) minmax(0,0.9fr) minmax(0,0.9fr) 1.75rem 2rem 2.5rem' }}
+                                          style={{ gridTemplateColumns: 'minmax(0,1.5fr) 5.5rem 5.5rem 5.5rem 8px minmax(0,0.9fr) minmax(0,1.5fr) 1.75rem 2rem 2.5rem' }}
                                         >
-                                          {/* ① 左上：店铺信息 + Edit Fields | sep | 右上：Classification + Smart */}
+                                          {/* ① 左上：店铺信息 + Edit mode toggle | sep | 右上：Classification + Smart */}
                                           <div className="col-span-4 p-4 border-b border-theme-light-gray flex items-start justify-between gap-2">
-                                            <div className="text-theme-dark whitespace-pre-line leading-5 min-w-0">
-                                              {displayName && <span className="font-semibold">{displayName}</span>}
-                                              {address && <>{'\n'}<span className="text-theme-dark/90">{address}</span></>}
-                                              {rec?.merchant_phone && <>{'\n'}<span className="text-theme-dark/90">Tel: {rec.merchant_phone}</span></>}
+                                            <div className="text-theme-dark whitespace-pre-line leading-5 min-w-0 flex-1 min-w-0">
+                                              {editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'store' ? (
+                                                <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+                                                  <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editStoreName} onChange={(e) => setEditStoreName(e.target.value)} placeholder="Store name" />
+                                                  <input type="tel" className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editMerchantPhone} onChange={(e) => setEditMerchantPhone(e.target.value)} placeholder="Telephone 000-000-0000" />
+                                                </div>
+                                              ) : (
+                                                <div
+                                                  role="button"
+                                                  tabIndex={0}
+                                                  onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'store' }) }}
+                                                  onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'store' }) } }}
+                                                  className={editModeReceiptId === r.id ? 'cursor-pointer rounded ring-offset-1 hover:ring-2 hover:ring-theme-mid/30' : ''}
+                                                >
+                                                  {displayName && <span className="font-semibold">{displayName}</span>}
+                                                </div>
+                                              )}
+                                              {editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'address' ? (
+                                                <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
+                                                  <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressLine1} onChange={(e) => setEditAddressLine1(e.target.value)} placeholder="Address line 1" />
+                                                  <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressLine2} onChange={(e) => setEditAddressLine2(e.target.value)} placeholder="Address line 2" />
+                                                  <div className="grid gap-1" style={{ gridTemplateColumns: '2fr 1fr 1fr' }}>
+                                                    <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressCity} onChange={(e) => setEditAddressCity(e.target.value)} placeholder="City" />
+                                                    <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressState} onChange={(e) => setEditAddressState(e.target.value)} placeholder="ST" />
+                                                    <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressZip} onChange={(e) => setEditAddressZip(e.target.value)} placeholder="ZIP" />
+                                                  </div>
+                                                  <input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editAddressCountry} onChange={(e) => setEditAddressCountry(e.target.value)} placeholder="Country" />
+                                                  <input type="tel" className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editMerchantPhone} onChange={(e) => setEditMerchantPhone(e.target.value)} placeholder="Telephone 000-000-0000" />
+                                                </div>
+                                              ) : (
+                                                <div
+                                                  role="button"
+                                                  tabIndex={0}
+                                                  onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'address' }) }}
+                                                  onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'address' }) } }}
+                                                  className={editModeReceiptId === r.id ? 'cursor-pointer rounded ring-offset-1 hover:ring-2 hover:ring-theme-mid/30 mt-0.5' : ''}
+                                                >
+                                                  {address && <span className="text-theme-dark/90">{address}</span>}
+                                                  {rec?.merchant_phone && <div className="text-theme-dark/90 mt-0.5">Tel: {rec.merchant_phone}</div>}
+                                                </div>
+                                              )}
                                             </div>
-                                            <button
-                                              type="button"
-                                              className="shrink-0 text-sm text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 px-2.5 py-1 rounded border border-theme-mid whitespace-nowrap ml-2"
-                                              onClick={(e) => {
-                                                e.stopPropagation()
-                                                if (correctionOpenReceiptId === r.id) {
-                                                  setCorrectionOpenReceiptId(null)
-                                                } else {
-                                                  setCorrectionOpenReceiptId(r.id)
-                                                  initEditFormFromJson(expandedReceiptData[r.id])
-                                                }
-                                              }}
-                                            >
-                                              {correctionOpenReceiptId === r.id ? 'Hide Edits' : 'Edit Fields'}
-                                            </button>
+                                            <div className="shrink-0 flex items-center gap-2 ml-2">
+                                              <span className="text-xs text-theme-mid whitespace-nowrap">Edit mode</span>
+                                              <button
+                                                type="button"
+                                                role="switch"
+                                                aria-checked={editModeReceiptId === r.id}
+                                                className={`relative inline-flex h-6 w-10 shrink-0 rounded-full border transition-colors ${editModeReceiptId === r.id ? 'bg-theme-orange border-theme-orange' : 'bg-theme-light-gray border-theme-mid'}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation()
+                                                  if (editModeReceiptId === r.id) {
+                                                    setEditModeReceiptId(null)
+                                                    setEditingSection(null)
+                                                  } else {
+                                                    setEditModeReceiptId(r.id)
+                                                    setEditingSection(null)
+                                                    initEditFormFromJson(expandedReceiptData[r.id])
+                                                  }
+                                                }}
+                                              >
+                                                <span className={`inline-block h-5 w-5 rounded-full bg-white border border-theme-mid transform transition-transform ${editModeReceiptId === r.id ? 'translate-x-4' : 'translate-x-0.5'}`} style={{ marginTop: 1 }} />
+                                              </button>
+                                            </div>
                                           </div>
                                           <div className="border-b border-l border-r border-theme-cream bg-theme-cream" />
-                                          <div className="col-span-6 p-4 border-b border-theme-light-gray bg-theme-cream/50 flex flex-row justify-between items-start gap-4">
+                                          <div className="col-span-5 p-4 border-b border-theme-light-gray bg-theme-cream/50 flex flex-row justify-between items-start gap-4">
                                             <div className="flex flex-col gap-1">
                                               <p className="text-xs font-medium text-theme-mid uppercase tracking-wide">Classification</p>
                                               <span className="text-sm text-theme-black font-medium">Run Smart Categorization on</span>
@@ -1496,19 +1824,18 @@ export default function DashboardPage() {
                                           <div className="py-1.5 pl-3 pr-2 text-xs text-theme-dark/90 font-semibold uppercase text-right">Unit $</div>
                                           <div className="py-1.5 pl-3 pr-2 text-xs text-theme-dark/90 font-semibold uppercase text-right">$ Amount</div>
                                           <div className="bg-theme-cream" />
-                                          <div className="py-1.5 px-3 text-xs text-theme-dark/90 font-semibold uppercase">Level I</div>
-                                          <div className="py-1.5 px-2 text-xs text-theme-dark/90 font-semibold uppercase">Level II</div>
-                                          <div className="py-1.5 px-2 text-xs text-theme-dark/90 font-semibold uppercase">Level III</div>
+                                          <div className="py-1.5 px-3 text-xs text-theme-dark/90 font-semibold uppercase">System Category</div>
+                                          <div className="py-1.5 px-2 text-xs text-theme-dark/90 font-semibold uppercase">Sub Categories</div>
                                           <div className="py-1.5 px-0.5 flex items-center justify-center" title="AI guessed category" />
                                           <div className="py-1.5 px-1 flex items-center justify-center" title="Select for Smart Categorization" />
                                           <div />
 
-                                          {/* ③ item 行：每个 React.Fragment 贡献 9 个 grid 子元素 */}
+                                          {/* ③ item 行：每个 React.Fragment 贡献 8 个 grid 子元素 */}
                                           {items.length === 0 && (
                                             <React.Fragment>
                                               <div className="col-span-4 px-3 py-3 text-theme-mid text-sm">No items</div>
                                               <div className="bg-theme-cream" />
-                                              <div className="col-span-6" />
+                                              <div className="col-span-5" />
                                             </React.Fragment>
                                           )}
                                           {items.map((it: any, i: number) => {
@@ -1516,34 +1843,25 @@ export default function DashboardPage() {
                                             const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
                                             const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
                                             const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
-                                            const path = (it.category_path ?? '').trim()
-                                            const parts = path ? path.split(/\s*[\/>]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
-                                            const [c1, c2, c3] = [parts[0] ?? '—', parts[1] ?? '—', parts[2] ?? '—']
+                                            const path = (it.user_category_path ?? it.category_path ?? '').trim()
+                                            const parts = path ? path.split(/\s*[\/>\|]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
+                                            const sysCat = parts[0] ?? ''
+                                            const subCat = parts.length > 1 ? parts.slice(1).join(' / ') : ''
                                             const itemId = it.id
                                             const isEditing = editingItemId === itemId
-                                            const L1List = categoriesList.filter((c) => c.parent_id == null)
-                                            const L2List = categoriesList.filter((c) => c.parent_id === editCatL1)
-                                            const L3List = categoriesList.filter((c) => c.parent_id === editCatL2)
                                             const startEdit = () => {
                                               setEditingItemId(itemId)
-                                              const catId = it.category_id
-                                              if (catId && categoriesList.length) {
-                                                const byId = Object.fromEntries(categoriesList.map((c) => [c.id, c]))
-                                                const leaf = byId[catId]
-                                                if (leaf) {
-                                                  const p2 = leaf.parent_id ? byId[leaf.parent_id] : null
-                                                  const p1 = p2?.parent_id ? byId[p2.parent_id] : null
-                                                  setEditCatL1(p1?.id ?? '')
-                                                  setEditCatL2(p2?.id ?? '')
-                                                  setEditCatL3(leaf.id)
-                                                  return
-                                                }
-                                              }
-                                              setEditCatL1('')
-                                              setEditCatL2('')
-                                              setEditCatL3('')
+                                              setEditCatId(it.user_category_id ?? it.category_id ?? null)
                                             }
                                             const cancelEdit = () => { setEditingItemId(null); setCategoryUpdateMessage(null) }
+                                            const isEditModeClassification = editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'classification' && editingSection?.index === i
+                                            const isEditingCat = isEditing || isEditModeClassification
+                                            const onOpenClassificationSection = () => {
+                                              if (editModeReceiptId !== r.id) return
+                                              setEditingSection({ receiptId: r.id, section: 'classification', index: i })
+                                              setEditingItemId(itemId)
+                                              setEditCatId(it.user_category_id ?? it.category_id ?? null)
+                                            }
                                             const confirmEdit = async () => {
                                               if (!r.id || !token) return
                                               if (!itemId) {
@@ -1551,17 +1869,17 @@ export default function DashboardPage() {
                                                 return
                                               }
                                               setCategoryUpdateMessage(null)
-                                              const toSend = editCatL3 || editCatL2 || editCatL1 || null
                                               try {
                                                 const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`, {
                                                   method: 'PATCH',
                                                   headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                  body: JSON.stringify({ category_id: toSend }),
+                                                  body: JSON.stringify({ user_category_id: editCatId ?? null }),
                                                 })
                                                 if (res.ok) {
                                                   setCategoryUpdateMessage('Saved')
                                                   await refetchReceiptDetail(r.id)
                                                   setEditingItemId(null)
+                                                  setEditingSection(null)
                                                 } else {
                                                   const err = await res.json().catch(() => ({}))
                                                   setCategoryUpdateMessage(err?.detail ?? 'Save failed')
@@ -1570,44 +1888,81 @@ export default function DashboardPage() {
                                                 setCategoryUpdateMessage('Network error')
                                               }
                                             }
+                                            const isEditingItemRow = editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'item' && editingSection?.index === i
+                                            const rowItem = editModeReceiptId === r.id && editItems[i] != null ? editItems[i] : null
                                             return (
                                               <React.Fragment key={itemId ?? i}>
-                                                <div className="py-1.5 px-3 truncate min-w-0 text-theme-dark" title={name}>{name}</div>
-                                                <div className="py-1.5 pl-3 pr-2 text-center tabular-nums">{Number.isFinite(qty) ? qty : ''}</div>
-                                                <div className="py-1.5 pl-3 pr-2 text-right tabular-nums">{u}</div>
-                                                <div className="py-1.5 pl-3 pr-2 text-right tabular-nums">{p}</div>
+                                                {isEditingItemRow && rowItem ? (
+                                                  <>
+                                                    <div className="py-1 px-2 w-fit max-w-full justify-self-start" onClick={(e) => e.stopPropagation()}>
+                                                      <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border" style={{ width: `${Math.max(10, Math.min(36, (rowItem.product_name?.length || 0) + 2))}ch`, maxWidth: '100%' }} value={rowItem.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], product_name: e.target.value }; return n })} placeholder="Product" />
+                                                    </div>
+                                                    <div className="py-1 pl-2 pr-2 text-center w-fit max-w-full justify-self-center" onClick={(e) => e.stopPropagation()}>
+                                                      <input type="text" inputMode="numeric" className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm text-center inline-block box-border" style={{ width: `${Math.max(3, (rowItem.quantity?.length || 0) + 1)}ch`, maxWidth: '100%' }} value={rowItem.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], quantity: e.target.value }; return n })} />
+                                                    </div>
+                                                    <div className="py-1 pl-2 pr-2 text-right w-fit max-w-full justify-self-end" onClick={(e) => e.stopPropagation()}>
+                                                      <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm text-right inline-block box-border" style={{ width: `${Math.max(5, (rowItem.unit_price?.length || 0) + 2)}ch`, maxWidth: '100%' }} value={rowItem.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], unit_price: e.target.value }; return n })} />
+                                                    </div>
+                                                    <div className="py-1 pl-2 pr-2 text-right w-fit max-w-full justify-self-end" onClick={(e) => e.stopPropagation()}>
+                                                      <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm text-right inline-block box-border" style={{ width: `${Math.max(5, (rowItem.line_total?.length || 0) + 2)}ch`, maxWidth: '100%' }} value={rowItem.line_total} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], line_total: e.target.value }; return n })} />
+                                                    </div>
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 px-3 truncate min-w-0 text-theme-dark ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} title={name} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'item', index: i }) }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}>{name}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-center tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'item', index: i }) }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}>{Number.isFinite(qty) ? qty : ''}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'item', index: i }) }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}>{u}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) setEditingSection({ receiptId: r.id, section: 'item', index: i }) }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'item', index: i }) } }}>{p}</div>
+                                                  </>
+                                                )}
                                                 <div className="bg-theme-cream" />
-                                                <div className="py-1.5 px-3">
-                                                  {isEditing ? (
-                                                    <select className="border rounded px-1 py-0.5 text-xs w-full" value={editCatL1} onChange={(e) => { setEditCatL1(e.target.value); setEditCatL2(''); setEditCatL3('') }}><option value="">—</option>{L1List.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-                                                  ) : (
-                                                    <span className="truncate block text-theme-dark" title={c1}>{c1}</span>
-                                                  )}
-                                                </div>
-                                                <div className="py-1.5 px-2">
-                                                  {isEditing ? (
-                                                    <select className="border rounded px-1 py-0.5 text-xs w-full" value={editCatL2} onChange={(e) => { setEditCatL2(e.target.value); setEditCatL3('') }}><option value="">—</option>{L2List.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-                                                  ) : (
-                                                    <span className="truncate block text-theme-dark" title={c2}>{c2}</span>
-                                                  )}
-                                                </div>
-                                                <div className="py-1.5 px-2">
-                                                  {isEditing ? (
-                                                    <select className="border rounded px-1 py-0.5 text-xs w-full" value={editCatL3} onChange={(e) => setEditCatL3(e.target.value)}><option value="">—</option>{L3List.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-                                                  ) : (
-                                                    <span className="truncate block text-theme-dark" title={c3}>{c3}</span>
-                                                  )}
-                                                </div>
+                                                {/* System Category + Sub Categories: col-span-2 when editing, split when displaying */}
+                                                {isEditingCat ? (
+                                                  <>
+                                                    <div className="col-span-2 py-1 px-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+                                                      <SystemCategorySubSelector
+                                                        categories={categoriesList}
+                                                        value={editCatId}
+                                                        onChange={(val) => setEditCatId(val)}
+                                                        onRefetchCategories={fetchCategories}
+                                                        onCreateCategory={createCategory}
+                                                      />
+                                                    </div>
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <div className="py-1.5 px-2 min-w-0" onClick={(e) => e.stopPropagation()}>
+                                                      <button
+                                                        type="button"
+                                                        className={`text-left w-full text-xs text-theme-dark truncate ${itemId ? 'hover:text-theme-orange cursor-pointer' : 'cursor-default'}`}
+                                                        title={sysCat || 'No category'}
+                                                        onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) onOpenClassificationSection(); else if (itemId) startEdit(); }}
+                                                      >
+                                                        {sysCat || <span className="text-theme-mid">—</span>}
+                                                      </button>
+                                                    </div>
+                                                    <div className="py-1.5 px-2 min-w-0" onClick={(e) => e.stopPropagation()}>
+                                                      <button
+                                                        type="button"
+                                                        className={`text-left w-full text-xs text-theme-dark truncate ${itemId ? 'hover:text-theme-orange cursor-pointer' : 'cursor-default'}`}
+                                                        title={subCat || ''}
+                                                        onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) onOpenClassificationSection(); else if (itemId) startEdit(); }}
+                                                      >
+                                                        {subCat || <span className="text-theme-mid">—</span>}
+                                                      </button>
+                                                    </div>
+                                                  </>
+                                                )}
                                                 <div className="py-1.5 px-0.5 flex items-center justify-center">
-                                                  {(it.category_source === 'llm') ? (
-                                                    <span className="inline-flex items-center justify-center w-6 h-5 rounded bg-black text-white text-[10px] font-bold" title="AI guessed">AI</span>
+                                                  {(it.category_source === 'llm' || it.category_source === 'rule_exact' || it.category_source === 'rule_fuzzy') ? (
+                                                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-sm bg-black text-white text-[9px] font-bold shrink-0" title="AI 分类">AI</span>
                                                   ) : null}
                                                 </div>
                                                 <div className="py-1.5 px-1 flex items-center justify-center">
-                                                  {isEditing ? (
-                                                    <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200 w-5 h-5 flex items-center justify-center" onClick={confirmEdit} title="Confirm">✓</button>
+                                                  {isEditingCat ? (
+                                                    <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200 w-5 h-5 flex items-center justify-center" onClick={(e) => { e.stopPropagation(); confirmEdit(); }} title="Confirm">✓</button>
                                                   ) : (
-                                                    <label className={`relative flex items-center justify-center w-5 h-5 rounded border border-theme-mid bg-white has-[:checked]:bg-theme-orange has-[:checked]:border-theme-orange ${itemId ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`} title={!itemId ? 'Item not saved yet' : undefined}>
+                                                    <label className={`relative flex items-center justify-center w-5 h-5 rounded border border-theme-mid bg-white has-[:checked]:bg-theme-orange has-[:checked]:border-theme-orange ${itemId ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`} title={!itemId ? 'Item not saved yet' : undefined} onClick={(e) => e.stopPropagation()}>
                                                       <input
                                                         type="checkbox"
                                                         disabled={!itemId}
@@ -1627,11 +1982,11 @@ export default function DashboardPage() {
                                                     </label>
                                                   )}
                                                 </div>
-                                                <div className="py-1.5 px-2 flex items-center">
-                                                  {isEditing ? (
-                                                    <button type="button" className="p-1 bg-theme-light-gray text-theme-dark/90 rounded hover:bg-theme-mid/30 w-5 h-5 flex items-center justify-center" onClick={cancelEdit} title="Cancel">✕</button>
+                                                <div className="py-1.5 px-2 flex items-center justify-center">
+                                                  {isEditingCat ? (
+                                                    <button type="button" className="p-1 bg-theme-light-gray text-theme-dark/90 rounded hover:bg-theme-mid/30 w-5 h-5 flex items-center justify-center" onClick={(e) => { e.stopPropagation(); cancelEdit(); if (editModeReceiptId === r.id) setEditingSection(null); }} title="Cancel">✕</button>
                                                   ) : (
-                                                    <button type="button" className={`p-1 rounded w-5 h-5 flex items-center justify-center ${itemId ? 'text-theme-dark/90 hover:text-theme-dark hover:bg-theme-light-gray' : 'text-theme-mid cursor-not-allowed opacity-50'}`} onClick={itemId ? startEdit : undefined} title={itemId ? 'Edit' : 'Item not saved yet; complete review first'}>✏️</button>
+                                                    <button type="button" className={`p-1 rounded w-5 h-5 flex items-center justify-center ${itemId ? 'text-theme-dark/90 hover:text-theme-dark hover:bg-theme-light-gray' : 'text-theme-mid cursor-not-allowed opacity-50'}`} onClick={(e) => { e.stopPropagation(); if (itemId) startEdit(); }} title={itemId ? 'Edit' : 'Item not saved yet; complete review first'}>✏️</button>
                                                   )}
                                                 </div>
                                               </React.Fragment>
@@ -1668,24 +2023,169 @@ export default function DashboardPage() {
                                                   <div className="text-right tabular-nums font-medium">{rec.total != null ? `$${money(rec.total) ?? rec.total}` : ''}</div>
                                                 </div>
                                                 <div className="border-t border-dashed border-theme-mid my-2 pt-2" />
-                                                {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
-                                                {$(rec.card_last4) && <div>Payment Card: {rec.payment_method ? `${rec.payment_method} ` : ''}****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
-                                                {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
-                                                <div className="flex items-center justify-between gap-2">
-                                                  <span>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</span>
-                                                  <button
-                                                    type="button"
-                                                    onClick={(e) => { e.stopPropagation(); if (token && r.id) setDeleteConfirmReceiptId(r.id) }}
-                                                    className="text-sm text-theme-red hover:text-theme-red hover:underline shrink-0"
-                                                  >
-                                                    Delete this receipt
-                                                  </button>
-                                                </div>
+                                                {editModeReceiptId === r.id && editingSection?.receiptId === r.id && editingSection?.section === 'payment_date' ? (
+                                                  <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+                                                    <div><span className="text-xs text-theme-mid">Payment</span><br /><input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editPaymentMethod} onChange={(e) => setEditPaymentMethod(e.target.value)} placeholder="Visa" /></div>
+                                                    <div><span className="text-xs text-theme-mid">Card last 4</span><br /><input className="w-full border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm max-w-[5rem]" inputMode="numeric" maxLength={4} value={editPaymentLast4} onChange={(e) => setEditPaymentLast4(e.target.value)} placeholder="3719" /></div>
+                                                    <div><span className="text-xs text-theme-mid">Date</span><br /><input type="date" className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm" value={editReceiptDate} onChange={(e) => setEditReceiptDate(e.target.value)} /></div>
+                                                    <div><span className="text-xs text-theme-mid">Time (24h)</span><br /><input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm font-mono w-16" placeholder="17:37" value={editPurchaseTime} onChange={(e) => setEditPurchaseTime(e.target.value)} maxLength={5} inputMode="numeric" /></div>
+                                                  </div>
+                                                ) : (
+                                                  <>
+                                                    {editModeReceiptId === r.id ? (
+                                                      <div
+                                                        role="button"
+                                                        tabIndex={0}
+                                                        className="cursor-pointer rounded ring-offset-1 hover:ring-2 hover:ring-theme-mid/30 space-y-0.5"
+                                                        onClick={(e) => { e.stopPropagation(); setEditingSection({ receiptId: r.id, section: 'payment_date' }) }}
+                                                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingSection({ receiptId: r.id, section: 'payment_date' }) } }}
+                                                      >
+                                                        {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
+                                                        {$(rec.card_last4) && <div>Payment Card: {rec.payment_method ? `${rec.payment_method} ` : ''}****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
+                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
+                                                        <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
+                                                      </div>
+                                                    ) : (
+                                                      <>
+                                                        {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
+                                                        {$(rec.card_last4) && <div>Payment Card: {rec.payment_method ? `${rec.payment_method} ` : ''}****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
+                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}</div>}
+                                                        <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
+                                                      </>
+                                                    )}
+                                                    <div className="flex items-center justify-between gap-2 mt-2">
+                                                      <span />
+                                                      <div className="flex items-center gap-3 shrink-0">
+                                                        {r.current_status === 'success' && (
+                                                          <button
+                                                            type="button"
+                                                            onClick={(e) => { e.stopPropagation(); setEscalationReceiptId(r.id); setEscalationNotes(''); }}
+                                                            className="text-sm text-theme-red hover:text-theme-red hover:underline"
+                                                          >
+                                                            Open a review
+                                                          </button>
+                                                        )}
+                                                        <button
+                                                          type="button"
+                                                          onClick={(e) => { e.stopPropagation(); if (token && r.id) setDeleteConfirmReceiptId(r.id) }}
+                                                          className="text-sm text-theme-red hover:text-theme-red hover:underline"
+                                                        >
+                                                          Delete this receipt
+                                                        </button>
+                                                      </div>
+                                                    </div>
+                                                    {r.current_status === 'success' && escalationReceiptId === r.id && (
+                                                      <div className="mt-3 pt-3 border-t border-theme-light-gray flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+                                                        <label className="text-xs font-medium text-theme-dark/90">Escalation notes (admin will see):</label>
+                                                        <textarea className="w-full min-h-[72px] border border-theme-mid rounded px-2 py-1.5 text-sm text-theme-dark" value={escalationNotes} onChange={(e) => setEscalationNotes(e.target.value)} placeholder="Describe what’s wrong or what to fix…" />
+                                                        <div className="flex gap-2">
+                                                          <button type="button" disabled={escalationSubmitting} onClick={async () => { if (!r.id || !token) return; setEscalationSubmitting(true); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/escalate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ notes: escalationNotes }) }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { setEscalationReceiptId(null); setEscalationNotes(''); await refetchReceiptDetail(r.id); fetchReceiptList(); alert('Escalated. Admin will review.'); } else { alert(data.detail || data.message || 'Escalation failed'); } } catch { alert('Network error'); } finally { setEscalationSubmitting(false); } }} className="text-xs font-medium text-white bg-theme-orange hover:bg-theme-orange/90 px-2 py-1.5 rounded disabled:opacity-50">Submit escalation</button>
+                                                          <button type="button" onClick={() => { setEscalationReceiptId(null); setEscalationNotes(''); }} className="text-xs font-medium text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/30 px-2 py-1.5 rounded border border-theme-mid">Cancel</button>
+                                                        </div>
+                                                      </div>
+                                                    )}
+                                                  </>
+                                                )}
                                               </>
+                                            )}
+                                            {editModeReceiptId === r.id && editingSection?.receiptId === r.id && (
+                                              <div className="mt-4 pt-4 border-t border-theme-light-gray">
+                                                {correctMessage && (
+                                                  <div className={`mb-2 p-2 rounded text-sm ${correctMessage.startsWith('Saved') ? 'bg-green-100 text-green-800' : 'bg-theme-red/15 text-theme-red'}`}>{correctMessage}</div>
+                                                )}
+                                                <button
+                                                  type="button"
+                                                  className="w-full px-4 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm font-medium"
+                                                  disabled={correctSubmitting}
+                                                  onClick={async (e) => {
+                                                    e.stopPropagation()
+                                                    if (!token || !r.id || !editingSection) return
+                                                    setCorrectSubmitting(true)
+                                                    setCorrectMessage(null)
+                                                    setCategoryUpdateMessage(null)
+                                                    try {
+                                                      if (editingSection.section === 'classification' && editingSection.index != null) {
+                                                        const it = items[editingSection.index]
+                                                        const itemId = it?.id
+                                                        if (!itemId) {
+                                                          setCategoryUpdateMessage('Item not saved yet; complete review first')
+                                                          return
+                                                        }
+                                                        const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`, {
+                                                          method: 'PATCH',
+                                                          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                          body: JSON.stringify({ user_category_id: editCatId ?? null }),
+                                                        })
+                                                        if (res.ok) {
+                                                          setCategoryUpdateMessage('Saved')
+                                                          await refetchReceiptDetail(r.id)
+                                                          setEditingItemId(null)
+                                                          setEditingSection(null)
+                                                        } else {
+                                                          const err = await res.json().catch(() => ({}))
+                                                          setCategoryUpdateMessage(err?.detail ?? 'Save failed')
+                                                        }
+                                                      } else {
+                                                        const totalNum = editTotal.trim() ? parseFloat(editTotal) : NaN
+                                                        if (isNaN(totalNum)) { setCorrectMessage('Please enter Total'); setCorrectSubmitting(false); return }
+                                                        const summary = {
+                                                          store_name: editStoreName.trim() || undefined,
+                                                          store_address: [editAddressLine1, editAddressLine2, [editAddressCity, editAddressState, editAddressZip].filter(Boolean).join(editAddressCity && editAddressState ? ', ' : ' ').replace(/, $/, '').trim(), editAddressCountry].filter(Boolean).join('\n').trim() || undefined,
+                                                          merchant_phone: editMerchantPhone.trim() || undefined,
+                                                          receipt_date: editReceiptDate.trim() || undefined,
+                                                          purchase_time: formatTimeToHHmm(editPurchaseTime).trim() || undefined,
+                                                          subtotal: editSubtotal.trim() ? parseFloat(editSubtotal) : undefined,
+                                                          tax: editTax.trim() ? parseFloat(editTax) : undefined,
+                                                          total: totalNum,
+                                                          currency: editCurrency.trim() || 'USD',
+                                                          payment_method: editPaymentMethod.trim() || undefined,
+                                                          payment_last4: editPaymentLast4.trim() || undefined,
+                                                        }
+                                                        const itemsPayload = editItems
+                                                          .filter((it) => (it.product_name || '').trim())
+                                                          .map((it) => ({
+                                                            id: it.id || undefined,
+                                                            product_name: it.product_name.trim(),
+                                                            quantity: it.quantity.trim() ? parseFloat(it.quantity) : undefined,
+                                                            unit: it.unit.trim() || undefined,
+                                                            unit_price: it.unit_price.trim() ? parseFloat(it.unit_price) : undefined,
+                                                            line_total: it.line_total.trim() ? parseFloat(it.line_total) : undefined,
+                                                            on_sale: it.on_sale,
+                                                            original_price: it.original_price?.trim() ? parseFloat(it.original_price) : undefined,
+                                                            discount_amount: it.discount_amount?.trim() ? parseFloat(it.discount_amount) : undefined,
+                                                          }))
+                                                        const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/correct`, {
+                                                          method: 'POST',
+                                                          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                                                          body: JSON.stringify({ summary, items: itemsPayload }),
+                                                        })
+                                                        const data = res.ok ? await res.json().catch(() => ({})) : await res.json().catch(() => ({}))
+                                                        if (!res.ok) throw new Error(data.detail || data.detail?.detail || 'Submit failed')
+                                                        setCorrectMessage('Saved. Receipt updated.')
+                                                        setUploadResult(null)
+                                                        setUploadError(null)
+                                                        fetchReceiptList()
+                                                        const detailRes = await fetch(`${apiBaseUrl}/api/receipt/${r.id}`, { headers: { Authorization: `Bearer ${token}` } })
+                                                        if (detailRes.ok) {
+                                                          const detailJson = await detailRes.json()
+                                                          setExpandedReceiptData((prev) => ({ ...prev, [r.id]: detailJson }))
+                                                        }
+                                                        setEditingSection(null)
+                                                      }
+                                                    } catch (err) {
+                                                      setCorrectMessage(err instanceof Error ? err.message : 'Submit failed')
+                                                    } finally {
+                                                      setCorrectSubmitting(false)
+                                                    }
+                                                  }}
+                                                >
+                                                  {correctSubmitting ? 'Saving…' : 'Confirm modification'}
+                                                </button>
+                                              </div>
                                             )}
                                           </div>
                                           <div className="border-t border-theme-cream bg-theme-cream" />
-                                          <div className="col-span-6 p-4 border-t border-theme-ivory-dark flex flex-col gap-2">
+                                          <div className="col-span-5 p-4 border-t border-theme-ivory-dark flex flex-col gap-2">
                                             {(categoryUpdateMessage || smartCategorizeMessage) && (
                                               <div className={`text-xs ${(categoryUpdateMessage || smartCategorizeMessage) === 'Saved' || (smartCategorizeMessage && smartCategorizeMessage.startsWith('Updated')) ? 'text-green-600' : 'text-theme-red'}`}>
                                                 {categoryUpdateMessage || smartCategorizeMessage}
@@ -1694,22 +2194,46 @@ export default function DashboardPage() {
                                             {r.current_status === 'needs_review' && (
                                               <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 flex flex-col gap-3">
                                                 <p className="text-sm text-amber-900">Unfortunately, the senior processor couldn&apos;t resolve all questions. Please review the result and make any adjustments. Thank you.</p>
+                                                {escalationReceiptId === r.id ? (
+                                                  <div className="flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
+                                                    <label className="text-xs font-medium text-amber-800">Escalation notes (admin will see):</label>
+                                                    <textarea className="w-full min-h-[72px] border border-amber-300 rounded px-2 py-1.5 text-sm text-theme-dark" value={escalationNotes} onChange={(e) => setEscalationNotes(e.target.value)} placeholder="Describe what’s wrong or what to fix…" />
+                                                    <div className="flex gap-2">
+                                                      <button type="button" disabled={escalationSubmitting} onClick={async () => { if (!r.id || !token) return; setEscalationSubmitting(true); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/escalate`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ notes: escalationNotes }) }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { setEscalationReceiptId(null); setEscalationNotes(''); await refetchReceiptDetail(r.id); fetchReceiptList(); alert('Escalated. Admin will review.'); } else { alert(data.detail || data.message || 'Escalation failed'); } } catch { alert('Network error'); } finally { setEscalationSubmitting(false); } }} className="text-xs font-medium text-white bg-theme-orange hover:bg-theme-orange/90 px-2 py-1.5 rounded disabled:opacity-50">Submit escalation</button>
+                                                      <button type="button" onClick={() => { setEscalationReceiptId(null); setEscalationNotes(''); }} className="text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1.5 rounded border border-amber-300">Cancel</button>
+                                                    </div>
+                                                  </div>
+                                                ) : (
                                                 <div className="flex items-center justify-between gap-2">
                                                   <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-left flex-1 min-w-0 flex items-center gap-2 text-sm font-medium text-amber-800">
                                                     {collapsedReviewReasoningReceiptIds.has(r.id) ? <span aria-hidden>▶</span> : <span aria-hidden>▼</span>}
-                                                    <span>LLM reasoning</span>
+                                                    <span>AI Smart Reasoning</span>
                                                   </button>
-                                                  <button type="button" disabled={reviewCompleteLoading === r.id} onClick={async (e) => { e.stopPropagation(); if (!r.id || !token || reviewCompleteLoading) return; setReviewCompleteLoading(r.id); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { await refetchReceiptDetail(r.id); fetchReceiptList() } else alert(data.detail || data.message || 'Failed to complete review'); } catch { alert('Network error'); } finally { setReviewCompleteLoading(null); } }} className="shrink-0 text-xs font-medium text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-1.5 rounded border border-amber-300 disabled:opacity-50">{reviewCompleteLoading === r.id ? '…' : 'Review complete'}</button>
+                                                  <button type="button" disabled={reviewCompleteLoading === r.id} onClick={async (e) => { e.stopPropagation(); if (!r.id || !token || reviewCompleteLoading) return; setReviewCompleteLoading(r.id); try { const res = await fetch(`${apiBaseUrl}/api/receipt/${r.id}/review-complete`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }); const data = await res.json().catch(() => ({})); if (res.ok && data.success) { await refetchReceiptDetail(r.id); fetchReceiptList() } else alert(data.detail || data.message || 'Failed to complete review'); } catch { alert('Network error'); } finally { setReviewCompleteLoading(null); } }} className="shrink-0 text-xs font-medium text-white bg-green-600 hover:bg-green-700 px-2 py-1.5 rounded border border-green-700 disabled:opacity-50 disabled:cursor-not-allowed">{reviewCompleteLoading === r.id ? '…' : 'Review complete'}</button>
                                                 </div>
+                                                )}
                                                 {!collapsedReviewReasoningReceiptIds.has(r.id) && (
                                                   <div className="text-sm text-amber-900 space-y-1.5">
-                                                    {expandedReceiptData[r.id]?.review_metadata?.reasoning && <p><span className="font-medium text-amber-800">Reasoning:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.reasoning}</span></p>}
+                                                    {expandedReceiptData[r.id]?.review_metadata?.reasoning && (() => {
+                                                      const { title, bullets } = parseReasoningBullets(String(expandedReceiptData[r.id].review_metadata.reasoning ?? ''))
+                                                      return (
+                                                        <div>
+                                                          <p className="font-medium text-amber-800">{title}</p>
+                                                          {bullets.length > 0 && <ul className="list-none pl-0 space-y-0.5">{bullets.map((line: string, i: number) => <li key={i}>• {line}</li>)}</ul>}
+                                                        </div>
+                                                      )
+                                                    })()}
                                                     {expandedReceiptData[r.id]?.review_metadata?.sum_check_notes && expandedReceiptData[r.id].review_metadata.sum_check_notes !== (expandedReceiptData[r.id].review_metadata.reasoning || '') && <p><span className="font-medium text-amber-800">Sum check:</span> <span className="whitespace-pre-wrap">{expandedReceiptData[r.id].review_metadata.sum_check_notes}</span></p>}
                                                     {(expandedReceiptData[r.id]?.review_metadata?.item_count_on_receipt != null || expandedReceiptData[r.id]?.review_metadata?.item_count_extracted != null) && <p><span className="font-medium text-amber-800">Item count:</span> receipt says {String(expandedReceiptData[r.id].review_metadata.item_count_on_receipt ?? '—')}, extracted {String(expandedReceiptData[r.id].review_metadata.item_count_extracted ?? '—')}</p>}
                                                     {!(expandedReceiptData[r.id]?.review_metadata && Object.keys(expandedReceiptData[r.id].review_metadata).length > 0) && <p className="whitespace-pre-wrap">{expandedReceiptData[r.id]?.review_feedback || 'Model requested manual review.'}</p>}
                                                   </div>
                                                 )}
-                                                {!collapsedReviewReasoningReceiptIds.has(r.id) && <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-xs text-amber-700 hover:text-amber-900 underline self-start">Collapse</button>}
+                                                {!collapsedReviewReasoningReceiptIds.has(r.id) && (
+                                                  <div className="flex items-center gap-3">
+                                                    <button type="button" onClick={(e) => { e.stopPropagation(); toggleReviewReasoningCollapsed(r.id) }} className="text-xs text-amber-700 hover:text-amber-900 underline">Collapse</button>
+                                                    <button type="button" onClick={(e) => { e.stopPropagation(); setEscalationReceiptId(r.id); setEscalationNotes(''); }} className="text-xs text-red-600 hover:text-red-700 hover:underline">Escalate</button>
+                                                  </div>
+                                                )}
                                               </div>
                                             )}
                                           </div>
@@ -1751,10 +2275,14 @@ export default function DashboardPage() {
                                             <span className="text-xs text-theme-mid">Address line 2</span>
                                             <input className="border rounded px-2 py-1 text-sm" value={editAddressLine2} onChange={(e) => setEditAddressLine2(e.target.value)} placeholder="Unit / Suite" />
                                           </label>
-                                          <label className="flex flex-col gap-0.5">
-                                            <span className="text-xs text-theme-mid">City, State ZIP</span>
-                                            <input className="border rounded px-2 py-1 text-sm" value={editAddressCityStateZip} onChange={(e) => setEditAddressCityStateZip(e.target.value)} placeholder="Lynnwood, WA 98036" />
-                                          </label>
+                                          <div className="flex flex-col gap-0.5">
+                                            <span className="text-xs text-theme-mid">City / State / ZIP</span>
+                                            <div className="grid gap-1" style={{ gridTemplateColumns: '2fr 1fr 1fr' }}>
+                                              <input className="border rounded px-2 py-1 text-sm" value={editAddressCity} onChange={(e) => setEditAddressCity(e.target.value)} placeholder="City" />
+                                              <input className="border rounded px-2 py-1 text-sm" value={editAddressState} onChange={(e) => setEditAddressState(e.target.value)} placeholder="ST" />
+                                              <input className="border rounded px-2 py-1 text-sm" value={editAddressZip} onChange={(e) => setEditAddressZip(e.target.value)} placeholder="ZIP" />
+                                            </div>
+                                          </div>
                                           <label className="flex flex-col gap-0.5">
                                             <span className="text-xs text-theme-mid">Country</span>
                                             <input className="border rounded px-2 py-1 text-sm" value={editAddressCountry} onChange={(e) => setEditAddressCountry(e.target.value)} placeholder="US" />
@@ -1868,7 +2396,7 @@ export default function DashboardPage() {
                                               if (isNaN(totalNum)) { setCorrectMessage('Please enter Total'); return }
                                               const summary = {
                                                 store_name: editStoreName.trim() || undefined,
-                                                store_address: [editAddressLine1, editAddressLine2, editAddressCityStateZip, editAddressCountry].filter(Boolean).join('\n').trim() || undefined,
+                                                store_address: [editAddressLine1, editAddressLine2, [editAddressCity, editAddressState, editAddressZip].filter(Boolean).join(editAddressCity && editAddressState ? ', ' : ' ').replace(/, $/, '').trim(), editAddressCountry].filter(Boolean).join('\n').trim() || undefined,
                                                 merchant_phone: editMerchantPhone.trim() || undefined,
                                                 receipt_date: editReceiptDate.trim() || undefined,
                                                 purchase_time: formatTimeToHHmm(editPurchaseTime).trim() || undefined,

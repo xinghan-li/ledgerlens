@@ -166,7 +166,7 @@ def classify_product_category(
     # Step 1: 后端匹配（exact 查 product_categorization_rules + universal fuzzy 查 CSV）
     try:
         from app.services.categorization.receipt_categorizer import get_category_id_for_product
-        category_id, _ = get_category_id_for_product(normalized_name, store_chain_id)
+        category_id, *_ = get_category_id_for_product(normalized_name, store_chain_id)
         if category_id:
             supabase = _get_supabase()
             category_data = supabase.table("categories")\

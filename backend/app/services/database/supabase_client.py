@@ -650,15 +650,12 @@ def save_processing_run(
 def update_receipt_status(
     receipt_id: str,
     current_status: str,
-    current_stage: str
+    current_stage: str,
+    admin_failure_kind: Optional[str] = None,
 ) -> None:
     """
     Update receipt current_status and current_stage.
-    
-    Args:
-        receipt_id: Receipt ID (UUID string)
-        current_status: New status ('success', 'failed', 'needs_review')
-        current_stage: New stage ('ocr', 'llm_primary', 'llm_fallback', 'manual')
+    Optionally set admin_failure_kind for admin failed list (first_round_fail, user_escalated, vision_fail, escalation_fail).
     """
     if current_status not in ('success', 'failed', 'needs_review'):
         raise ValueError(f"Invalid status: {current_status}")
@@ -668,18 +665,35 @@ def update_receipt_status(
         'vision_primary', 'vision_store_specific', 'vision_escalation',
     ):
         raise ValueError(f"Invalid stage: {current_stage}")
-    
+    if admin_failure_kind is not None and admin_failure_kind not in (
+        'first_round_fail', 'user_escalated', 'vision_fail', 'escalation_fail',
+    ):
+        raise ValueError(f"Invalid admin_failure_kind: {admin_failure_kind}")
+
     supabase = _get_client()
-    
+    payload = {"current_status": current_status, "current_stage": current_stage}
+    if admin_failure_kind is not None:
+        payload["admin_failure_kind"] = admin_failure_kind
+    if current_status == "success":
+        payload["admin_failure_kind"] = None  # clear when resolved
+
     try:
-        supabase.table("receipt_status").update({
-            "current_status": current_status,
-            "current_stage": current_stage,
-        }).eq("id", receipt_id).execute()
-        logger.info(f"Updated receipt {receipt_id}: status={current_status}, stage={current_stage}")
+        supabase.table("receipt_status").update(payload).eq("id", receipt_id).execute()
+        logger.info(f"Updated receipt {receipt_id}: status={current_status}, stage={current_stage}" + (f", admin_failure_kind={admin_failure_kind}" if admin_failure_kind else ""))
     except Exception as e:
         logger.error(f"Failed to update receipt status: {e}")
         raise
+
+
+def create_receipt_escalation(receipt_id: str, user_id: str, notes: str = "") -> None:
+    """Insert a user escalation (notes) for a receipt. Used when user clicks Escalate in UI."""
+    supabase = _get_client()
+    supabase.table("receipt_escalations").insert({
+        "receipt_id": receipt_id,
+        "user_id": user_id,
+        "notes": (notes or "").strip() or "",
+    }).execute()
+    logger.info(f"Created receipt_escalation for receipt {receipt_id}, user {user_id}")
 
 
 def update_receipt_file_url(
@@ -2710,11 +2724,11 @@ def update_record_item_category(
     receipt_id: str,
     item_id: str,
     user_id: str,
-    category_id: Optional[str],
+    user_category_id: Optional[str],
 ) -> bool:
     """
-    Update record_items.category_id for one item. Verifies receipt belongs to user and item belongs to receipt.
-    category_id can be None to clear. Returns True if updated, False if not found or access denied.
+    Update record_items.user_category_id for one item. Verifies receipt belongs to user and item belongs to receipt.
+    user_category_id must belong to the same user. Pass None to clear. Returns True if updated.
     """
     supabase = _get_client()
     rec = supabase.table("receipt_status").select("id").eq("id", receipt_id).eq("user_id", user_id).limit(1).execute()
@@ -2723,11 +2737,21 @@ def update_record_item_category(
     row = supabase.table("record_items").select("id").eq("id", item_id).eq("receipt_id", receipt_id).limit(1).execute()
     if not row.data:
         return False
-    if category_id:
-        cat = supabase.table("categories").select("id").eq("id", category_id).limit(1).execute()
+    if user_category_id:
+        cat = (
+            supabase.table("user_categories")
+            .select("id")
+            .eq("id", user_category_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
         if not cat.data:
             return False
-    payload: Dict[str, Any] = {"category_id": category_id if category_id else None, "category_source": "user_override"}
+    payload: Dict[str, Any] = {
+        "user_category_id": user_category_id if user_category_id else None,
+        "category_source": "user_override",
+    }
     supabase.table("record_items").update(payload).eq("id", item_id).eq("receipt_id", receipt_id).execute()
     return True
 
@@ -2864,16 +2888,18 @@ def get_user_analytics_summary(
         for k, v in sorted(payment_totals.items(), key=lambda x: -x[1]["amount_cents"])
     ]
 
-    # By category: from record_items (line_total cents, category_id) — only receipts in selected period
+    # By category: from record_items (line_total cents, category_id + user_category_id) — only receipts in selected period
     items_res = (
         supabase.table("record_items")
-        .select("line_total, category_id, user_feedback")
+        .select("line_total, category_id, user_category_id, user_feedback")
         .in_("receipt_id", receipt_ids_in_range)
         .execute()
     )
     # Filter out items the user has dismissed (user_feedback->dismissed = true)
     raw_items = items_res.data or []
     items = [it for it in raw_items if not ((it.get("user_feedback") or {}).get("dismissed"))]
+
+    # --- System category aggregation (L1/L2/L3 via category_id → categories table) ---
     cat_ids = list({str(it.get("category_id")) for it in items if it.get("category_id")})
     category_path_by_id: Dict[str, str] = {}
     if cat_ids:
@@ -2922,6 +2948,53 @@ def get_user_analytics_summary(
         {"name": k, "amount_cents": v} for k, v in sorted(l3_totals.items(), key=lambda x: -x[1])
     ]
 
+    # --- User category aggregation (via user_category_id → user_categories table) ---
+    user_cat_totals: Dict[str, int] = {}  # user_category_id → amount_cents
+    for it in items:
+        line_cents = it.get("line_total")
+        ucid = it.get("user_category_id")
+        if ucid and line_cents is not None:
+            user_cat_totals[str(ucid)] = user_cat_totals.get(str(ucid), 0) + int(line_cents)
+
+    by_user_category: list = []
+    if user_cat_totals:
+        uc_ids = list(user_cat_totals.keys())
+        # Fetch all user_categories for this user once; then resolve ancestors in memory (avoids N+1 per level)
+        all_uc_res = (
+            supabase.table("user_categories")
+            .select("id, name, path, parent_id, level, is_locked")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        full_uc_by_id: Dict[str, Any] = {}
+        if all_uc_res.data:
+            for uc in all_uc_res.data:
+                full_uc_by_id[str(uc["id"])] = uc
+        # Collect uc_ids and all their ancestors
+        needed_ids: set = set(uc_ids)
+        prev_size = 0
+        while len(needed_ids) > prev_size:
+            prev_size = len(needed_ids)
+            for nid in list(needed_ids):
+                node = full_uc_by_id.get(nid)
+                if node and node.get("parent_id"):
+                    pid = str(node["parent_id"])
+                    if pid in full_uc_by_id:
+                        needed_ids.add(pid)
+        all_uc_nodes = {k: full_uc_by_id[k] for k in needed_ids if k in full_uc_by_id}
+
+        for nid, uc in all_uc_nodes.items():
+            by_user_category.append({
+                "user_category_id": nid,
+                "name": uc.get("name", ""),
+                "path": uc.get("path") or "",
+                "parent_id": str(uc.get("parent_id")) if uc.get("parent_id") else None,
+                "level": uc.get("level", 1),
+                "is_locked": uc.get("is_locked", False),
+                # Direct spending only; frontend sums subtree totals bottom-up
+                "amount_cents": user_cat_totals.get(nid, 0),
+            })
+
     return {
         "total_receipts": len(summaries),
         "total_amount_cents": total_amount_cents,
@@ -2930,6 +3003,7 @@ def get_user_analytics_summary(
         "by_category_l1": by_category_l1,
         "by_category_l2": by_category_l2,
         "by_category_l3": by_category_l3,
+        "by_user_category": by_user_category,
         "unclassified_count": unclassified_count,
         "unclassified_amount_cents": unclassified_amount_cents,
     }
@@ -2937,7 +3011,7 @@ def get_user_analytics_summary(
 
 def get_user_unclassified_items(user_id: str) -> List[Dict[str, Any]]:
     """
-    Return list of unclassified line items (category_id IS NULL) for the user.
+    Return list of unclassified line items (user_category_id IS NULL) for the user.
     Each item: receipt_id, record_item_id, receipt_date, store_display_name, store_address, product_name, line_total_cents.
     """
     supabase = _get_client()
@@ -2954,7 +3028,7 @@ def get_user_unclassified_items(user_id: str) -> List[Dict[str, Any]]:
         supabase.table("record_items")
         .select("id, receipt_id, product_name, line_total, user_marked_idk, user_feedback")
         .in_("receipt_id", receipt_ids)
-        .is_("category_id", "null")
+        .is_("user_category_id", "null")
         .order("item_index")
         .execute()
     )
@@ -3093,7 +3167,7 @@ def dismiss_item(user_id: str, record_item_id: str, reason: str, comment: Option
 
 def get_idk_now_classified(user_id: str) -> List[str]:
     """
-    Return record_item_ids that user had marked IDK and that now have category_id set.
+    Return record_item_ids that user had marked IDK and that now have user_category_id set.
     Clears user_marked_idk on those items. Auth required.
     """
     supabase = _get_client()
@@ -3102,7 +3176,7 @@ def get_idk_now_classified(user_id: str) -> List[str]:
         .select("id")
         .eq("user_id", user_id)
         .eq("user_marked_idk", True)
-        .not_.is_("category_id", "null")
+        .not_.is_("user_category_id", "null")
         .execute()
     )
     now_classified = [str(r["id"]) for r in (items.data or [])]

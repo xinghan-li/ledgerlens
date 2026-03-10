@@ -721,9 +721,16 @@ async def process_receipt_workflow_vision(
                         db_receipt_id,
                         current_status="failed",
                         current_stage="vision_primary",
+                        admin_failure_kind="vision_fail",
                     )
-                except Exception:
-                    pass
+                    image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+                    if image_path:
+                        update_receipt_file_url(db_receipt_id, image_path)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to update status or save image for failed receipt {db_receipt_id}: {e}",
+                        exc_info=True,
+                    )
             return {
                 "success": False,
                 "receipt_id": db_receipt_id or receipt_id,
@@ -741,12 +748,16 @@ async def process_receipt_workflow_vision(
                     db_receipt_id,
                     current_status="failed",
                     current_stage="vision_primary",
+                    admin_failure_kind="vision_fail",
                 )
                 image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
                 if image_path:
                     update_receipt_file_url(db_receipt_id, image_path)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(
+                    f"Failed to update status or save image for failed receipt {db_receipt_id}: {e}",
+                    exc_info=True,
+                )
         return {
             "success": False,
             "receipt_id": db_receipt_id or receipt_id,
@@ -808,10 +819,19 @@ async def process_receipt_workflow_vision(
         stage_for_receipt = "vision_store_specific" if ran_store_second_round else "vision_primary"
         if db_receipt_id:
             try:
+                if status_for_receipt == "needs_review":
+                    # Save image for admin/developer to see first-round fail
+                    try:
+                        image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+                        if image_path:
+                            update_receipt_file_url(db_receipt_id, image_path)
+                    except Exception:
+                        pass
                 update_receipt_status(
                     db_receipt_id,
                     current_status=status_for_receipt,
                     current_stage=stage_for_receipt,
+                    admin_failure_kind="first_round_fail" if status_for_receipt == "needs_review" else None,
                 )
                 if status_for_receipt == "needs_review":
                     logger.info(
@@ -849,11 +869,13 @@ async def process_receipt_workflow_vision(
                 _run_shadow_legacy(image_bytes, mime_type, db_receipt_id)
             )
 
+        store_name = (receipt_data.get("merchant_name") or "").strip() or None
         return {
             "success": status_for_receipt == "success",
             "receipt_id": db_receipt_id or receipt_id,
             "status": "passed" if status_for_receipt == "success" else "needs_review",
             "current_stage": stage_for_receipt,
+            "store_name": store_name,
             "data": primary_result,
             "sum_check": sum_check_details,
             "pipeline": "vision_b",
@@ -877,6 +899,7 @@ async def process_receipt_workflow_vision(
                 db_receipt_id,
                 current_status="needs_review",
                 current_stage="vision_primary",
+                admin_failure_kind="first_round_fail",
             )
             logger.info(f"[vision] Set receipt {db_receipt_id} to needs_review before escalation; writing primary to record_summaries")
             await asyncio.to_thread(categorize_receipt, db_receipt_id)
@@ -942,6 +965,7 @@ async def process_receipt_workflow_vision(
                     db_receipt_id,
                     current_status="needs_review",
                     current_stage="vision_escalation",
+                    admin_failure_kind="escalation_fail",
                 )
             except Exception:
                 pass
@@ -1034,11 +1058,14 @@ async def process_receipt_workflow_vision(
                 _run_shadow_legacy(image_bytes, mime_type, db_receipt_id)
             )
 
+        esc_receipt = (best_result or {}).get("receipt") or {}
+        store_name = (esc_receipt.get("merchant_name") or "").strip() or None
         return {
             "success": True,
             "receipt_id": db_receipt_id or receipt_id,
             "status": "escalation_success",
             "current_stage": "vision_escalation",
+            "store_name": store_name,
             "data": best_result,
             "pipeline": "vision_b",
         }
@@ -1053,6 +1080,7 @@ async def process_receipt_workflow_vision(
                 db_receipt_id,
                 current_status="needs_review",
                 current_stage="vision_escalation",
+                admin_failure_kind="escalation_fail",
             )
             append_workflow_step(db_receipt_id, "escalation_consensus", "fail")
         except Exception as exc:

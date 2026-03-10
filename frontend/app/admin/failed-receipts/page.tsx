@@ -16,6 +16,9 @@ type Row = {
   failure_reason: string
   run_stage?: string | null
   run_provider?: string | null
+  admin_failure_kind?: string | null
+  failure_kind_label: string
+  escalation_notes?: string | null
 }
 
 export default function FailedReceiptsListPage() {
@@ -112,8 +115,10 @@ export default function FailedReceiptsListPage() {
             <thead className="bg-theme-cream/80">
               <tr>
                 <th className="px-3 py-2 text-left">Uploaded</th>
+                <th className="px-3 py-2 text-left">Kind</th>
                 <th className="px-3 py-2 text-left">Status / Stage</th>
                 <th className="px-3 py-2 text-left">Failure reason</th>
+                <th className="px-3 py-2 text-left">User notes</th>
                 <th className="px-3 py-2 text-left">Actions</th>
               </tr>
             </thead>
@@ -122,11 +127,17 @@ export default function FailedReceiptsListPage() {
                 <tr key={r.id} className="hover:bg-theme-cream/80">
                   <td className="px-3 py-2">{formatDate(r.uploaded_at)}</td>
                   <td className="px-3 py-2">
+                    <span className="text-xs font-medium text-theme-orange">{r.failure_kind_label ?? '—'}</span>
+                  </td>
+                  <td className="px-3 py-2">
                     <span className="text-theme-red">{r.current_status}</span>
                     {r.current_stage && <span className="text-theme-mid ml-1">/ {r.current_stage}</span>}
                   </td>
                   <td className="px-3 py-2 max-w-md truncate text-theme-dark/90" title={r.failure_reason}>
                     {r.failure_reason}
+                  </td>
+                  <td className="px-3 py-2 max-w-xs truncate text-theme-dark/80" title={r.escalation_notes ?? ''}>
+                    {r.escalation_notes ?? '—'}
                   </td>
                   <td className="px-3 py-2 flex items-center gap-3">
                     <Link

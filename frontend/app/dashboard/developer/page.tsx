@@ -8,6 +8,8 @@ import { onAuthStateChanged } from 'firebase/auth'
 import DataAnalysisSection from '../DataAnalysisSection'
 import { CameraCaptureButton } from '../camera'
 import { useApiUrl } from '@/lib/api-url-context'
+import CategoryTreeSelector from '../CategoryTreeSelector'
+import SystemCategorySubSelector from '../SystemCategorySubSelector'
 
 const MAX_PROCESSING = 5
 
@@ -69,11 +71,9 @@ export default function DeveloperDashboardPage() {
   const [editItems, setEditItems] = useState<Array<{ id?: string; product_name: string; quantity: string; unit: string; unit_price: string; line_total: string; on_sale: boolean; original_price: string; discount_amount: string }>>([])
   const [correctSubmitting, setCorrectSubmitting] = useState(false)
   const [correctMessage, setCorrectMessage] = useState<string | null>(null)
-  const [categoriesList, setCategoriesList] = useState<Array<{ id: string; parent_id: string | null; name: string; path: string; level: number }>>([])
+  const [categoriesList, setCategoriesList] = useState<Array<{ id: string; parent_id: string | null; name: string; path: string; level: number; is_locked?: boolean; sort_order?: number }>>([])
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
-  const [editCatL1, setEditCatL1] = useState<string>('')
-  const [editCatL2, setEditCatL2] = useState<string>('')
-  const [editCatL3, setEditCatL3] = useState<string>('')
+  const [editCatId, setEditCatId] = useState<string | null>(null)
   const [categoryUpdateMessage, setCategoryUpdateMessage] = useState<string | null>(null)
   const [smartCategorizeLoading, setSmartCategorizeLoading] = useState(false)
   const [smartCategorizeMessage, setSmartCategorizeMessage] = useState<string | null>(null)
@@ -341,6 +341,25 @@ export default function DeveloperDashboardPage() {
     fetchCategories()
   }, [fetchCategories])
 
+  const createCategory = useCallback(
+    async (parentId: string, name: string): Promise<string | null> => {
+      if (!token) return null
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/me/categories`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ parent_id: parentId, name: name.trim() }),
+        })
+        if (!res.ok) return null
+        const row = await res.json()
+        return row?.id ?? null
+      } catch {
+        return null
+      }
+    },
+    [apiBaseUrl, token]
+  )
+
   const refetchReceiptDetail = useCallback(async (receiptId: string) => {
     if (!receiptId || !token) return
     try {
@@ -533,7 +552,7 @@ export default function DeveloperDashboardPage() {
                 </p>
                 <p className="text-theme-blue text-sm">
                   You can upload more (up to {MAX_PROCESSING} at a time).
-                  For Costco we may run an extra check or escalate to a senior processor — sit tight, this may take a minute.
+                  For some stores we run an extra check or may escalate to a senior processor — sit tight, this may take a minute.
                 </p>
               </div>
             </div>
@@ -552,7 +571,12 @@ export default function DeveloperDashboardPage() {
           <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between">
             <span className="text-green-800">
               ✅ {uploadResult.current_stage === 'vision_store_specific'
-                ? 'Success after secondary check.'
+                ? (() => {
+                    const storeLabel = (uploadResult.store_name ?? uploadResult.data?.receipt?.merchant_name ?? '').trim()
+                    return storeLabel
+                      ? `Success after secondary check (${storeLabel}).`
+                      : 'Success after secondary check.'
+                  })()
                 : uploadResult.current_stage === 'vision_escalation' || uploadResult.status === 'escalation_success'
                   ? 'Success after escalation.'
                   : 'Success.'}
@@ -736,10 +760,10 @@ export default function DeveloperDashboardPage() {
                                           const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
                                           const unit = (it.unit ?? '').trim() || 'each'
                                           const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
-                                          const path = (it.category_path ?? '').trim()
-                                          const parts = path ? path.split(/\s*[\/>]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
-                                          const catL1L2 = parts.length >= 2 ? parts.slice(0, 2).join(' / ') : (parts.join(' / ') || '—')
-                                          const catL3 = parts.length >= 3 ? parts[2] : ''
+                                          const path = (it.user_category_path ?? it.category_path ?? '').trim()
+                                          const parts = path ? path.split(/\s*[\/>\|]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
+                                          const sysCat = parts[0] ?? '—'
+                                          const subCat = parts.length > 1 ? parts.slice(1).join(' / ') : ''
                                           const showQtyUnit = Number.isFinite(qty) && qty > 1 && (u && u !== '')
                                           return (
                                             <div key={it.id ?? i} className="border-b border-theme-cream-f0 pb-2 last:border-0">
@@ -763,8 +787,8 @@ export default function DeveloperDashboardPage() {
                                                     <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>
                                                   </div>
                                                   <div className="mt-0.5 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-0.5 text-xs text-theme-gray-666">
-                                                    <span className="sm:flex-1">{catL1L2}</span>
-                                                    <span className="sm:shrink-0">{catL3}</span>
+                                                    <span className="sm:flex-1">{sysCat}</span>
+                                                    <span className="sm:shrink-0 truncate">{subCat}</span>
                                                   </div>
                                                 </>
                                               )}
@@ -964,39 +988,18 @@ export default function DeveloperDashboardPage() {
                                     <div className="px-3 overflow-auto">
                                       {((expandedReceiptData[r.id]?.data?.items) || []).length > 0 ? (
                                         <>
-                                          <div className="grid grid-cols-[1fr_1fr_1fr_auto] gap-x-2 gap-y-0 text-left mb-0.5 min-h-7 items-center text-xs text-theme-gray-666 font-medium">
-                                            <div>level I</div>
-                                            <div>level II</div>
-                                            <div>level III</div>
+                                          <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto] gap-x-2 gap-y-0 text-left mb-0.5 min-h-7 items-center text-xs text-theme-gray-666 font-medium">
+                                            <div>System Category</div>
+                                            <div>Sub Categories</div>
                                             <div className="w-14" />
                                           </div>
                                           {((expandedReceiptData[r.id]?.data?.items) || []).map((it: any, i: number) => {
-                                            const path = (it.category_path ?? '').trim()
-                                            const parts = path ? path.split(/\s*[\/>]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
-                                            const [c1, c2, c3] = [parts[0] ?? '—', parts[1] ?? '—', parts[2] ?? '—']
+                                            const path = (it.user_category_path ?? it.category_path ?? '').trim()
                                             const itemId = it.id
                                             const isEditing = editingItemId === itemId
-                                            const L1List = categoriesList.filter((c) => c.parent_id == null)
-                                            const L2List = categoriesList.filter((c) => c.parent_id === editCatL1)
-                                            const L3List = categoriesList.filter((c) => c.parent_id === editCatL2)
                                             const startEdit = () => {
                                               setEditingItemId(itemId)
-                                              const catId = it.category_id
-                                              if (catId && categoriesList.length) {
-                                                const byId = Object.fromEntries(categoriesList.map((c) => [c.id, c]))
-                                                const leaf = byId[catId]
-                                                if (leaf) {
-                                                  const p2 = leaf.parent_id ? byId[leaf.parent_id] : null
-                                                  const p1 = p2?.parent_id ? byId[p2.parent_id] : null
-                                                  setEditCatL1(p1?.id ?? '')
-                                                  setEditCatL2(p2?.id ?? '')
-                                                  setEditCatL3(leaf.id)
-                                                  return
-                                                }
-                                              }
-                                              setEditCatL1('')
-                                              setEditCatL2('')
-                                              setEditCatL3('')
+                                              setEditCatId(it.user_category_id ?? it.category_id ?? null)
                                             }
                                             const cancelEdit = () => {
                                               setEditingItemId(null)
@@ -1009,14 +1012,13 @@ export default function DeveloperDashboardPage() {
                                                 return
                                               }
                                               setCategoryUpdateMessage(null)
-                                              const toSend = editCatL3 || editCatL2 || editCatL1 || null
                                               try {
                                                 const res = await fetch(
                                                   `${apiBaseUrl}/api/receipt/${r.id}/item/${itemId}/category`,
                                                   {
                                                     method: 'PATCH',
                                                     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                                                    body: JSON.stringify({ category_id: toSend }),
+                                                    body: JSON.stringify({ user_category_id: editCatId ?? null }),
                                                   }
                                                 )
                                                 if (res.ok) {
@@ -1031,47 +1033,23 @@ export default function DeveloperDashboardPage() {
                                                 setCategoryUpdateMessage('Network error')
                                               }
                                             }
+                                            const devPath = (it.user_category_path ?? it.category_path ?? '').trim()
+                                            const devParts = devPath ? devPath.split(/\s*[\/>\|]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
+                                            const devSysCat = devParts[0] ?? '—'
+                                            const devSubCat = devParts.length > 1 ? devParts.slice(1).join(' / ') : ''
                                             return (
-                                              <div key={itemId ?? i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-x-2 gap-y-0 min-h-7 items-center text-sm">
+                                              <div key={itemId ?? i} className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto] gap-x-2 gap-y-0 min-h-7 items-center text-sm">
                                                 {isEditing ? (
                                                   <>
-                                                    <select
-                                                      className="border rounded px-1 py-0.5 text-xs w-full max-w-[120px]"
-                                                      value={editCatL1}
-                                                      onChange={(e) => {
-                                                        setEditCatL1(e.target.value)
-                                                        setEditCatL2('')
-                                                        setEditCatL3('')
-                                                      }}
-                                                    >
-                                                      <option value="">—</option>
-                                                      {L1List.map((c) => (
-                                                        <option key={c.id} value={c.id}>{c.name}</option>
-                                                      ))}
-                                                    </select>
-                                                    <select
-                                                      className="border rounded px-1 py-0.5 text-xs w-full max-w-[120px]"
-                                                      value={editCatL2}
-                                                      onChange={(e) => {
-                                                        setEditCatL2(e.target.value)
-                                                        setEditCatL3('')
-                                                      }}
-                                                    >
-                                                      <option value="">—</option>
-                                                      {L2List.map((c) => (
-                                                        <option key={c.id} value={c.id}>{c.name}</option>
-                                                      ))}
-                                                    </select>
-                                                    <select
-                                                      className="border rounded px-1 py-0.5 text-xs w-full max-w-[120px]"
-                                                      value={editCatL3}
-                                                      onChange={(e) => setEditCatL3(e.target.value)}
-                                                    >
-                                                      <option value="">—</option>
-                                                      {L3List.map((c) => (
-                                                        <option key={c.id} value={c.id}>{c.name}</option>
-                                                      ))}
-                                                    </select>
+                                                    <div className="col-span-2 min-w-0">
+                                                      <SystemCategorySubSelector
+                                                        categories={categoriesList}
+                                                        value={editCatId}
+                                                        onChange={(val) => setEditCatId(val)}
+                                                        onRefetchCategories={fetchCategories}
+                                                        onCreateCategory={createCategory}
+                                                      />
+                                                    </div>
                                                     <div className="flex items-center gap-0.5 w-14">
                                                       <button type="button" className="p-1 bg-green-100 text-green-800 rounded hover:bg-green-200 w-5 h-5 flex items-center justify-center" onClick={confirmEdit} title="Confirm">✓</button>
                                                       <button type="button" className="p-1 bg-theme-ivory-dark text-theme-gray-666 rounded hover:bg-theme-cloud w-5 h-5 flex items-center justify-center" onClick={cancelEdit} title="Cancel">✕</button>
@@ -1079,9 +1057,8 @@ export default function DeveloperDashboardPage() {
                                                   </>
                                                 ) : (
                                                   <>
-                                                    <div className="truncate text-theme-dark-404" title={c1}>{c1}</div>
-                                                    <div className="truncate text-theme-dark-404" title={c2}>{c2}</div>
-                                                    <div className="truncate text-theme-dark-404" title={c3}>{c3}</div>
+                                                    <div className="truncate text-theme-dark-404 text-xs" title={devSysCat}>{devSysCat}</div>
+                                                    <div className="truncate text-theme-dark-404 text-xs" title={devSubCat || '—'}>{devSubCat || <span className="text-theme-mid">—</span>}</div>
                                                     <button type="button" className={`p-1 rounded w-5 h-5 flex items-center justify-center ${itemId ? 'text-theme-gray-666 hover:text-theme-dark-404 hover:bg-theme-ivory-dark' : 'text-theme-mid cursor-not-allowed opacity-50'}`} onClick={itemId ? startEdit : undefined} title={itemId ? 'Edit' : 'Item not saved yet; complete review first'}>✏️</button>
                                                   </>
                                                 )}

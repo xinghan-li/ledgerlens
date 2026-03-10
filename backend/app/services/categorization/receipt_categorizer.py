@@ -157,6 +157,71 @@ def _resolve_category_id_by_path(supabase: Any, category_path: str) -> Optional[
     return None
 
 
+def _get_categories_l1_cache(supabase: Any) -> Dict[str, Dict[str, Any]]:
+    """Fetch all categories (id, level, parent_id) once for in-memory L1 resolution. Returns dict id -> {level, parent_id}."""
+    try:
+        r = supabase.table("categories").select("id, level, parent_id").execute()
+        if not r.data:
+            return {}
+        return {
+            str(row["id"]): {"level": row.get("level"), "parent_id": row.get("parent_id")}
+            for row in r.data
+        }
+    except Exception as e:
+        logger.debug("_get_categories_l1_cache failed: %s", e)
+        return {}
+
+
+def _resolve_to_l1_category_id(
+    supabase: Any,
+    category_id: str,
+    categories_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[str]:
+    """
+    Walk up the categories tree to get the L1 (root) category id.
+    Used when smart categorization should only assign L1 (no historical store+product match).
+    If categories_cache is provided (id -> {level, parent_id}), walks in memory to avoid N+1 queries.
+    """
+    if not category_id:
+        return None
+    if categories_cache is not None:
+        cid = category_id
+        for _ in range(10):
+            if cid not in categories_cache:
+                return None
+            node = categories_cache[cid]
+            if node.get("level") == 1:
+                return str(cid)
+            parent_id = node.get("parent_id")
+            if not parent_id:
+                return str(cid)
+            cid = str(parent_id)
+        return None
+    for _ in range(10):
+        try:
+            r = (
+                supabase.table("categories")
+                .select("id, level, parent_id")
+                .eq("id", category_id)
+                .limit(1)
+                .execute()
+            )
+            if not r.data or not r.data[0]:
+                return None
+            row = r.data[0]
+            level = row.get("level")
+            if level == 1:
+                return str(row["id"])
+            parent_id = row.get("parent_id")
+            if not parent_id:
+                return str(row["id"])
+            category_id = str(parent_id)
+        except Exception as e:
+            logger.debug("resolve_to_l1_category_id failed for %s: %s", category_id, e)
+            return None
+    return None
+
+
 def _match_exact_from_db(
     supabase: Any,
     normalized_name: str,
@@ -195,6 +260,31 @@ def _match_exact_from_db(
             return str(r.data[0]["category_id"])
     except Exception as e:
         logger.debug(f"Exact rule lookup for '{name_clean}': {e}")
+    return None
+
+
+def _match_exact_store_only(
+    supabase: Any, normalized_name: str, store_chain_id: Optional[str]
+) -> Optional[str]:
+    """Exact match from product_categorization_rules with store_chain_id only (no universal fallback)."""
+    if not store_chain_id:
+        return None
+    name_clean = (normalized_name or "").strip().lower()
+    if not name_clean:
+        return None
+    try:
+        r = (
+            supabase.table("product_categorization_rules")
+            .select("category_id")
+            .eq("normalized_name", name_clean)
+            .eq("store_chain_id", store_chain_id)
+            .limit(1)
+            .execute()
+        )
+        if r.data and r.data[0].get("category_id"):
+            return str(r.data[0]["category_id"])
+    except Exception as e:
+        logger.debug(f"Exact store-only rule lookup for '{name_clean}': {e}")
     return None
 
 
@@ -300,35 +390,44 @@ def _match_fuzzy_same_store(
 
 def get_category_id_for_product(
     normalized_name: str, store_chain_id: Optional[str]
-) -> Tuple[Optional[str], str]:
+) -> Tuple[Optional[str], str, bool]:
     """
     Backend-only matching: 1) exact from product_categorization_rules (store-specific first),
     2) fuzzy same-store (1–2 letter diff) from product_categorization_rules,
     3) universal fuzzy from backend-held rules (CSV).
-    Returns (category_id, source) where source is 'rule_exact', 'rule_fuzzy', or '' (no match).
+    Returns (category_id, source, is_store_specific) where source is 'rule_exact', 'rule_fuzzy', or '' (no match).
+    is_store_specific is True only when match came from store-specific rule (user's historical categorization).
     """
     supabase = _get_client()
     normalized_underscore = (normalized_name or "").strip().replace(" ", "_")
     normalized = (normalized_name or "").strip()
     if not normalized:
-        return None, ""
+        return None, "", False
+    # Store-specific exact first: keep full L2/L3/L4 for "user previously categorized at this store"
+    if store_chain_id:
+        for name_to_try in (normalized_underscore, normalized):
+            cid = _match_exact_store_only(supabase, name_to_try, store_chain_id)
+            if cid:
+                return cid, "rule_exact", True
+    # Universal exact: only L1 in smart categorize
     for name_to_try in (normalized_underscore, normalized):
-        cid = _match_exact_from_db(supabase, name_to_try, store_chain_id)
+        cid = _match_exact_from_db(supabase, name_to_try, None)
         if cid:
-            return cid, "rule_exact"
+            return cid, "rule_exact", False
+    # Fuzzy (same-store or universal): only L1
     cid = _match_fuzzy_same_store(supabase, normalized, store_chain_id)
     if cid:
-        return cid, "rule_fuzzy"
+        return cid, "rule_fuzzy", False
     cid = _match_fuzzy_same_store(supabase, normalized_underscore, store_chain_id)
     if cid:
-        return cid, "rule_fuzzy"
+        return cid, "rule_fuzzy", False
     path_to_id: Dict[str, str] = {}
     cid = _match_universal_fuzzy(normalized, path_to_id, supabase)
     if cid:
-        return cid, "rule_fuzzy"
+        return cid, "rule_fuzzy", False
     if normalized != normalized_underscore:
         cid = _match_universal_fuzzy(normalized_underscore, path_to_id, supabase)
-    return (cid, "rule_fuzzy") if cid else (None, "")
+    return (cid, "rule_fuzzy", False) if cid else (None, "", False)
 
 
 def _enrich_items_category_from_rules(
@@ -352,11 +451,12 @@ def _enrich_items_category_from_rules(
         if not normalized:
             continue
         try:
-            cid, source = get_category_id_for_product(normalized, store_chain_id)
+            cid, source, is_store_specific = get_category_id_for_product(normalized, store_chain_id)
             if cid and source:
                 item["category_id"] = cid
                 item["_category_source"] = source
-                logger.debug(f"Rule match for '{product_name}' -> {cid} (source={source})")
+                item["_from_store_specific"] = is_store_specific
+                logger.debug(f"Rule match for '{product_name}' -> {cid} (source={source}, store_specific={is_store_specific})")
         except Exception as e:
             logger.debug(f"Rule lookup for '{product_name}': {e}")
 
@@ -605,11 +705,12 @@ async def smart_categorize_receipt_items(
             .execute()
         )
     else:
+        # Target items that still lack a user_category_id (the user-facing classification)
         items_rows = (
             supabase.table("record_items")
             .select("id, product_name, quantity, unit, unit_price, line_total, on_sale, original_price, discount_amount")
             .eq("receipt_id", receipt_id)
-            .is_("category_id", "null")
+            .is_("user_category_id", "null")
             .order("item_index")
             .execute()
         )
@@ -635,7 +736,21 @@ async def smart_categorize_receipt_items(
     _enrich_items_category_from_rules(items_data, store_chain_id_uuid)
     await _enrich_items_category_from_llm(items_data, store_name)
 
+    # Non-historical (universal rule / fuzzy / LLM): only assign L1. Store-specific exact = keep full L2/L3/L4.
+    l1_cache = _get_categories_l1_cache(supabase)
+    for it in items_data:
+        cid = it.get("category_id")
+        if not cid:
+            continue
+        source = (it.get("_category_source") or "").strip()
+        from_store_specific = it.get("_from_store_specific") is True
+        if source in ("rule_fuzzy", "llm") or (source == "rule_exact" and not from_store_specific):
+            l1_id = _resolve_to_l1_category_id(supabase, cid, l1_cache)
+            if l1_id:
+                it["category_id"] = l1_id
+
     updated = 0
+    updated_item_ids = []
     for it in items_data:
         cid = it.get("category_id")
         if not cid or not it.get("id"):
@@ -649,8 +764,16 @@ async def smart_categorize_receipt_items(
         try:
             supabase.table("record_items").update(payload).eq("id", it["id"]).eq("receipt_id", receipt_id).execute()
             updated += 1
+            updated_item_ids.append(it["id"])
         except Exception as e:
             logger.warning(f"Failed to update record_item {it.get('id')}: {e}")
+
+    # Resolve system category_id → user_category_id for updated items
+    if updated_item_ids:
+        try:
+            supabase.rpc("resolve_user_categories_for_receipt", {"p_receipt_id": receipt_id}).execute()
+        except Exception as _e:
+            logger.warning(f"resolve_user_categories_for_receipt failed for {receipt_id}: {_e}")
 
     logger.info(f"Smart categorize receipt {receipt_id}: updated {updated} items")
     return {"success": True, "updated_count": updated, "message": f"Updated {updated} item(s)"}
@@ -944,7 +1067,20 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     _enrich_items_category_from_rules(items_data, effective_chain_id)
     # 4b. For items still without category_id, call LLM to suggest category (so record_items get category_id when level-3 exists)
     _enrich_items_category_from_llm_sync(items_data, receipt_data.get("merchant_name"))
-    
+
+    # Non-historical (universal rule / fuzzy / LLM): only assign L1. Store-specific exact = keep full L2/L3/L4.
+    l1_cache = _get_categories_l1_cache(supabase)
+    for it in items_data:
+        cid = it.get("category_id")
+        if not cid:
+            continue
+        source = (it.get("_category_source") or "").strip()
+        from_store_specific = it.get("_from_store_specific") is True
+        if source in ("rule_fuzzy", "llm") or (source == "rule_exact" and not from_store_specific):
+            l1_id = _resolve_to_l1_category_id(supabase, cid, l1_cache)
+            if l1_id:
+                it["category_id"] = l1_id
+
     # 4. 如果 force=True，删除旧数据
     if force:
         try:
@@ -1052,7 +1188,16 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
             "message": f"Failed to save items: {str(e)}"
         }
 
-    # 6b. Enqueue unmatched items (no category_id) and universal-only matched items to classification_review
+    # 6b. Resolve system category_id → user_category_id for all saved items
+    try:
+        from ..database.supabase_client import _get_client as _sc
+        _sb = _sc()
+        _sb.rpc("resolve_user_categories_for_receipt", {"p_receipt_id": receipt_id}).execute()
+        logger.info(f"[CAT_DEBUG] categorize_receipt {receipt_id}: resolve_user_categories_for_receipt done")
+    except Exception as _e:
+        logger.warning(f"[CAT_DEBUG] resolve_user_categories_for_receipt failed for {receipt_id}: {_e}")
+
+    # 6d. Enqueue unmatched items (no category_id) and universal-only matched items to classification_review
     universal_only_ids: List[str] = []
     if item_ids and items_data:
         idx = 0
