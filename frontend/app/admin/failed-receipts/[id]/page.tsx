@@ -40,6 +40,13 @@ type ReceiptDetail = {
   raw_file_url: string | null
   failure_reason: string | null
   run_stage?: string | null
+  admin_failure_kind?: string | null
+  failure_kind_label?: string
+  escalation_notes?: string | null
+  escalation_history?: Array<{ notes: string; created_at: string }>
+  run_reasoning?: string | null
+  run_reasoning_extra?: { validation_status?: string; sum_check_notes?: string; sum_check_passed?: boolean }
+  run_output_payload?: Record<string, unknown> | null
   prefill: Prefill
   prefill_items: PrefillItem[]
 }
@@ -71,6 +78,7 @@ export default function FailedReceiptEditPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [imageObjectUrl, setImageObjectUrl] = useState<string | null>(null)
+  const [showJson, setShowJson] = useState(true)
 
   // Form state: summary
   const [storeName, setStoreName] = useState('')
@@ -279,9 +287,29 @@ export default function FailedReceiptEditPage() {
         <h2 className="text-lg font-semibold">Manual receipt correction</h2>
         <Link href="/admin/failed-receipts" className="text-sm text-theme-orange hover:underline">← Back to list</Link>
       </div>
-      {detail?.failure_reason && (
-        <div className="p-2 bg-amber-50 text-amber-800 rounded text-sm">
-          Failure reason: {detail.failure_reason}
+      {(detail?.failure_kind_label || detail?.failure_reason) && (
+        <div className="p-2 bg-amber-50 text-amber-800 rounded text-sm space-y-1">
+          {detail.failure_kind_label && <p><span className="font-medium">Kind:</span> {detail.failure_kind_label}</p>}
+          {detail.failure_reason && <p><span className="font-medium">Failure reason:</span> {detail.failure_reason}</p>}
+        </div>
+      )}
+      {detail?.escalation_notes && (
+        <div className="p-2 bg-blue-50 text-blue-900 rounded text-sm">
+          <p className="font-medium">User escalation notes:</p>
+          <p className="whitespace-pre-wrap mt-1">{detail.escalation_notes}</p>
+        </div>
+      )}
+      {detail?.escalation_history && detail.escalation_history.length > 1 && (
+        <div className="p-2 bg-slate-50 text-slate-800 rounded text-sm">
+          <p className="font-medium">Escalation history ({detail.escalation_history.length}):</p>
+          <ul className="mt-1 list-disc list-inside space-y-0.5">
+            {detail.escalation_history.map((h, i) => (
+              <li key={i}>
+                {h.notes || '(no text)'}
+                {h.created_at && <span className="text-slate-500 ml-1">({new Date(h.created_at).toLocaleString()})</span>}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
       {error && (
@@ -298,12 +326,12 @@ export default function FailedReceiptEditPage() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: receipt image */}
-        <div className="lg:col-span-1">
+        {/* Left: original image + reasoning + JSON */}
+        <div className="lg:col-span-1 space-y-4">
           <div className="bg-white rounded-lg shadow p-4 sticky top-4">
-            <p className="text-sm font-medium text-theme-dark/90 mb-2">Receipt image</p>
+            <p className="text-sm font-semibold text-theme-dark mb-2">Original image</p>
             {(detail?.raw_file_url && imageObjectUrl) ? (
-              <img src={imageObjectUrl} alt="Receipt" className="w-full border rounded object-contain max-h-[70vh]" />
+              <img src={imageObjectUrl} alt="Receipt" className="w-full border rounded object-contain max-h-[50vh]" />
             ) : detail?.raw_file_url ? (
               <div className="w-full aspect-[3/4] border rounded bg-theme-light-gray/50 flex items-center justify-center text-theme-mid text-sm">
                 Loading…
@@ -314,6 +342,37 @@ export default function FailedReceiptEditPage() {
               </div>
             )}
           </div>
+          {(detail?.run_reasoning || detail?.run_reasoning_extra) && (
+            <div className="bg-white rounded-lg shadow p-4">
+              <p className="text-sm font-semibold text-theme-dark mb-2">Reasoning</p>
+              <div className="text-sm text-theme-dark/90 space-y-2">
+                {detail.run_reasoning && (
+                  <pre className="whitespace-pre-wrap font-sans bg-amber-50 border border-amber-200 rounded p-2 text-amber-900 max-h-48 overflow-y-auto">
+                    {detail.run_reasoning}
+                  </pre>
+                )}
+                {detail.run_reasoning_extra && (detail.run_reasoning_extra.validation_status != null || detail.run_reasoning_extra.sum_check_notes != null || detail.run_reasoning_extra.sum_check_passed != null) && (
+                  <div className="text-xs text-theme-mid space-y-0.5">
+                    {detail.run_reasoning_extra.validation_status != null && <p>validation_status: {String(detail.run_reasoning_extra.validation_status)}</p>}
+                    {detail.run_reasoning_extra.sum_check_passed != null && <p>sum_check_passed: {String(detail.run_reasoning_extra.sum_check_passed)}</p>}
+                    {detail.run_reasoning_extra.sum_check_notes != null && <p className="whitespace-pre-wrap">sum_check_notes: {detail.run_reasoning_extra.sum_check_notes}</p>}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {detail?.run_output_payload != null && Object.keys(detail.run_output_payload).length > 0 && (
+            <div className="bg-white rounded-lg shadow p-4">
+              <button type="button" onClick={() => setShowJson((v) => !v)} className="text-sm font-semibold text-theme-dark mb-2 block hover:underline">
+                Run output (JSON) {showJson ? '▼' : '▶'}
+              </button>
+              {showJson && (
+                <pre className="text-xs bg-slate-100 border border-slate-200 rounded p-3 overflow-auto max-h-96 whitespace-pre-wrap break-words font-mono text-slate-800">
+                  {JSON.stringify(detail.run_output_payload, null, 2)}
+                </pre>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Right: form */}

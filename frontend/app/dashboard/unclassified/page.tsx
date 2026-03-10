@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useApiUrl } from '@/lib/api-url-context'
 import { useAuth } from '@/lib/auth-context'
+import CategoryTreeSelector, { type UserCat } from '@/app/dashboard/CategoryTreeSelector'
 
 type UnclassifiedItem = {
   receipt_id: string
@@ -15,8 +16,6 @@ type UnclassifiedItem = {
   line_total_cents: number | null
   user_marked_idk?: boolean
 }
-
-type Cat = { id: string; name: string; parent_id: string | null }
 
 type DismissReason = 'incorrect_item' | 'other'
 
@@ -81,13 +80,12 @@ export default function UnclassifiedPage() {
   const apiBaseUrl = useApiUrl()
   const auth = useAuth()
   const [items, setItems] = useState<UnclassifiedItem[]>([])
-  const [categories, setCategories] = useState<Cat[]>([])
+  const [categories, setCategories] = useState<UserCat[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
-  const [editL1, setEditL1] = useState<Record<string, string>>({})
-  const [editL2, setEditL2] = useState<Record<string, string>>({})
-  const [editL3, setEditL3] = useState<Record<string, string>>({})
+  // selectedCat: maps record_item_id → selected user_category_id
+  const [selectedCat, setSelectedCat] = useState<Record<string, string | null>>({})
   const [dismissModal, setDismissModal] = useState<DismissModal | null>(null)
   const commentRef = useRef<HTMLTextAreaElement>(null)
 
@@ -153,7 +151,7 @@ export default function UnclassifiedPage() {
 
   const confirmCategory = async (item: UnclassifiedItem) => {
     const id = item.record_item_id
-    const cid = editL3[id] || editL2[id] || editL1[id]
+    const cid = selectedCat[id] ?? null
     if (!cid || !item.receipt_id || !auth?.token) return
     setSavingId(id)
     try {
@@ -162,13 +160,11 @@ export default function UnclassifiedPage() {
         {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` },
-          body: JSON.stringify({ category_id: cid }),
+          body: JSON.stringify({ user_category_id: cid }),
         }
       )
       if (res.ok) {
-        setEditL1((o) => { const n = { ...o }; delete n[id]; return n })
-        setEditL2((o) => { const n = { ...o }; delete n[id]; return n })
-        setEditL3((o) => { const n = { ...o }; delete n[id]; return n })
+        setSelectedCat((o) => { const n = { ...o }; delete n[id]; return n })
         await fetchUnclassified()
       } else {
         const err = await res.json().catch(() => ({}))
@@ -223,10 +219,6 @@ export default function UnclassifiedPage() {
     }
   }
 
-  const L1List = categories.filter((c) => c.parent_id == null)
-  const getL2 = (l1Id: string) => categories.filter((c) => c.parent_id === l1Id)
-  const getL3 = (l2Id: string) => categories.filter((c) => c.parent_id === l2Id)
-
   const byDate = items.reduce<Record<string, UnclassifiedItem[]>>((acc, it) => {
     const d = it.receipt_date ?? 'Unknown'
     if (!acc[d]) acc[d] = []
@@ -252,7 +244,8 @@ export default function UnclassifiedPage() {
         <Link href="/dashboard" className="text-sm text-theme-dark/90 hover:underline shrink-0">Back to dashboard</Link>
       </div>
       <p className="text-sm text-theme-dark/90 mb-4">
-        Assign a category (Level I / II / III) and confirm, or click &quot;I don&apos;t know&quot; to skip. Items you mark &quot;I don&apos;t know&quot; will follow backend classification when available.
+        Assign a category from your personal category tree and confirm, or click &quot;I don&apos;t know&quot; to skip.{' '}
+        <Link href="/dashboard/categories" className="text-theme-orange hover:underline">Manage your categories →</Link>
       </p>
 
       {loading && (
@@ -285,17 +278,10 @@ export default function UnclassifiedPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm table-fixed">
                   <colgroup>
-                    {/* Store: narrower fixed width */}
                     <col style={{ width: '120px' }} />
-                    {/* Product: flexible */}
                     <col />
-                    {/* Price */}
                     <col style={{ width: '68px' }} />
-                    {/* Level I / II / III: equal width */}
-                    <col style={{ width: '100px' }} />
-                    <col style={{ width: '100px' }} />
-                    <col style={{ width: '100px' }} />
-                    {/* Actions */}
+                    <col style={{ width: '200px' }} />
                     <col style={{ width: '148px' }} />
                   </colgroup>
                   <thead>
@@ -303,9 +289,7 @@ export default function UnclassifiedPage() {
                       <th className="py-2 pr-2">Store</th>
                       <th className="py-2 pr-3">Product</th>
                       <th className="py-2 pr-2 text-right">Price</th>
-                      <th className="py-2 pr-2">Level I</th>
-                      <th className="py-2 pr-2">Level II</th>
-                      <th className="py-2 pr-2">Level III</th>
+                      <th className="py-2 pr-2">Category</th>
                       <th className="py-2" />
                     </tr>
                   </thead>
@@ -313,11 +297,6 @@ export default function UnclassifiedPage() {
                     {byDate[date].map((it) => {
                       const id = it.record_item_id
                       const isIdk = it.user_marked_idk === true
-                      const l1Id = editL1[id] ?? ''
-                      const l2Id = editL2[id] ?? ''
-                      const l3Id = editL3[id] ?? ''
-                      const L2List = getL2(l1Id)
-                      const L3List = getL3(l2Id)
                       const saving = savingId === id
                       return (
                         <tr key={id} className="border-b border-theme-light-gray/50 hover:bg-theme-cream/30">
@@ -327,50 +306,13 @@ export default function UnclassifiedPage() {
                           <td className="py-2 pr-3 text-theme-dark align-top">{it.product_name || '—'}</td>
                           <td className="py-2 pr-2 text-right tabular-nums align-top">{formatDollars(it.line_total_cents)}</td>
                           <td className="py-2 pr-2 align-top">
-                            <select
-                              className="border rounded px-1 py-0.5 text-xs w-full"
-                              value={l1Id}
-                              onChange={(e) => {
-                                setEditL1((o) => ({ ...o, [id]: e.target.value }))
-                                setEditL2((o) => ({ ...o, [id]: '' }))
-                                setEditL3((o) => ({ ...o, [id]: '' }))
-                              }}
-                              disabled={isIdk}
-                            >
-                              <option value="">—</option>
-                              {L1List.map((c) => (
-                                <option key={c.id} value={c.id}>{c.name}</option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="py-2 pr-2 align-top">
-                            <select
-                              className="border rounded px-1 py-0.5 text-xs w-full"
-                              value={l2Id}
-                              onChange={(e) => {
-                                setEditL2((o) => ({ ...o, [id]: e.target.value }))
-                                setEditL3((o) => ({ ...o, [id]: '' }))
-                              }}
-                              disabled={isIdk}
-                            >
-                              <option value="">—</option>
-                              {L2List.map((c) => (
-                                <option key={c.id} value={c.id}>{c.name}</option>
-                              ))}
-                            </select>
-                          </td>
-                          <td className="py-2 pr-2 align-top">
-                            <select
-                              className="border rounded px-1 py-0.5 text-xs w-full"
-                              value={l3Id}
-                              onChange={(e) => setEditL3((o) => ({ ...o, [id]: e.target.value }))}
-                              disabled={isIdk}
-                            >
-                              <option value="">—</option>
-                              {L3List.map((c) => (
-                                <option key={c.id} value={c.id}>{c.name}</option>
-                              ))}
-                            </select>
+                            <CategoryTreeSelector
+                              categories={categories}
+                              value={selectedCat[id] ?? null}
+                              onChange={(val) => setSelectedCat((o) => ({ ...o, [id]: val }))}
+                              disabled={isIdk || saving}
+                              placeholder="Select category…"
+                            />
                           </td>
                           <td className="py-2 align-top">
                             {isIdk ? (
@@ -380,7 +322,7 @@ export default function UnclassifiedPage() {
                                 <div className="flex items-center gap-1">
                                   <button
                                     type="button"
-                                    disabled={saving || (!editL3[id] && !editL2[id] && !editL1[id])}
+                                    disabled={saving || !selectedCat[id]}
                                     onClick={() => confirmCategory(it)}
                                     className="text-xs px-2 py-1 rounded bg-green-100 text-green-800 hover:bg-green-200 disabled:opacity-50"
                                   >

@@ -158,6 +158,13 @@ export default function DashboardLayout({
         </span>
       )}
       <Link
+        href="/dashboard/categories"
+        onClick={() => setNavOpen(false)}
+        className={`${navItemClass} min-h-[44px] sm:min-h-0`}
+      >
+        Categories
+      </Link>
+      <Link
         href="/home"
         onClick={() => setNavOpen(false)}
         className={`${navItemClass} min-h-[44px] sm:min-h-0`}

@@ -129,6 +129,12 @@ export default function AdminLayout({
             >
               Failed Receipts
             </Link>
+            <Link
+              href="/admin/prompts"
+              className={`${navItemClass} ${pathname?.includes('prompts') ? 'text-theme-dark underline' : ''}`}
+            >
+              Prompt Management
+            </Link>
             <Link href="/dashboard" className={navItemClass}>Dashboard</Link>
           </nav>
         </div>

@@ -657,8 +657,113 @@ async def post_item_dismiss(
 
 @app.get("/api/me/idk-now-classified", tags=["Receipts - Other"])
 async def get_idk_now_classified_route(user_id: str = Depends(get_current_user)):
-    """Returns record_item_ids that user had marked IDK and that now have a category (and clears those IDK flags). Auth required."""
+    """Returns record_item_ids that user had marked IDK and that now have a user_category_id (and clears those IDK flags). Auth required."""
     return {"record_item_ids": get_idk_now_classified(user_id)}
+
+
+# ==================== User Categories Endpoints ====================
+
+@app.get("/api/me/categories", tags=["User Categories"])
+async def get_my_categories(user_id: str = Depends(get_current_user)):
+    """
+    Get the current user's full category tree as a flat list.
+    Frontend builds tree from parent_id. L1 nodes are locked (is_locked=True).
+    If user has no categories yet, seeds defaults from system categories first.
+    Auth required.
+    """
+    from .services.categories.user_categories_service import (
+        get_user_categories,
+        seed_user_default_categories_if_needed,
+    )
+    seed_user_default_categories_if_needed(user_id)
+    return {"data": get_user_categories(user_id)}
+
+
+@app.post("/api/me/categories", tags=["User Categories"])
+async def create_my_category(
+    body: dict = Body(...),
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Create a new user-defined category. Must provide parent_id (L2+ only; cannot create L1).
+    Body: { parent_id: uuid, name: str, sort_order?: int }
+    Returns 409 if same name under same parent. Auth required.
+    """
+    from .services.categories.user_categories_service import create_user_category
+    parent_id = body.get("parent_id")
+    name = body.get("name", "")
+    sort_order = int(body.get("sort_order", 0))
+    if not parent_id:
+        raise HTTPException(status_code=400, detail="parent_id required (users cannot create L1 categories)")
+    try:
+        row = create_user_category(user_id=user_id, name=name, parent_id=parent_id, sort_order=sort_order)
+        return row
+    except ValueError as e:
+        msg = str(e)
+        if msg == "already_exists":
+            raise HTTPException(status_code=409, detail="Category with same name under same parent already exists")
+        if msg == "parent_not_found":
+            raise HTTPException(status_code=404, detail="Parent category not found")
+        if msg == "max_depth_exceeded":
+            raise HTTPException(status_code=400, detail="Maximum category depth (10) exceeded")
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.patch("/api/me/categories/{cat_id}", tags=["User Categories"])
+async def update_my_category(
+    cat_id: str,
+    body: dict = Body(default_factory=dict),
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Update a user category name and/or sort_order. Cannot rename locked (L1) categories.
+    Body: { name?: str, sort_order?: int }
+    Auth required.
+    """
+    from .services.categories.user_categories_service import update_user_category
+    name = body.get("name")
+    sort_order = body.get("sort_order")
+    try:
+        row = update_user_category(
+            user_id=user_id,
+            cat_id=cat_id,
+            name=name,
+            sort_order=int(sort_order) if sort_order is not None else None,
+        )
+        return row
+    except ValueError as e:
+        msg = str(e)
+        if msg == "not_found":
+            raise HTTPException(status_code=404, detail="Category not found")
+        if msg == "locked_category":
+            raise HTTPException(status_code=403, detail="Cannot modify locked L1 category")
+        if msg == "already_exists":
+            raise HTTPException(status_code=409, detail="Category with same name under same parent already exists")
+        raise HTTPException(status_code=400, detail=msg)
+
+
+@app.delete("/api/me/categories/{cat_id}", tags=["User Categories"])
+async def delete_my_category(
+    cat_id: str,
+    child_action: str = "move_to_parent",
+    user_id: str = Depends(get_current_user),
+):
+    """
+    Delete a user category (cannot delete locked L1 categories).
+    Query param child_action: 'move_to_parent' (default) or 'delete_recursive'.
+    Auth required.
+    """
+    from .services.categories.user_categories_service import delete_user_category
+    try:
+        result = delete_user_category(user_id=user_id, cat_id=cat_id, child_action=child_action)
+        return result
+    except ValueError as e:
+        msg = str(e)
+        if msg == "not_found":
+            raise HTTPException(status_code=404, detail="Category not found")
+        if msg == "locked_category":
+            raise HTTPException(status_code=403, detail="Cannot delete locked L1 category")
+        raise HTTPException(status_code=400, detail=msg)
 
 
 @app.post("/api/receipt/goog-ocr", response_model=ReceiptOCRResponse, tags=["Receipts - OCR Model"])
@@ -1276,6 +1381,34 @@ async def review_complete_my_receipt(
     return {"success": True, "receipt_id": receipt_id, "status": "success"}
 
 
+@app.post("/api/receipt/{receipt_id}/escalate", tags=["Receipts - Other"])
+async def escalate_receipt(
+    receipt_id: str,
+    body: dict = Body(...),
+    user_id: str = Depends(get_current_user),
+):
+    """User escalates a receipt with notes; receipt appears in admin Failed Receipts with kind 'User escalation' so admin can see what went wrong."""
+    from .services.database.supabase_client import (
+        _get_client,
+        update_receipt_status,
+        create_receipt_escalation,
+    )
+    supabase = _get_client()
+    rec = supabase.table("receipt_status").select("id, user_id, current_stage").eq("id", receipt_id).limit(1).execute()
+    if not rec.data or rec.data[0]["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Receipt not found or access denied")
+    notes = (body.get("notes") or "").strip()
+    create_receipt_escalation(receipt_id=receipt_id, user_id=user_id, notes=notes)
+    stage = rec.data[0].get("current_stage") or "vision_primary"
+    update_receipt_status(
+        receipt_id=receipt_id,
+        current_status="needs_review",
+        current_stage=stage,
+        admin_failure_kind="user_escalated",
+    )
+    return {"success": True, "receipt_id": receipt_id, "message": "Escalated; admin will review."}
+
+
 @app.delete("/api/receipt/{receipt_id}", tags=["Receipts - Other"])
 async def delete_my_receipt(
     receipt_id: str,
@@ -1290,9 +1423,17 @@ async def delete_my_receipt(
 
 @app.get("/api/categories", tags=["Receipts - Other"])
 async def get_categories_for_user(user_id: str = Depends(get_current_user)):
-    """Get categories tree for dropdowns (id, parent_id, name, path, level). Auth required."""
-    from .services.admin.categories_admin_service import get_categories_tree
-    return {"data": get_categories_tree(active_only=True)}
+    """
+    Get current user's category tree for dropdowns. Returns per-user categories (seeds defaults on first call).
+    Flat list: id, parent_id, name, path, level, is_locked, sort_order.
+    Auth required.
+    """
+    from .services.categories.user_categories_service import (
+        get_user_categories,
+        seed_user_default_categories_if_needed,
+    )
+    seed_user_default_categories_if_needed(user_id)
+    return {"data": get_user_categories(user_id)}
 
 
 def _is_valid_uuid(s: str) -> bool:
@@ -1310,7 +1451,10 @@ async def update_item_category(
     body: dict = Body(...),
     user_id: str = Depends(get_current_user),
 ):
-    """Update one record_item's category_id. Body: { \"category_id\": \"uuid\" or null }. Must be receipt owner."""
+    """
+    Update one record_item's user_category_id (user-facing category).
+    Body: { \"user_category_id\": \"uuid\" or null }. Must be receipt owner. Auth required.
+    """
     if not _is_valid_uuid(receipt_id):
         raise HTTPException(status_code=400, detail="Invalid receipt_id")
     if not _is_valid_uuid(item_id):
@@ -1318,12 +1462,14 @@ async def update_item_category(
             status_code=400,
             detail="Invalid item_id. The item may not be saved yet (e.g. from run preview); complete review first.",
         )
-    category_id = body.get("category_id")
-    if category_id is not None and not isinstance(category_id, str):
-        category_id = str(category_id) if category_id else None
-    ok = update_record_item_category(receipt_id=receipt_id, item_id=item_id, user_id=user_id, category_id=category_id)
+    user_category_id = body.get("user_category_id")
+    if user_category_id is not None and not isinstance(user_category_id, str):
+        user_category_id = str(user_category_id) if user_category_id else None
+    ok = update_record_item_category(
+        receipt_id=receipt_id, item_id=item_id, user_id=user_id, user_category_id=user_category_id
+    )
     if not ok:
-        raise HTTPException(status_code=404, detail="Item or receipt not found or access denied")
+        raise HTTPException(status_code=404, detail="Item, receipt, or user_category not found or access denied")
     return {"success": True}
 
 
@@ -2120,6 +2266,19 @@ async def admin_hard_delete_category(
         raise HTTPException(status_code=400, detail=msg)
 
 
+@app.get("/api/admin/users/{target_user_id}/categories", tags=["Admin - Categories"])
+async def admin_get_user_categories(
+    target_user_id: str,
+    user_id: str = Depends(require_admin),
+):
+    """
+    Admin: get the full category tree for any user.
+    Useful for debugging and analytics. Admin only.
+    """
+    from .services.categories.user_categories_service import admin_get_user_categories
+    return {"data": admin_get_user_categories(target_user_id)}
+
+
 # ==================== RAG Management Endpoints ====================
 
 @app.post("/api/receipt/initial-parse", tags=["Receipts - Other"])
@@ -2558,3 +2717,288 @@ async def get_blog_post(slug: str):
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
     return post
+
+
+# ==================== Admin - Prompts ====================
+# Level 7 admin: store-related only (create with chain binding; edit only non-system prompts).
+# Level 9 super_admin: can create default-scope prompts and edit system first-round prompts.
+PROTECTED_PROMPT_KEYS = frozenset({"vision_primary", "vision_escalation", "classification"})
+
+
+class PromptLibraryItem(BaseModel):
+    id: str
+    key: str
+    category: str
+    content_role: str
+    content: str
+    version: int
+    is_active: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    bindings: List[dict] = []
+    binding_count: int = 0
+
+
+class PromptBindingItem(BaseModel):
+    id: str
+    prompt_key: str
+    library_id: str
+    scope: str
+    chain_id: Optional[str] = None
+    location_id: Optional[str] = None
+    priority: int
+    is_active: bool
+    chain_name: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@app.get("/api/admin/prompts", tags=["Admin - Prompts"])
+async def admin_list_prompts(
+    category: Optional[str] = None,
+    user_id: str = Depends(require_admin),
+):
+    """
+    List all prompt_library entries with binding count and chain names.
+    Optional query: category=receipt|classification|system|analysis to filter.
+    Returns current_user_class (7 or 9) so frontend can restrict edit/create by role.
+    """
+    from .services.database.supabase_client import _get_client, get_user_class
+    supabase = _get_client()
+    current_user_class = int(get_user_class(user_id) or 0)
+    q = supabase.table("prompt_library").select("*").order("key")
+    if category and category.strip():
+        q = q.eq("category", category.strip())
+    lib_res = q.execute()
+    library_rows = list(lib_res.data or [])
+    if not library_rows:
+        return {"data": []}
+    lib_ids = [r["id"] for r in library_rows]
+    bind_res = (
+        supabase.table("prompt_binding")
+        .select("id, prompt_key, library_id, scope, chain_id, location_id, priority, is_active, created_at, updated_at")
+        .in_("library_id", lib_ids)
+        .execute()
+    )
+    bindings = list(bind_res.data or [])
+    chain_ids = list({b["chain_id"] for b in bindings if b.get("chain_id")})
+    chain_names = {}
+    if chain_ids:
+        chain_res = supabase.table("store_chains").select("id, name").in_("id", chain_ids).execute()
+        for c in chain_res.data or []:
+            chain_names[c["id"]] = c.get("name")
+    for b in bindings:
+        b["chain_name"] = chain_names.get(b["chain_id"]) if b.get("chain_id") else None
+    bindings_by_lib: dict = {}
+    for b in bindings:
+        lid = b["library_id"]
+        if lid not in bindings_by_lib:
+            bindings_by_lib[lid] = []
+        bindings_by_lib[lid].append(b)
+    out = []
+    for r in library_rows:
+        bid = r["id"]
+        blist = bindings_by_lib.get(bid, [])
+        out.append({
+            "id": bid,
+            "key": r.get("key", ""),
+            "category": r.get("category", ""),
+            "content_role": r.get("content_role", ""),
+            "content": r.get("content", ""),
+            "version": r.get("version") or 1,
+            "is_active": r.get("is_active", True),
+            "created_at": r.get("created_at"),
+            "updated_at": r.get("updated_at"),
+            "bindings": blist,
+            "binding_count": len(blist),
+        })
+    return {"data": out, "current_user_class": current_user_class}
+
+
+@app.post("/api/admin/prompts", tags=["Admin - Prompts"])
+async def admin_create_prompt(
+    body: dict = Body(default_factory=dict),
+    user_id: str = Depends(require_admin),
+):
+    """
+    Create a new prompt_library entry. Body: key, category, content_role, content,
+    is_active (optional, default true), and optionally bind_to_chain_id, bind_scope, bind_priority
+    to create an initial binding.
+    Level 7: must bind to a chain (store-specific). Level 9: may create default-scope prompts.
+    """
+    from .services.database.supabase_client import _get_client, get_user_class, USER_CLASS_SUPER_ADMIN
+    supabase = _get_client()
+    current_user_class = int(get_user_class(user_id) or 0)
+    bind_to_chain_id = body.get("bind_to_chain_id")
+    bind_scope = (body.get("bind_scope") or "default").strip()
+    if current_user_class < USER_CLASS_SUPER_ADMIN:
+        if not bind_to_chain_id or bind_scope != "chain":
+            raise HTTPException(
+                status_code=403,
+                detail="Only Super Admin can create default-scope prompts. Admin must bind to a chain (store-specific).",
+            )
+    key = (body.get("key") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="key is required")
+    category = (body.get("category") or "receipt").strip()
+    content_role = (body.get("content_role") or "system").strip()
+    if content_role not in ("system", "user_template", "schema"):
+        raise HTTPException(status_code=400, detail="content_role must be system, user_template, or schema")
+    content = body.get("content") or ""
+    is_active = body.get("is_active", True)
+    existing = supabase.table("prompt_library").select("id").eq("key", key).execute()
+    if existing.data and len(existing.data) > 0:
+        raise HTTPException(status_code=400, detail=f"Prompt library key already exists: {key}")
+    ins = supabase.table("prompt_library").insert({
+        "key": key,
+        "category": category,
+        "content_role": content_role,
+        "content": content,
+        "is_active": is_active,
+    }).execute()
+    if not ins.data or len(ins.data) == 0:
+        raise HTTPException(status_code=500, detail="Failed to create prompt_library row")
+    row = ins.data[0]
+    lib_id = row["id"]
+    bind_to_chain_id = body.get("bind_to_chain_id")
+    bind_scope = (body.get("bind_scope") or "default").strip()
+    bind_priority = body.get("bind_priority", 50 if bind_scope == "chain" else 10)
+    if bind_to_chain_id and bind_scope == "chain":
+        supabase.table("prompt_binding").insert({
+            "prompt_key": key,
+            "library_id": lib_id,
+            "scope": "chain",
+            "chain_id": bind_to_chain_id,
+            "priority": bind_priority,
+            "is_active": True,
+        }).execute()
+    elif bind_scope == "default":
+        supabase.table("prompt_binding").insert({
+            "prompt_key": key,
+            "library_id": lib_id,
+            "scope": "default",
+            "priority": bind_priority,
+            "is_active": True,
+        }).execute()
+    return {"id": lib_id, "key": key, "message": "Created"}
+
+
+@app.patch("/api/admin/prompts/{prompt_id}", tags=["Admin - Prompts"])
+async def admin_update_prompt(
+    prompt_id: str,
+    body: dict = Body(default_factory=dict),
+    user_id: str = Depends(require_admin),
+):
+    """Update a prompt_library entry. Body: content (optional), is_active (optional). Only Super Admin can edit protected keys (vision_primary, vision_escalation, classification)."""
+    from .services.database.supabase_client import _get_client, get_user_class, USER_CLASS_SUPER_ADMIN
+    supabase = _get_client()
+    current_user_class = int(get_user_class(user_id) or 0)
+    lib = supabase.table("prompt_library").select("id, key").eq("id", prompt_id).limit(1).execute()
+    if not lib.data or len(lib.data) == 0:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    prompt_key = lib.data[0].get("key") or ""
+    if prompt_key in PROTECTED_PROMPT_KEYS and current_user_class < USER_CLASS_SUPER_ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail="Only Super Admin can edit system first-round prompts (vision_primary, vision_escalation, classification).",
+        )
+    updates = {}
+    if "content" in body:
+        updates["content"] = body["content"]
+    if "is_active" in body:
+        updates["is_active"] = bool(body["is_active"])
+    if not updates:
+        raise HTTPException(status_code=400, detail="Provide at least one of content, is_active")
+    res = supabase.table("prompt_library").update(updates).eq("id", prompt_id).execute()
+    if not res.data or len(res.data) == 0:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    return {"id": prompt_id, "message": "Updated"}
+
+
+class AddBindingBody(BaseModel):
+    prompt_key: str
+    scope: str  # default | chain | location
+    chain_id: Optional[str] = None
+    location_id: Optional[str] = None
+    priority: int = 50
+
+
+@app.post("/api/admin/prompts/{prompt_id}/bindings", tags=["Admin - Prompts"])
+async def admin_add_prompt_binding(
+    prompt_id: str,
+    body: AddBindingBody,
+    user_id: str = Depends(require_admin),
+):
+    """Add a binding for a prompt_library entry (e.g. bind to a chain). Level 7 can only add chain/location; Level 9 can add default."""
+    from .services.database.supabase_client import _get_client, get_user_class, USER_CLASS_SUPER_ADMIN
+    supabase = _get_client()
+    current_user_class = int(get_user_class(user_id) or 0)
+    lib = supabase.table("prompt_library").select("id, key").eq("id", prompt_id).limit(1).execute()
+    if not lib.data or len(lib.data) == 0:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    key = lib.data[0]["key"]
+    scope = (body.scope or "default").strip()
+    if scope not in ("default", "chain", "location"):
+        raise HTTPException(status_code=400, detail="scope must be default, chain, or location")
+    if scope == "default" and current_user_class < USER_CLASS_SUPER_ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail="Only Super Admin can add default-scope bindings. Admin may add chain or location bindings only.",
+        )
+    if scope == "default":
+        ins = supabase.table("prompt_binding").insert({
+            "prompt_key": key,
+            "library_id": prompt_id,
+            "scope": "default",
+            "priority": body.priority,
+            "is_active": True,
+        }).execute()
+    elif scope == "chain":
+        if not body.chain_id:
+            raise HTTPException(status_code=400, detail="chain_id required for scope=chain")
+        ins = supabase.table("prompt_binding").insert({
+            "prompt_key": key,
+            "library_id": prompt_id,
+            "scope": "chain",
+            "chain_id": body.chain_id,
+            "priority": body.priority,
+            "is_active": True,
+        }).execute()
+    else:
+        if not body.location_id:
+            raise HTTPException(status_code=400, detail="location_id required for scope=location")
+        ins = supabase.table("prompt_binding").insert({
+            "prompt_key": key,
+            "library_id": prompt_id,
+            "scope": "location",
+            "location_id": body.location_id,
+            "priority": body.priority,
+            "is_active": True,
+        }).execute()
+    if not ins.data or len(ins.data) == 0:
+        raise HTTPException(status_code=500, detail="Failed to create binding")
+    return {"id": ins.data[0]["id"], "message": "Binding added"}
+
+
+@app.delete("/api/admin/prompts/bindings/{binding_id}", tags=["Admin - Prompts"])
+async def admin_remove_prompt_binding(
+    binding_id: str,
+    user_id: str = Depends(require_admin),
+):
+    """Soft-deactivate a prompt_binding (set is_active=false)."""
+    from .services.database.supabase_client import _get_client
+    supabase = _get_client()
+    res = supabase.table("prompt_binding").update({"is_active": False}).eq("id", binding_id).execute()
+    if not res.data or len(res.data) == 0:
+        raise HTTPException(status_code=404, detail="Binding not found")
+    return {"id": binding_id, "message": "Binding deactivated"}
+
+
+@app.post("/api/admin/prompts/cache/clear", tags=["Admin - Prompts"])
+async def admin_clear_prompt_cache(
+    user_id: str = Depends(require_admin),
+):
+    """Clear in-memory prompt cache so next request uses fresh DB content."""
+    from .prompts.prompt_manager import clear_cache
+    clear_cache()
+    return {"message": "Cache cleared"}
