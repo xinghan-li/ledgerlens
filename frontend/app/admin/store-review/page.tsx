@@ -128,15 +128,27 @@ export default function StoreReviewPage() {
   const getCurrentLocationName = (r: Row) => (editedLocationName[r.id] ?? r.raw_name ?? '').trim() || 'Store'
 
   const getMetaAddress = (r: Row) => (r.metadata as { address?: Record<string, string> })?.address ?? {}
-  const getCardAddr = (r: Row) => ({
-    address_line1: cardAddressLine1[r.id] ?? getMetaAddress(r).address1 ?? '',
-    address_line2: cardAddressLine2[r.id] ?? getMetaAddress(r).address2 ?? '',
-    city: cardCity[r.id] ?? getMetaAddress(r).city ?? '',
-    state: cardState[r.id] ?? getMetaAddress(r).state ?? '',
-    zip_code: cardZipCode[r.id] ?? getMetaAddress(r).zipcode ?? '',
-    country_code: cardCountryCode[r.id] ?? getMetaAddress(r).country ?? '',
-    phone: cardPhone[r.id] ?? (getMetaAddress(r) as { phone?: string }).phone ?? '',
-  })
+  const getCardAddr = (r: Row) => {
+    const meta = getMetaAddress(r)
+    return {
+      address_line1: cardAddressLine1[r.id] ?? meta.address_line1 ?? meta.address1 ?? '',
+      address_line2: cardAddressLine2[r.id] ?? meta.address_line2 ?? meta.address2 ?? '',
+      city: cardCity[r.id] ?? meta.city ?? '',
+      state: cardState[r.id] ?? meta.state ?? '',
+      zip_code: cardZipCode[r.id] ?? meta.zip_code ?? meta.zipcode ?? '',
+      country_code: cardCountryCode[r.id] ?? meta.country ?? '',
+      phone: cardPhone[r.id] ?? (meta as { phone?: string }).phone ?? '',
+    }
+  }
+  const formatAddressLine = (r: Row) => {
+    const a = getCardAddr(r)
+    const addressPart = a.address_line2 && a.address_line1
+      ? `${a.address_line2} - ${a.address_line1}`
+      : a.address_line2 || a.address_line1
+    const stateZipPart = a.state && a.zip_code ? `${a.state} ${a.zip_code}` : a.state || a.zip_code
+    const parts = [addressPart, a.city, stateZipPart, a.country_code].filter(Boolean)
+    return parts.length ? parts.join(', ') : (getMetaAddress(r).full_address as string) ?? '—'
+  }
 
   const handleApprove = async (id: string) => {
     if (!token) return
@@ -451,6 +463,9 @@ export default function StoreReviewPage() {
                             </div>
                             <div className="space-y-2">
                               <p className="text-xs font-medium text-theme-mid">store_locations</p>
+                              <p className="text-xs text-theme-dark/80">
+                                Address preview: <span className="font-mono text-theme-dark">{formatAddressLine(r)}</span>
+                              </p>
                               <div>
                                 <label className="block text-xs text-theme-mid">Store name (name)</label>
                                 <input

@@ -53,14 +53,36 @@ def list_store_candidates(
             chains[c["id"]] = c.get("name")
     for r in rows:
         r["suggested_chain_name"] = chains.get(r["suggested_chain_id"]) if r.get("suggested_chain_id") else None
-        # Flatten address from metadata for display
+        # Flatten address from metadata for display: prefer structured (address2 - address1, city, state zip)
         meta = r.get("metadata") or {}
         addr = meta.get("address") or {}
-        r["address_display"] = (
-            addr.get("full_address")
-            or ", ".join(filter(None, [addr.get("address1"), addr.get("city"), addr.get("state"), addr.get("zipcode"), addr.get("country")]))
-            or None
-        )
+        a1 = addr.get("address1") or addr.get("address_line1")
+        a2 = addr.get("address2") or addr.get("address_line2")
+        city = addr.get("city")
+        state = addr.get("state")
+        zipcode = addr.get("zipcode") or addr.get("zip_code")
+        country = addr.get("country")
+        if a1 or a2 or city or state or zipcode:
+            parts = []
+            if a2 and a1:
+                parts.append(f"{a2} - {a1}")
+            elif a2:
+                parts.append(a2)
+            elif a1:
+                parts.append(a1)
+            if city:
+                parts.append(city)
+            if state and zipcode:
+                parts.append(f"{state} {zipcode}")
+            elif state:
+                parts.append(state)
+            elif zipcode:
+                parts.append(zipcode)
+            if country:
+                parts.append(country)
+            r["address_display"] = ", ".join(parts)
+        else:
+            r["address_display"] = addr.get("full_address") or None
 
     return rows, total
 

@@ -78,18 +78,26 @@ def delete_receipt_for_user(receipt_id: str, user_id: str) -> bool:
     return True
 
 
+FAILURE_KIND_LABELS = {
+    "first_round_fail": "First round fail",
+    "user_escalated": "User escalation",
+    "vision_fail": "Vision fail",
+    "escalation_fail": "Escalation fail",
+}
+
+
 def list_failed_receipts(
     limit: int = 50,
     offset: int = 0,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     List receipt_status rows where current_status in ('failed', 'needs_review').
-    Returns (rows with failure_reason from latest receipt_processing_runs, total count).
+    Returns rows with failure_reason, admin_failure_kind, failure_kind_label, escalation_notes (latest), total count.
     """
     supabase = _get_client()
     q = (
         supabase.table("receipt_status")
-        .select("id, user_id, uploaded_at, current_status, current_stage, raw_file_url", count="exact")
+        .select("id, user_id, uploaded_at, current_status, current_stage, raw_file_url, admin_failure_kind", count="exact")
         .in_("current_status", list(FAILED_STATUSES))
         .order("uploaded_at", desc=True)
         .range(offset, offset + limit - 1)
@@ -102,7 +110,7 @@ def list_failed_receipts(
         return rows, total
 
     receipt_ids = [r["id"] for r in rows]
-    # Get latest run per receipt (any status) for failure reason
+    # Latest run per receipt for failure reason
     runs_by_receipt: Dict[str, Dict] = {}
     for rid in receipt_ids:
         run = (
@@ -124,11 +132,35 @@ def list_failed_receipts(
         else:
             runs_by_receipt[rid] = {"failure_reason": "No processing run", "stage": None, "provider": None, "run_created_at": None}
 
+    # Latest escalation notes per receipt (user_escalated) — single query to avoid N+1
+    escalations_by_receipt: Dict[str, str] = {}
+    try:
+        if receipt_ids:
+            esc_res = (
+                supabase.table("receipt_escalations")
+                .select("receipt_id, notes, created_at")
+                .in_("receipt_id", list(receipt_ids))
+                .order("created_at", desc=True)
+                .execute()
+            )
+            if esc_res.data:
+                for row in esc_res.data:
+                    rid = row.get("receipt_id")
+                    if rid is not None and rid not in escalations_by_receipt:
+                        notes = (row.get("notes") or "").strip()
+                        if notes:
+                            escalations_by_receipt[rid] = notes
+    except Exception as e:
+        logger.warning("list_failed_receipts: receipt_escalations not available: %s", e)
+
     for r in rows:
         info = runs_by_receipt.get(r["id"]) or {}
         r["failure_reason"] = info.get("failure_reason") or f"Status: {r.get('current_status')}, Stage: {r.get('current_stage') or 'unknown'}"
         r["run_stage"] = info.get("stage")
         r["run_provider"] = info.get("provider")
+        kind = r.get("admin_failure_kind")
+        r["failure_kind_label"] = FAILURE_KIND_LABELS.get(kind, kind or "—")
+        r["escalation_notes"] = escalations_by_receipt.get(r["id"]) or None
 
     return rows, total
 
@@ -141,7 +173,7 @@ def get_failed_receipt_for_edit(receipt_id: str) -> Optional[Dict[str, Any]]:
     supabase = _get_client()
     receipt = (
         supabase.table("receipt_status")
-        .select("id, user_id, uploaded_at, current_status, current_stage, raw_file_url")
+        .select("id, user_id, uploaded_at, current_status, current_stage, raw_file_url, admin_failure_kind")
         .eq("id", receipt_id)
         .limit(1)
         .execute()
@@ -149,6 +181,25 @@ def get_failed_receipt_for_edit(receipt_id: str) -> Optional[Dict[str, Any]]:
     if not receipt.data:
         return None
     out = receipt.data[0]
+    kind = out.get("admin_failure_kind")
+    out["failure_kind_label"] = FAILURE_KIND_LABELS.get(kind, kind or "—")
+    try:
+        esc_list = (
+            supabase.table("receipt_escalations")
+            .select("notes, created_at")
+            .eq("receipt_id", receipt_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        if esc_list.data:
+            out["escalation_notes"] = (esc_list.data[0].get("notes") or "").strip() or None
+            out["escalation_history"] = [{"notes": (e.get("notes") or "").strip(), "created_at": e.get("created_at")} for e in esc_list.data]
+        else:
+            out["escalation_notes"] = None
+            out["escalation_history"] = []
+    except Exception:
+        out["escalation_notes"] = None
+        out["escalation_history"] = []
 
     # Failure reason from latest run
     run = (
@@ -241,6 +292,16 @@ def get_failed_receipt_for_edit(receipt_id: str) -> Optional[Dict[str, Any]]:
                 "original_price": _safe_float(it.get("original_price")),
                 "discount_amount": _safe_float(it.get("discount_amount")),
             })
+    # Expose latest run output and reasoning for admin (image + reasoning + JSON)
+    payload = out.get("_output_payload") or {}
+    out["run_output_payload"] = payload
+    meta = payload.get("_metadata") or {}
+    out["run_reasoning"] = meta.get("reasoning")
+    out["run_reasoning_extra"] = {
+        "validation_status": meta.get("validation_status"),
+        "sum_check_notes": meta.get("sum_check_notes"),
+        "sum_check_passed": meta.get("sum_check_passed"),
+    }
     out.pop("_output_payload", None)
     return out
 
