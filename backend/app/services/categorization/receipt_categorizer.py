@@ -890,8 +890,10 @@ async def _enrich_user_subcategory_from_llm(
             pid = current.get("parent_id")
             if not pid:
                 break
-            current = cat_by_id.get(str(pid)) or current
-            break  # one hop is enough since RPC resolves to L1
+            parent_node = cat_by_id.get(str(pid))
+            if not parent_node:
+                break
+            current = parent_node
         if current.get("level") != 1:
             continue
         items_for_llm.append({
