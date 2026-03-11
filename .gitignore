@@ -38,9 +38,10 @@ wheels/
 .installed.cfg
 *.egg
 
-# IDE
+# IDE / Editor
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
