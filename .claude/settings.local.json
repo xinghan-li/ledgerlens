@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /f/LedgerLens/frontend/lib -type f -name *.ts -o -name *.tsx)",
+      "Bash(xargs wc:*)",
+      "Bash(npx tsc:*)",
+      "Bash(xargs grep:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}

@@ -413,7 +413,7 @@ def get_category_id_for_product(
     for name_to_try in (normalized_underscore, normalized):
         cid = _match_exact_from_db(supabase, name_to_try, None)
         if cid:
-            return cid, "rule_exact", False
+            return cid, "rule_fuzzy", False
     # Fuzzy (same-store or universal): only L1
     cid = _match_fuzzy_same_store(supabase, normalized, store_chain_id)
     if cid:
@@ -783,8 +783,7 @@ async def smart_categorize_receipt_items(
         if not cid:
             continue
         source = (it.get("_category_source") or "").strip()
-        from_store_specific = it.get("_from_store_specific") is True
-        if source in ("rule_fuzzy", "llm") or (source == "rule_exact" and not from_store_specific):
+        if source in ("rule_fuzzy", "llm"):
             l1_id = _resolve_to_l1_category_id(supabase, cid, l1_cache)
             if l1_id:
                 it["category_id"] = l1_id
@@ -808,15 +807,120 @@ async def smart_categorize_receipt_items(
         except Exception as e:
             logger.warning(f"Failed to update record_item {it.get('id')}: {e}")
 
-    # Resolve system category_id → user_category_id for updated items
+    # Resolve system category_id → user_category_id for updated items.
+    # For re-run mode (item_ids provided), first clear stale user_category_id so the RPC
+    # will re-resolve them (RPC skips rows where user_category_id IS NOT NULL).
     if updated_item_ids:
+        if item_ids:
+            try:
+                supabase.table("record_items").update({"user_category_id": None, "user_category_source": None}).eq("receipt_id", receipt_id).in_("id", updated_item_ids).execute()
+            except Exception as _e:
+                logger.warning(f"Failed to clear user_category_id for re-run items in {receipt_id}: {_e}")
         try:
             supabase.rpc("resolve_user_categories_for_receipt", {"p_receipt_id": receipt_id}).execute()
         except Exception as _e:
             logger.warning(f"resolve_user_categories_for_receipt failed for {receipt_id}: {_e}")
 
+    # AI subcategory suggestion: attempt to assign deeper user subcategories (L2/L3)
+    # for items that now have a user_category_id (L1 node).
+    try:
+        await _enrich_user_subcategory_from_llm(
+            receipt_id=receipt_id,
+            user_id=user_id,
+            target_item_ids=updated_item_ids,
+            supabase=supabase,
+        )
+    except Exception as _e:
+        logger.warning(f"_enrich_user_subcategory_from_llm failed for {receipt_id}: {_e}")
+
     logger.info(f"Smart categorize receipt {receipt_id}: updated {updated} items")
     return {"success": True, "updated_count": updated, "message": f"Updated {updated} item(s)"}
+
+
+async def _enrich_user_subcategory_from_llm(
+    receipt_id: str,
+    user_id: str,
+    target_item_ids: List[str],
+    supabase,
+) -> None:
+    """
+    After system L1 → user L1 resolution, attempt to assign a deeper user subcategory
+    (L2/L3) via LLM for items in target_item_ids.
+
+    Fetches each item's current user_category_id (L1), loads the user's category tree,
+    asks the LLM to suggest subcategories conservatively, then writes back
+    user_category_id + user_category_source = 'ai_subcategory' for high-confidence hits.
+    """
+    if not target_item_ids:
+        return
+
+    # Fetch current state of target items (need user_category_id set by RPC)
+    rows_res = (
+        supabase.table("record_items")
+        .select("id, product_name, user_category_id")
+        .eq("receipt_id", receipt_id)
+        .in_("id", target_item_ids)
+        .execute()
+    )
+    rows = rows_res.data or []
+    # Only items that got a user_category_id assigned
+    rows = [r for r in rows if r.get("user_category_id")]
+    if not rows:
+        return
+
+    # Load user's full category tree
+    from ..categories.user_categories_service import get_user_categories
+    user_cats = get_user_categories(user_id)
+    if not user_cats:
+        return
+
+    # Build lookup: user_category_id → category node
+    cat_by_id: Dict[str, Dict[str, Any]] = {str(c["id"]): c for c in user_cats}
+
+    # For each item, find the L1 ancestor of its current user_category_id
+    items_for_llm: List[Dict[str, Any]] = []
+    for row in rows:
+        uc_id = str(row["user_category_id"])
+        uc_node = cat_by_id.get(uc_id)
+        if not uc_node:
+            continue
+        # Walk up to L1
+        current = uc_node
+        while current.get("level", 1) > 1:
+            pid = current.get("parent_id")
+            if not pid:
+                break
+            parent_node = cat_by_id.get(str(pid))
+            if not parent_node:
+                break
+            current = parent_node
+        if current.get("level") != 1:
+            continue
+        items_for_llm.append({
+            "item_id": str(row["id"]),
+            "product_name": row.get("product_name") or "",
+            "l1_user_category_id": str(current["id"]),
+            "l1_name": current["name"],
+        })
+
+    if not items_for_llm:
+        return
+
+    from .subcategory_llm import suggest_user_subcategories
+    suggestions = await suggest_user_subcategories(items_for_llm, user_cats)
+
+    for sug in suggestions:
+        item_id = sug.get("item_id")
+        sub_id = sug.get("subcategory_id")
+        if not item_id or not sub_id:
+            continue
+        try:
+            supabase.table("record_items").update({
+                "user_category_id": sub_id,
+                "user_category_source": "ai_subcategory",
+            }).eq("id", item_id).eq("receipt_id", receipt_id).execute()
+        except Exception as e:
+            logger.warning(f"Failed to write subcategory for item {item_id}: {e}")
 
 
 def can_categorize_receipt(receipt_id: str) -> Tuple[bool, str]:
@@ -1115,8 +1219,7 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
         if not cid:
             continue
         source = (it.get("_category_source") or "").strip()
-        from_store_specific = it.get("_from_store_specific") is True
-        if source in ("rule_fuzzy", "llm") or (source == "rule_exact" and not from_store_specific):
+        if source in ("rule_fuzzy", "llm"):
             l1_id = _resolve_to_l1_category_id(supabase, cid, l1_cache)
             if l1_id:
                 it["category_id"] = l1_id

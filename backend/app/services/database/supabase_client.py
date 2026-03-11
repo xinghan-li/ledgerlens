@@ -338,16 +338,14 @@ def _normalize_state_code(country_code: str, state_raw: Optional[str]) -> Option
 def get_location_stats() -> List[Dict[str, Any]]:
     """
     Return receipt counts and distinct store counts per US state and Canadian province.
-    Same source as store stats: (1) receipts with store_location_id use store_locations state/country;
-    (2) receipts without store_location_id but with store_address get state/country parsed from address
-    so the map total matches the store section.
+    Only receipts with store_location_id are counted — these are verified/approved locations,
+    ensuring the map only shows standardized, accurate data.
     Returns: list of { country_code, state_code, state_display_name, receipt_count, store_count }.
     """
     supabase = _get_client()
     receipt_agg: Dict[Tuple[str, str], int] = {}
     store_agg: Dict[Tuple[str, str], set] = {}
 
-    # (1) Receipts with store_location_id — use store_locations state/country
     try:
         res = (
             supabase.table("record_summaries")
@@ -374,26 +372,7 @@ def get_location_stats() -> List[Dict[str, Any]]:
                     store_agg[key] = set()
                 store_agg[key].add(str(loc_id))
     except Exception as e:
-        logger.warning(f"Failed to get location stats (linked): {e}")
-
-    # (2) Receipts without store_location_id but with store_address — parse address for state/country
-    try:
-        unlinked = (
-            supabase.table("record_summaries")
-            .select("id, store_address")
-            .is_("store_location_id", "null")
-            .execute()
-        )
-        for row in unlinked.data or []:
-            addr = row.get("store_address")
-            parsed = _parse_state_country_from_address(addr)
-            if not parsed:
-                continue
-            country, code = parsed
-            key = (country, code)
-            receipt_agg[key] = receipt_agg.get(key, 0) + 1
-    except Exception as e:
-        logger.warning(f"Failed to get location stats (unlinked by address): {e}")
+        logger.warning(f"Failed to get location stats: {e}")
 
     out = []
     for (c, s) in sorted(set(receipt_agg.keys()) | set(store_agg.keys())):
@@ -926,13 +905,18 @@ def _receipt_address_disagrees_with_canonical(merchant_address: Optional[str], l
 
 
 def _assemble_address_parts(first_line: str, city: str, state: str, zip_code: str, country: str) -> str:
-    """Join resolved address components into a newline-separated string."""
-    parts = [first_line] if first_line else []
-    if city or state or zip_code:
-        parts.append(f"{city}, {state} {zip_code}".strip(", "))
-    if country:
-        parts.append(country)
-    return "\n".join(p for p in parts if p)
+    """Assemble address parts into a single-line string: address, city, state zip country"""
+    parts = []
+    if (first_line or "").strip():
+        parts.append(first_line.strip())
+    if (city or "").strip():
+        parts.append(city.strip())
+    state_zip_country = " ".join(p for p in [
+        (state or "").strip(), (zip_code or "").strip(), (country or "").strip()
+    ] if p)
+    if state_zip_country:
+        parts.append(state_zip_country)
+    return ", ".join(parts)
 
 
 def _store_address_from_location_row(row: Dict[str, Any]) -> str:
