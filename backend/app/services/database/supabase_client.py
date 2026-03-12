@@ -370,7 +370,7 @@ def get_location_stats() -> List[Dict[str, Any]]:
             key = (country, code)
             receipt_agg[key] = receipt_agg.get(key, 0) + 1
     except Exception as e:
-        logger.warning(f"Failed to get receipt location stats: {e}")
+        logger.warning(f"Failed to get receipt location stats: {e}", exc_info=True)
 
     # 2. Store counts — all confirmed store_locations directly, regardless of receipt linkage
     try:
@@ -395,7 +395,7 @@ def get_location_stats() -> List[Dict[str, Any]]:
                     store_agg[key] = set()
                 store_agg[key].add(str(loc_id))
     except Exception as e:
-        logger.warning(f"Failed to get store location stats: {e}")
+        logger.warning(f"Failed to get store location stats: {e}", exc_info=True)
 
     out = []
     for (c, s) in sorted(set(receipt_agg.keys()) | set(store_agg.keys())):
