@@ -114,7 +114,12 @@ REFERENCE DATE (today): {reference_date}. Any receipt date on or before this dat
 
 1. Extract receipt-level fields (merchant, date, time, amounts, payment method)
    - **Date format**: Must be YYYY-MM-DD (e.g., "2026-01-25"). Use the date EXACTLY as printed on the receipt; do NOT substitute or correct the year (e.g. if the receipt shows 2026, output 2026; never change it to the current year).
-   - **Canadian date ambiguity**: Some Canadian stores print dates as YY/MM/DD (e.g. "26/03/07" = 2026-03-07) rather than MM/DD/YY. If the store is in Canada and BOTH YY/MM/DD and MM/DD/YY produce seemingly valid dates, choose the interpretation whose result is closest to the REFERENCE DATE.
+   - **Canadian date ambiguity**: Canadian stores often print dates as YY/MM/DD (e.g. "26/03/07" = 2026-03-07, "26/02/22" = 2026-02-22). For a 3-segment date A/B/C on a Canadian receipt, try all three interpretations and keep only the ones that produce a calendar-valid date:
+     1. YY/MM/DD → year=20A, month=B, day=C
+     2. DD/MM/YY → day=A, month=B, year=20C
+     3. MM/DD/YY → month=A, day=B, year=20C
+     Among valid interpretations, choose the one whose result is **closest to the REFERENCE DATE** (usually the most recent past date).
+     **NEVER apply a "past-year override"**: if the closest-to-reference interpretation gives a year like 2022, that IS the correct year — output it as-is. Do NOT silently swap the year to match the current year.
    - **Time format**: Must be HH:MM:SS or HH:MM (e.g., "13:00:00" or "13:00")
    - Do NOT include newlines or extra text in date/time fields
    - **Payment**: Use full card brand name for payment_method (e.g. "Discover" not "DCVR", "Visa" not "VISA"). card_last4 = last 4 digits only (e.g. "3713" from "DCVR ************3713").
@@ -333,6 +338,7 @@ def format_prompt(
             costco_usa_totals_instructions = (
                 "   - **Use the FIRST occurrence** of SUBTOTAL and TOTAL only. If the receipt shows a first SUBTOTAL/TAX/TOTAL block and later a line like \"CC Rewards $X.XX\" and then a second subtotal, record receipt.subtotal and receipt.total from the **first** block (e.g. SUBTOTAL $198.59, TOTAL $198.59), NOT the second (e.g. $114.07). The amount after CC Rewards is the amount charged to the card, not the receipt total for our records.\n"
                 "   - If there is a \"CC Rewards\" or \"Credit Card Rewards\" line (a negative/credit applied after the first total), record payment_method as the card type plus \" / CC Rewards\" (e.g. \"Visa / CC Rewards\"). Do not use the second subtotal/total that appears after the rewards line.\n"
+                "   - **Costco USA Liquor Tax**: Washington state and some other states impose a liquor excise tax on alcohol shown as a separate 'LIQUOR TAX' (or 'LIQ TAX', 'LIQUOR EXCISE') line on the receipt. **Include this as a regular line item** in the items array with product_name='Liquor Tax', is_on_sale=false. Do NOT absorb it into receipt.tax or skip it. The SUBTOTAL on Costco USA receipts equals the sum of all item line_totals INCLUDING the Liquor Tax line item — verify: items_sum (including Liquor Tax item) ≈ receipt.subtotal. **CRITICAL**: always use the SUBTOTAL value printed on the receipt directly; never compute or adjust it. If the items sum check fails even after including Liquor Tax as a line item, document the discrepancy in tbd and escalate.\n"
             )
     
     # Add initial parse result to user message if available
