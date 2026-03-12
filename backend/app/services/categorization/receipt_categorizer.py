@@ -1043,6 +1043,8 @@ def categorize_receipt(receipt_id: str, force: bool = False) -> Dict[str, Any]:
     
     # 2. 检查是否已经完整 categorize 过（既有 summary 又有 record_items）
     #    若仅有 summary 无 record_items（例如之前写入 summary 后 items 失败/回滚失败），则继续补写 items
+    has_summary = False
+    has_items = False
     if not force:
         existing_summary = supabase.table("record_summaries")\
             .select("id")\
