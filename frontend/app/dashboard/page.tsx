@@ -1119,7 +1119,7 @@ export default function DashboardPage() {
                                                   ? (items.find((orig: any) => orig.id && orig.id === rawIt.id) ?? rawIt)
                                                   : rawIt
                                                 const editRow = editModeReceiptId === r.id ? rawIt : null
-                                                const name = editRow?.product_name || it.product_name ?? it.original_product_name ?? ''
+                                                const name = editRow?.product_name || (it.product_name ?? it.original_product_name ?? '')
                                                 const displayLineTotal = editRow?.line_total ?? it.line_total
                                                 const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
                                                 const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
