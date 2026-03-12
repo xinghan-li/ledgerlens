@@ -338,14 +338,17 @@ def _normalize_state_code(country_code: str, state_raw: Optional[str]) -> Option
 def get_location_stats() -> List[Dict[str, Any]]:
     """
     Return receipt counts and distinct store counts per US state and Canadian province.
-    Only receipts with store_location_id are counted — these are verified/approved locations,
-    ensuring the map only shows standardized, accurate data.
+    - receipt_count: receipts with a verified store_location_id.
+    - store_count: all confirmed store_locations (is_active=True), including those with no receipts yet.
+      This lets the map light up regions where store locations have been manually confirmed
+      even before any receipts are uploaded.
     Returns: list of { country_code, state_code, state_display_name, receipt_count, store_count }.
     """
     supabase = _get_client()
     receipt_agg: Dict[Tuple[str, str], int] = {}
     store_agg: Dict[Tuple[str, str], set] = {}
 
+    # 1. Receipt counts — only receipts linked to a confirmed store location
     try:
         res = (
             supabase.table("record_summaries")
@@ -366,13 +369,33 @@ def get_location_stats() -> List[Dict[str, Any]]:
                 continue
             key = (country, code)
             receipt_agg[key] = receipt_agg.get(key, 0) + 1
-            loc_id = row.get("store_location_id")
+    except Exception as e:
+        logger.warning(f"Failed to get receipt location stats: {e}")
+
+    # 2. Store counts — all confirmed store_locations directly, regardless of receipt linkage
+    try:
+        res = (
+            supabase.table("store_locations")
+            .select("id, state, country_code")
+            .eq("is_active", True)
+            .execute()
+        )
+        for row in res.data or []:
+            country = (row.get("country_code") or "US").strip().upper()
+            if country not in ("US", "CA"):
+                continue
+            state_raw = row.get("state")
+            code = _normalize_state_code(country, state_raw)
+            if not code:
+                continue
+            key = (country, code)
+            loc_id = row.get("id")
             if loc_id:
                 if key not in store_agg:
                     store_agg[key] = set()
                 store_agg[key].add(str(loc_id))
     except Exception as e:
-        logger.warning(f"Failed to get location stats: {e}")
+        logger.warning(f"Failed to get store location stats: {e}")
 
     out = []
     for (c, s) in sorted(set(receipt_agg.keys()) | set(store_agg.keys())):

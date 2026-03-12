@@ -146,6 +146,9 @@ function LoginForm() {
           <p className="text-sm text-theme-mid">
             No password needed — quick and secure ✨
           </p>
+          <p className="text-xs text-theme-mid/70">
+            If you don't see the email, please check your spam or junk folder.
+          </p>
           <Link
             href="/"
             className="text-sm text-theme-orange hover:text-theme-orange-hover font-medium"
