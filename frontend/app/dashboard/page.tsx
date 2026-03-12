@@ -105,6 +105,8 @@ export default function DashboardPage() {
   const [escalationReceiptId, setEscalationReceiptId] = useState<string | null>(null)
   const [escalationNotes, setEscalationNotes] = useState('')
   const [escalationSubmitting, setEscalationSubmitting] = useState(false)
+  /** Index of item pending delete confirmation in edit mode */
+  const [deleteConfirmItemIndex, setDeleteConfirmItemIndex] = useState<number | null>(null)
 
   const toggleReviewReasoningCollapsed = useCallback((receiptId: string) => {
     setCollapsedReviewReasoningReceiptIds((prev) => {
@@ -1106,84 +1108,181 @@ export default function DashboardPage() {
                                               <button type="button" className={`flex-1 py-1.5 text-sm font-medium rounded-md transition ${mobileReceiptViewMode === 'classification' ? 'bg-white shadow text-theme-dark' : 'text-theme-dark/90'}`} onClick={() => setMobileReceiptViewMode('classification')}>Classification</button>
                                             </div>
                                           </div>
-                                          <div className="space-y-2">
-                                            {items.length === 0 && <p className="text-theme-mid text-sm">No items</p>}
-                                            {items.map((it: any, i: number) => {
-                                              const name = it.product_name ?? it.original_product_name ?? ''
-                                              const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
-                                              const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
-                                              const unit = (it.unit ?? '').trim() || 'each'
-                                              const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
-                                              const path = (it.user_category_path ?? it.category_path ?? '').trim()
-                                              const parts = path ? path.split(/\s*[\/>\|]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
-                                              const catLine = parts.length ? parts.join(' / ') : '—'
-                                              const catL1L2 = parts.length >= 2 ? parts.slice(0, 2).join(' / ') : catLine
-                                              const catL3 = parts.length >= 3 ? parts[2] : ''
-                                              const showQtyUnit = Number.isFinite(qty) && qty > 1 && (u && u !== '');
-                                              const isMobileEditingItem = editModeReceiptId === r.id && (editingItemIndicesByReceipt[r.id]?.includes(i) ?? false)
-                                              const mobileRowItem = editModeReceiptId === r.id && editItems[i] != null ? editItems[i] : null
-                                              const activateItemRowEditMobile = () => {
-                                                setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: prev[r.id]?.includes(i) ? prev[r.id] : [...(prev[r.id] || []), i] }))
-                                                setEditingSection((prev) => (prev?.receiptId === r.id && prev?.section === 'item' ? prev : { receiptId: r.id, section: 'item' }))
-                                              }
-                                              return (
-                                                <div
-                                                  key={it.id ?? i}
-                                                  className={`border-b border-theme-light-gray/50 pb-2 last:border-0 ${editModeReceiptId === r.id && !isMobileEditingItem ? 'cursor-pointer rounded active:bg-theme-light-gray/30' : ''}`}
-                                                  role={editModeReceiptId === r.id && !isMobileEditingItem ? 'button' : undefined}
-                                                  tabIndex={editModeReceiptId === r.id && !isMobileEditingItem ? 0 : undefined}
-                                                  onClick={(e) => { if (editModeReceiptId === r.id && !isMobileEditingItem) { e.stopPropagation(); activateItemRowEditMobile(); } }}
-                                                  onKeyDown={(e) => { if (editModeReceiptId === r.id && !isMobileEditingItem && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEditMobile(); } }}
-                                                >
-                                                  {isMobileEditingItem && mobileRowItem ? (
-                                                    <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
-                                                      <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border max-w-full" style={{ width: `${Math.max(12, Math.min(28, (mobileRowItem.product_name?.length || 0) + 2))}ch` }} value={mobileRowItem.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], product_name: e.target.value }; return n })} placeholder="Product name" />
-                                                      <div className="flex flex-wrap gap-2">
-                                                        <input type="text" inputMode="numeric" className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border w-14" style={{ minWidth: '3ch' }} value={mobileRowItem.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], quantity: e.target.value }; return n })} placeholder="Qty" />
-                                                        <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border w-16" style={{ minWidth: '4ch' }} value={mobileRowItem.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], unit_price: e.target.value }; return n })} placeholder="Unit $" />
-                                                        <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border w-16" style={{ minWidth: '4ch' }} value={mobileRowItem.line_total} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], line_total: e.target.value }; return n })} placeholder="Amount" />
+                                          <div className="space-y-0">
+                                            {(() => {
+                                              // In edit mode, iterate over editItems so add/delete/reorder updates are immediately visible
+                                              const displayRows = editModeReceiptId === r.id ? editItems : items
+                                              if (displayRows.length === 0) return <p className="text-theme-mid text-sm">No items</p>
+                                              return displayRows.map((rawIt: any, i: number) => {
+                                                // For display data (category paths, etc.) look up original item by id
+                                                const it = editModeReceiptId === r.id
+                                                  ? (items.find((orig: any) => orig.id && orig.id === rawIt.id) ?? rawIt)
+                                                  : rawIt
+                                                const editRow = editModeReceiptId === r.id ? rawIt : null
+                                                const name = editRow?.product_name || it.product_name ?? it.original_product_name ?? ''
+                                                const displayLineTotal = editRow?.line_total ?? it.line_total
+                                                const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
+                                                const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
+                                                const unit = (it.unit ?? '').trim() || 'each'
+                                                const p = displayLineTotal != null ? (money(displayLineTotal) ?? displayLineTotal) : ''
+                                                const path = (it.user_category_path ?? it.category_path ?? '').trim()
+                                                const parts = path ? path.split(/\s*[\/>\|]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
+                                                const catLine = parts.length ? parts.join(' / ') : '—'
+                                                const catL1L2 = parts.length >= 2 ? parts.slice(0, 2).join(' / ') : catLine
+                                                const catL3 = parts.length >= 3 ? parts[2] : ''
+                                                const showQtyUnit = Number.isFinite(qty) && qty > 1 && (u && u !== '');
+                                                const isMobileEditingItem = editModeReceiptId === r.id && (editingItemIndicesByReceipt[r.id]?.includes(i) ?? false)
+                                                const mobileRowItem = editModeReceiptId === r.id && editItems[i] != null ? editItems[i] : null
+                                                const activateItemRowEditMobile = () => {
+                                                  setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: prev[r.id]?.includes(i) ? prev[r.id] : [...(prev[r.id] || []), i] }))
+                                                  setEditingSection((prev) => (prev?.receiptId === r.id && prev?.section === 'item' ? prev : { receiptId: r.id, section: 'item' }))
+                                                }
+                                                const isEditMode = editModeReceiptId === r.id
+                                                return (
+                                                  <div key={rawIt.id ?? i} className="flex items-start gap-2 border-b border-theme-light-gray/50 pb-2 last:border-0">
+                                                    {/* iOS-style delete + reorder controls */}
+                                                    {isEditMode && !isMobileEditingItem && (
+                                                      <div className="shrink-0 flex flex-col items-center gap-0.5 pt-0.5" onClick={(e) => e.stopPropagation()}>
+                                                        {deleteConfirmItemIndex === i ? (
+                                                          <>
+                                                            <button
+                                                              type="button"
+                                                              className="w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold leading-none touch-manipulation"
+                                                              onClick={(e) => {
+                                                                e.stopPropagation()
+                                                                setEditItems((prev) => prev.filter((_, idx) => idx !== i))
+                                                                setEditingItemIndicesByReceipt((prev) => {
+                                                                  const idxs = (prev[r.id] || []).filter((x) => x !== i).map((x) => (x > i ? x - 1 : x))
+                                                                  return { ...prev, [r.id]: idxs }
+                                                                })
+                                                                setEditingSection({ receiptId: r.id, section: 'item' })
+                                                                setDeleteConfirmItemIndex(null)
+                                                              }}
+                                                              aria-label="Confirm delete"
+                                                              title="Confirm delete"
+                                                            >✓</button>
+                                                            <button
+                                                              type="button"
+                                                              className="text-[9px] text-theme-mid leading-none touch-manipulation"
+                                                              onClick={(e) => { e.stopPropagation(); setDeleteConfirmItemIndex(null) }}
+                                                            >esc</button>
+                                                          </>
+                                                        ) : (
+                                                          <button
+                                                            type="button"
+                                                            className="w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center text-base font-bold leading-none touch-manipulation"
+                                                            onClick={(e) => { e.stopPropagation(); setDeleteConfirmItemIndex(i) }}
+                                                            aria-label="Remove item"
+                                                          >−</button>
+                                                        )}
+                                                        {i > 0 && deleteConfirmItemIndex !== i && (
+                                                          <button
+                                                            type="button"
+                                                            className="text-theme-mid hover:text-theme-dark text-xs leading-none touch-manipulation"
+                                                            onClick={(e) => {
+                                                              e.stopPropagation()
+                                                              setEditItems((prev) => { const next = [...prev]; [next[i - 1], next[i]] = [next[i], next[i - 1]]; return next })
+                                                              setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: (prev[r.id] || []).map((x) => (x === i ? i - 1 : x === i - 1 ? i : x)) }))
+                                                              setEditingSection({ receiptId: r.id, section: 'item' })
+                                                            }}
+                                                            aria-label="Move up"
+                                                          >↑</button>
+                                                        )}
+                                                        {i < editItems.length - 1 && deleteConfirmItemIndex !== i && (
+                                                          <button
+                                                            type="button"
+                                                            className="text-theme-mid hover:text-theme-dark text-xs leading-none touch-manipulation"
+                                                            onClick={(e) => {
+                                                              e.stopPropagation()
+                                                              setEditItems((prev) => { const next = [...prev]; [next[i], next[i + 1]] = [next[i + 1], next[i]]; return next })
+                                                              setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: (prev[r.id] || []).map((x) => (x === i ? i + 1 : x === i + 1 ? i : x)) }))
+                                                              setEditingSection({ receiptId: r.id, section: 'item' })
+                                                            }}
+                                                            aria-label="Move down"
+                                                          >↓</button>
+                                                        )}
                                                       </div>
-                                                    </div>
-                                                  ) : mobileReceiptViewMode === 'receipt' ? (
-                                                    <>
-                                                      <div className="flex justify-between items-baseline gap-2">
-                                                        <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
-                                                        {!showQtyUnit && <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>}
-                                                      </div>
-                                                      {showQtyUnit && (
-                                                        <div className="flex justify-between items-baseline gap-2 mt-0.5 text-sm text-theme-dark/90">
-                                                          <span>{qty} @ ${u} / {unit}</span>
-                                                          <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>
+                                                    )}
+                                                    {/* Item content */}
+                                                    <div
+                                                      className={`flex-1 min-w-0 ${isEditMode && !isMobileEditingItem ? 'cursor-pointer rounded active:bg-theme-light-gray/30' : ''}`}
+                                                      role={isEditMode && !isMobileEditingItem ? 'button' : undefined}
+                                                      tabIndex={isEditMode && !isMobileEditingItem ? 0 : undefined}
+                                                      onClick={(e) => { if (isEditMode && !isMobileEditingItem) { e.stopPropagation(); activateItemRowEditMobile(); } }}
+                                                      onKeyDown={(e) => { if (isEditMode && !isMobileEditingItem && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEditMobile(); } }}
+                                                    >
+                                                      {isMobileEditingItem && mobileRowItem ? (
+                                                        <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+                                                          <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border max-w-full" style={{ width: `${Math.max(12, Math.min(28, (mobileRowItem.product_name?.length || 0) + 2))}ch` }} value={mobileRowItem.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], product_name: e.target.value }; return n })} placeholder="Product name" />
+                                                          <div className="flex flex-wrap gap-2">
+                                                            <input type="text" inputMode="numeric" className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border w-14" style={{ minWidth: '3ch' }} value={mobileRowItem.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], quantity: e.target.value }; return n })} placeholder="Qty" />
+                                                            <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border w-16" style={{ minWidth: '4ch' }} value={mobileRowItem.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], unit_price: e.target.value }; return n })} placeholder="Unit $" />
+                                                            <input className="border border-theme-light-gray rounded bg-theme-cream/50 px-1.5 py-0.5 text-sm inline-block box-border w-16" style={{ minWidth: '4ch' }} value={mobileRowItem.line_total} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[i] = { ...n[i], line_total: e.target.value }; return n })} placeholder="Amount" />
+                                                          </div>
                                                         </div>
-                                                      )}
-                                                    </>
-                                                  ) : (
-                                                    <>
-                                                      <div className="flex justify-between items-baseline gap-2">
-                                                        <span className="min-w-0 truncate text-theme-dark">{name || '—'}</span>
-                                                        <span className="shrink-0 flex items-center gap-1">
-                                                          {(it.category_source === 'llm' || it.category_source === 'rule_exact' || it.category_source === 'rule_fuzzy') && (
-                                                            <span className="inline-flex items-center justify-center w-5 h-5 rounded-sm bg-black text-white text-[9px] font-bold shrink-0" title="AI 分类">AI</span>
+                                                      ) : mobileReceiptViewMode === 'receipt' ? (
+                                                        <>
+                                                          <div className="flex justify-between items-baseline gap-2">
+                                                            <span className={`min-w-0 truncate ${deleteConfirmItemIndex === i ? 'line-through text-theme-mid' : 'text-theme-dark'}`}>{name || '—'}</span>
+                                                            {!showQtyUnit && <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>}
+                                                          </div>
+                                                          {showQtyUnit && (
+                                                            <div className="flex justify-between items-baseline gap-2 mt-0.5 text-sm text-theme-dark/90">
+                                                              <span>{qty} @ ${u} / {unit}</span>
+                                                              <span className="shrink-0 tabular-nums">{p ? `$${p}` : ''}</span>
+                                                            </div>
                                                           )}
-                                                          <span className="tabular-nums">{p ? `$${p}` : ''}</span>
-                                                        </span>
-                                                      </div>
-                                                      <div className="mt-0.5 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-0.5 text-xs text-theme-mid">
-                                                        <span className="sm:flex-1">{catL1L2}</span>
-                                                        <span className="sm:shrink-0">{catL3}</span>
-                                                      </div>
-                                                    </>
-                                                  )}
-                                                </div>
-                                              )
-                                            })}
+                                                        </>
+                                                      ) : (
+                                                        <>
+                                                          <div className="flex justify-between items-baseline gap-2">
+                                                            <span className={`min-w-0 truncate ${deleteConfirmItemIndex === i ? 'line-through text-theme-mid' : 'text-theme-dark'}`}>{name || '—'}</span>
+                                                            <span className="shrink-0 flex items-center gap-1">
+                                                              {(it.category_source === 'llm' || it.category_source === 'rule_exact' || it.category_source === 'rule_fuzzy') && (
+                                                                <span className="inline-flex items-center justify-center w-5 h-5 rounded-sm bg-black text-white text-[9px] font-bold shrink-0" title="AI 分类">AI</span>
+                                                              )}
+                                                              <span className="tabular-nums">{p ? `$${p}` : ''}</span>
+                                                            </span>
+                                                          </div>
+                                                          <div className="mt-0.5 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-0.5 text-xs text-theme-mid">
+                                                            <span className="sm:flex-1">{catL1L2}</span>
+                                                            <span className="sm:shrink-0">{catL3}</span>
+                                                          </div>
+                                                        </>
+                                                      )}
+                                                    </div>
+                                                  </div>
+                                                )
+                                              })
+                                            })()}
+                                            {/* Green plus button to add a new item in edit mode */}
+                                            {editModeReceiptId === r.id && (
+                                              <div className="pt-2" onClick={(e) => e.stopPropagation()}>
+                                                <button
+                                                  type="button"
+                                                  className="flex items-center gap-1.5 text-sm text-green-700 hover:text-green-800 touch-manipulation"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    setEditItems((prev) => [...prev, { id: undefined, product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])
+                                                    setEditingSection({ receiptId: r.id, section: 'item' })
+                                                  }}
+                                                >
+                                                  <span className="w-5 h-5 rounded-full bg-green-500 text-white flex items-center justify-center text-base font-bold leading-none">+</span>
+                                                  <span>Add item</span>
+                                                </button>
+                                              </div>
+                                            )}
                                           </div>
                                           {rec && (
                                             <>
                                               <div className="border-t border-dashed border-theme-mid pt-2 space-y-0.5">
                                                 {items.length > 0 && (() => {
                                                   const toCents = (v: any): number => { const n = Number(v); if (!Number.isFinite(n)) return 0; return (Number.isInteger(n) && n >= 100) ? n : Math.round(n * 100) }
-                                                  const itemsSumCents = items.reduce((s: number, i: any) => s + toCents(i.line_total), 0)
+                                                  const editDisplayItems = editModeReceiptId === r.id ? editItems : items
+                                                  const itemsSumCents = editDisplayItems.reduce((s: number, it: any) => {
+                                                    const raw = editModeReceiptId === r.id ? it.line_total : it.line_total
+                                                    return s + toCents(raw)
+                                                  }, 0)
                                                   const subNum = rec.subtotal != null ? Number(rec.subtotal) : NaN
                                                   const subtotalCents = (subNum >= 100 && Number.isInteger(subNum)) ? subNum : (Number.isFinite(subNum) ? Math.round(subNum * 100) : NaN)
                                                   const mismatch = Number.isFinite(subtotalCents) && Math.abs(itemsSumCents - subtotalCents) > 3
@@ -1191,9 +1290,9 @@ export default function DashboardPage() {
                                                   return (
                                                     <>
                                                       {showRedSumRow && (
-                                                        <div className="text-sm font-medium text-red-600 tabular-nums space-y-0.5">
+                                                        <div className="text-xs font-medium text-red-600 tabular-nums space-y-0.5">
                                                           <div className="flex justify-between">
-                                                            <span>sum</span>
+                                                            <span>Items sum (computed)</span>
                                                             <span>${money(itemsSumCents)}</span>
                                                           </div>
                                                           <div className="flex justify-between">
@@ -1202,8 +1301,8 @@ export default function DashboardPage() {
                                                           </div>
                                                         </div>
                                                       )}
-                                                      {!showRedSumRow && (
-                                                        <div className={`flex justify-between text-xs ${mismatch ? 'text-amber-700' : 'text-theme-mid'}`}>
+                                                      {!showRedSumRow && mismatch && (
+                                                        <div className="flex justify-between text-xs text-amber-700">
                                                           <span>Items sum (computed)</span>
                                                           <span className="tabular-nums">${money(itemsSumCents)}</span>
                                                         </div>
@@ -1840,23 +1939,24 @@ export default function DashboardPage() {
                                           <div />
 
                                           {/* ③ item 行：每个 React.Fragment 贡献 8 个 grid 子元素 */}
-                                          {items.length === 0 && (
+                                          {(editModeReceiptId === r.id ? editItems : items).length === 0 && (
                                             <React.Fragment>
                                               <div className="col-span-4 px-3 py-3 text-theme-mid text-sm">No items</div>
                                               <div className="bg-theme-cream" />
                                               <div className="col-span-5" />
                                             </React.Fragment>
                                           )}
-                                          {items.map((it: any, i: number) => {
-                                            const name = it.product_name ?? it.original_product_name ?? ''
-                                            const qty = it.quantity != null ? (typeof it.quantity === 'number' ? it.quantity : Number(it.quantity)) : 1
-                                            const u = it.unit_price != null ? (money(it.unit_price) ?? it.unit_price) : ''
-                                            const p = it.line_total != null ? (money(it.line_total) ?? it.line_total) : ''
+                                          {(editModeReceiptId === r.id ? editItems : items).map((rawIt: any, i: number) => {
+                                            const it = editModeReceiptId === r.id ? (items.find((orig: any) => orig.id === rawIt.id) ?? rawIt) : rawIt
+                                            const name = rawIt.product_name ?? rawIt.original_product_name ?? ''
+                                            const qty = rawIt.quantity != null ? (typeof rawIt.quantity === 'number' ? rawIt.quantity : Number(rawIt.quantity)) : 1
+                                            const u = rawIt.unit_price != null ? (money(rawIt.unit_price) ?? rawIt.unit_price) : ''
+                                            const p = rawIt.line_total != null ? (money(rawIt.line_total) ?? rawIt.line_total) : ''
                                             const path = (it.user_category_path ?? it.category_path ?? '').trim()
                                             const parts = path ? path.split(/\s*[\/>\|]\s*/).map((s: string) => s.trim()).filter(Boolean) : []
                                             const sysCat = parts[0] ?? ''
                                             const subCat = parts.length > 1 ? parts.slice(1).join(' / ') : ''
-                                            const itemId = it.id
+                                            const itemId = it.id ?? rawIt.id
                                             const isEditingCat = Boolean(itemId && classificationEditingItemIds.has(itemId))
                                             const onOpenClassificationSection = () => {
                                               if (editModeReceiptId !== r.id || !itemId) return
@@ -1902,10 +2002,18 @@ export default function DashboardPage() {
                                                   </>
                                                 ) : (
                                                   <>
-                                                    <div role="button" tabIndex={0} className={`py-1.5 px-3 truncate min-w-0 text-theme-dark ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} title={name} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEdit(); } }}>{name}</div>
-                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-center tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEdit(); } }}>{Number.isFinite(qty) ? qty : ''}</div>
-                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEdit(); } }}>{u}</div>
-                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activateItemRowEdit(); } }}>{p}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 px-3 min-w-0 text-theme-dark flex items-center gap-1 ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} title={name} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id && deleteConfirmItemIndex !== i) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); if (deleteConfirmItemIndex !== i) activateItemRowEdit(); } }}>
+                                                      {editModeReceiptId === r.id && deleteConfirmItemIndex !== i && (
+                                                        <span className="flex flex-col shrink-0 -my-0.5 mr-0.5" onClick={(e) => e.stopPropagation()}>
+                                                          <button type="button" disabled={i === 0} className="text-[10px] leading-none text-theme-mid hover:text-theme-dark disabled:opacity-30 px-0.5" onClick={(e) => { e.stopPropagation(); if (i === 0) return; setEditItems((prev: any[]) => { const n = [...prev]; [n[i-1], n[i]] = [n[i], n[i-1]]; return n }); setEditingItemIndicesByReceipt((prev) => { const arr = (prev[r.id] || []).map((x: number) => x === i ? i-1 : x === i-1 ? i : x); return { ...prev, [r.id]: arr } }); setEditingSection({ receiptId: r.id, section: 'item' }); }}>▲</button>
+                                                          <button type="button" disabled={i === editItems.length - 1} className="text-[10px] leading-none text-theme-mid hover:text-theme-dark disabled:opacity-30 px-0.5" onClick={(e) => { e.stopPropagation(); if (i === editItems.length - 1) return; setEditItems((prev: any[]) => { const n = [...prev]; [n[i+1], n[i]] = [n[i], n[i+1]]; return n }); setEditingItemIndicesByReceipt((prev) => { const arr = (prev[r.id] || []).map((x: number) => x === i ? i+1 : x === i+1 ? i : x); return { ...prev, [r.id]: arr } }); setEditingSection({ receiptId: r.id, section: 'item' }); }}>▼</button>
+                                                        </span>
+                                                      )}
+                                                      <span className={`truncate ${deleteConfirmItemIndex === i ? 'line-through text-theme-mid' : ''}`}>{name}</span>
+                                                    </div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-center tabular-nums ${deleteConfirmItemIndex === i ? 'line-through text-theme-mid' : ''} ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id && deleteConfirmItemIndex !== i) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); if (deleteConfirmItemIndex !== i) activateItemRowEdit(); } }}>{Number.isFinite(qty) ? qty : ''}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${deleteConfirmItemIndex === i ? 'line-through text-theme-mid' : ''} ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id && deleteConfirmItemIndex !== i) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); if (deleteConfirmItemIndex !== i) activateItemRowEdit(); } }}>{u}</div>
+                                                    <div role="button" tabIndex={0} className={`py-1.5 pl-3 pr-2 text-right tabular-nums ${deleteConfirmItemIndex === i ? 'line-through text-theme-mid' : ''} ${editModeReceiptId === r.id ? 'cursor-pointer rounded hover:ring-2 hover:ring-theme-mid/30' : ''}`} onClick={(e) => { e.stopPropagation(); if (editModeReceiptId === r.id && deleteConfirmItemIndex !== i) activateItemRowEdit(); }} onKeyDown={(e) => { if (editModeReceiptId === r.id && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); if (deleteConfirmItemIndex !== i) activateItemRowEdit(); } }}>{p}</div>
                                                   </>
                                                 )}
                                                 <div className="bg-theme-cream" />
@@ -1980,7 +2088,16 @@ export default function DashboardPage() {
                                                   )}
                                                 </div>
                                                 <div className="py-1.5 px-2 flex items-center justify-center">
-                                                  {isEditingCat ? (
+                                                  {editModeReceiptId === r.id ? (
+                                                    deleteConfirmItemIndex === i ? (
+                                                      <span className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                                                        <button type="button" className="w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold hover:bg-red-600" title="Confirm delete" onClick={(e) => { e.stopPropagation(); setDeleteConfirmItemIndex(null); setEditItems((prev: any[]) => prev.filter((_: any, idx: number) => idx !== i)); setEditingItemIndicesByReceipt((prev) => { const arr = (prev[r.id] || []).filter((x: number) => x !== i).map((x: number) => x > i ? x - 1 : x); if (arr.length === 0) { const next = { ...prev }; delete next[r.id]; return next } return { ...prev, [r.id]: arr } }); setEditingSection({ receiptId: r.id, section: 'item' }); }}>✓</button>
+                                                        <button type="button" className="text-xs text-theme-mid hover:text-theme-dark px-0.5" title="Cancel" onClick={(e) => { e.stopPropagation(); setDeleteConfirmItemIndex(null); }}>esc</button>
+                                                      </span>
+                                                    ) : (
+                                                      <button type="button" className="w-5 h-5 rounded-full border-2 border-red-500 text-red-500 flex items-center justify-center text-base font-bold leading-none hover:bg-red-50" title="Delete item" onClick={(e) => { e.stopPropagation(); setDeleteConfirmItemIndex(i); }}>−</button>
+                                                    )
+                                                  ) : isEditingCat ? (
                                                     <button type="button" className="p-1 bg-theme-light-gray text-theme-dark/90 rounded hover:bg-theme-mid/30 w-5 h-5 flex items-center justify-center" onClick={(e) => { e.stopPropagation(); deactivateClassificationRow(); }} title="Remove from batch">✕</button>
                                                   ) : (
                                                     <button type="button" className={`p-1 rounded w-5 h-5 flex items-center justify-center ${itemId ? 'text-theme-dark/90 hover:text-theme-dark hover:bg-theme-light-gray' : 'text-theme-mid cursor-not-allowed opacity-50'}`} onClick={(e) => { e.stopPropagation(); if (!itemId) return; if (editModeReceiptId !== r.id) { setEditModeReceiptId(r.id); initEditFormFromJson(expandedReceiptData[r.id]); } setEditingSection({ receiptId: r.id, section: 'classification', index: i }); setClassificationEditingItemIds((prev) => new Set(prev).add(itemId)); setPendingCategoryByItemId((prev) => (itemId in prev ? prev : { ...prev, [itemId]: it.user_category_id ?? it.category_id ?? null })); }} title={itemId ? 'Edit category' : r.current_status === 'needs_review' ? 'Complete the receipt review first before editing categories' : 'Category data not yet initialized — click "All" in Smart Categorization above to set up'}>✏️</button>
@@ -1989,6 +2106,14 @@ export default function DashboardPage() {
                                               </React.Fragment>
                                             )
                                           })}
+                                          {editModeReceiptId === r.id && (
+                                            <div className="col-span-10 px-3 py-1.5 border-t border-theme-light-gray/50" onClick={(e) => e.stopPropagation()}>
+                                              <button type="button" className="flex items-center gap-2 text-sm text-theme-dark/70 hover:text-theme-dark" onClick={(e) => { e.stopPropagation(); setEditItems((prev: any[]) => [...prev, { id: undefined, product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }]); setEditingSection({ receiptId: r.id, section: 'item' }); }}>
+                                                <span className="w-5 h-5 rounded-full bg-green-500 text-white flex items-center justify-center text-base font-bold leading-none shrink-0">+</span>
+                                                <span>Add item</span>
+                                              </button>
+                                            </div>
+                                          )}
 
                                           {/* ④ 左下：小计/支付 | sep | ⑤ 右下：消息/空 */}
                                           <div className="col-span-4 p-4 border-t border-theme-ivory-dark">
@@ -1997,19 +2122,27 @@ export default function DashboardPage() {
                                                 {/* 用与左侧4列相同的列宽做子网格，让数字对齐 $ Amount 列 */}
                                                 {items.length > 0 && (() => {
                                                   const toCents = (v: any): number => { const n = Number(v); if (!Number.isFinite(n)) return 0; return (Number.isInteger(n) && n >= 100) ? n : Math.round(n * 100) }
-                                                  const itemsSumCents = items.reduce((s: number, i: any) => s + toCents(i.line_total), 0)
+                                                  const editDisplayItems = editModeReceiptId === r.id ? editItems : items
+                                                  const itemsSumCents = editDisplayItems.reduce((s: number, it: any) => s + toCents(it.line_total), 0)
                                                   const subNum = rec.subtotal != null ? Number(rec.subtotal) : NaN
                                                   const subtotalCents = (subNum >= 100 && Number.isInteger(subNum)) ? subNum : (Number.isFinite(subNum) ? Math.round(subNum * 100) : NaN)
                                                   const mismatch = Number.isFinite(subtotalCents) && Math.abs(itemsSumCents - subtotalCents) > 3
                                                   const showRedSumRow = r.current_status === 'needs_review' && mismatch
-                                                  return showRedSumRow ? (
-                                                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.5fr) 3rem 4rem 5.5rem' }} className="text-sm font-medium text-red-600 tabular-nums mb-1">
-                                                      <div>sum</div><div /><div />
+                                                  if (showRedSumRow) return (
+                                                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.5fr) 3rem 4rem 5.5rem' }} className="text-xs font-medium text-red-600 tabular-nums mb-1">
+                                                      <div>Items sum (computed)</div><div /><div />
                                                       <div className="text-right">${money(itemsSumCents)}</div>
                                                       <div>diff</div><div /><div />
                                                       <div className="text-right">{itemsSumCents - subtotalCents >= 0 ? '+' : ''}${((itemsSumCents - subtotalCents) / 100).toFixed(2)}</div>
                                                     </div>
-                                                  ) : null
+                                                  )
+                                                  if (!mismatch) return null
+                                                  return (
+                                                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.5fr) 3rem 4rem 5.5rem' }} className="text-xs text-amber-700 tabular-nums mb-1">
+                                                      <div>Items sum (computed)</div><div /><div />
+                                                      <div className="text-right">${money(itemsSumCents)}</div>
+                                                    </div>
+                                                  )
                                                 })()}
                                                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.5fr) 3rem 4rem 5.5rem' }}>
                                                   <div>Subtotal</div><div /><div />

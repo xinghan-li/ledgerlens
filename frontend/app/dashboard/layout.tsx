@@ -61,7 +61,7 @@ export default function DashboardLayout({
   const [mounted, setMounted] = useState(false)
   const [usernameModalOpen, setUsernameModalOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-
+  const [unclassifiedCount, setUnclassifiedCount] = useState<number | null>(null)
   useEffect(() => {
     setMounted(true)
   }, [])
@@ -102,6 +102,17 @@ export default function DashboardLayout({
     })
     return () => unsubscribe()
   }, [router, apiBaseUrl])
+
+  useEffect(() => {
+    if (!userInfo || !pathname.startsWith('/dashboard')) return
+    const auth = getFirebaseAuth()
+    auth.currentUser?.getIdToken().then((token) => {
+      fetch(`${apiBaseUrl}/api/analytics/summary`, { cache: 'no-store', headers: { Authorization: `Bearer ${token}` } })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => { if (data?.unclassified_count != null) setUnclassifiedCount(data.unclassified_count) })
+        .catch(() => {})
+    })
+  }, [userInfo, apiBaseUrl, pathname])
 
   const handleLogout = async () => {
     const auth = getFirebaseAuth()
@@ -157,6 +168,18 @@ export default function DashboardLayout({
           Hi, {userInfo?.username ? userInfo.username : userInfo?.registration_no_display ? `#${userInfo.registration_no_display}` : userInfo?.email}
         </span>
       )}
+      <Link
+        href="/dashboard/unclassified"
+        onClick={() => setNavOpen(false)}
+        className={`${navItemClass} min-h-[44px] sm:min-h-0 relative`}
+      >
+        Unclassified
+        {unclassifiedCount != null && unclassifiedCount > 0 && (
+          <span className="absolute -top-1 -right-1 min-w-4 h-4 rounded-full bg-amber-500 text-white text-[10px] font-bold leading-none flex items-center justify-center px-0.5">
+            {unclassifiedCount > 99 ? '99+' : unclassifiedCount}
+          </span>
+        )}
+      </Link>
       <Link
         href="/dashboard/categories"
         onClick={() => setNavOpen(false)}

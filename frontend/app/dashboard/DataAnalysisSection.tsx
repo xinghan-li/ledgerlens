@@ -145,28 +145,29 @@ function StackedProgressBar({ segments }: { segments: SpendingSegment[] }) {
     <div className="mt-5 pt-4 border-t border-theme-light-gray">
       <p className="text-xs font-medium text-theme-mid mb-2">Spending by category</p>
       <div
-        className="flex w-full rounded-full overflow-hidden h-4"
+        className="relative w-full rounded-full overflow-hidden h-4 bg-theme-light-gray"
         role="img"
         aria-label="Spending category breakdown"
-        style={{ gap: 2 }}
       >
-        {segments.map((seg, i) => (
-          <div
-            key={seg.name}
-            style={{
-              width: `${seg.pct}%`,
-              backgroundColor: seg.color,
-              opacity: hovered !== null && hovered !== i ? 0.45 : 1,
-              transition: 'opacity 150ms ease-out',
-              minWidth: 2,
-            }}
-            title={`${seg.name}: ${formatDollars(seg.amount_cents)} (${seg.pct.toFixed(1)}%)`}
-            aria-label={`${seg.name}: ${formatDollars(seg.amount_cents)}, ${seg.pct.toFixed(1)}%`}
-            onMouseEnter={() => setHovered(i)}
-            onMouseLeave={() => setHovered(null)}
-            className="h-full cursor-pointer"
-          />
-        ))}
+        <div className="absolute inset-0 flex">
+          {segments.map((seg, i) => (
+            <div
+              key={seg.name}
+              style={{
+                flex: `${seg.pct} 0 0`,
+                backgroundColor: seg.color,
+                opacity: hovered !== null && hovered !== i ? 0.45 : 1,
+                transition: 'opacity 150ms ease-out',
+                borderRight: i < segments.length - 1 ? '1.5px solid rgba(255,255,255,0.6)' : 'none',
+              }}
+              title={`${seg.name}: ${formatDollars(seg.amount_cents)} (${seg.pct.toFixed(1)}%)`}
+              aria-label={`${seg.name}: ${formatDollars(seg.amount_cents)}, ${seg.pct.toFixed(1)}%`}
+              onMouseEnter={() => setHovered(i)}
+              onMouseLeave={() => setHovered(null)}
+              className="h-full cursor-pointer"
+            />
+          ))}
+        </div>
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-2 mt-3">
         {segments.map((seg, i) => (
@@ -787,7 +788,7 @@ export default function DataAnalysisSection({ token }: { token: string | null })
       params.set('value', periodValue)
     }
     const url = `${apiBaseUrl}/api/analytics/summary` + (params.toString() ? `?${params}` : '')
-    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${token}` } })
       .then((res) => {
         if (!res.ok) throw new Error(res.statusText)
         return res.json()
