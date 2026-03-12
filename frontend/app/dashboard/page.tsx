@@ -77,7 +77,7 @@ export default function DashboardPage() {
   const [editPaymentMethod, setEditPaymentMethod] = useState('')
   const [editPaymentLast4, setEditPaymentLast4] = useState('')
   const [editMerchantPhone, setEditMerchantPhone] = useState('')
-  const [editItems, setEditItems] = useState<Array<{ id?: string; product_name: string; quantity: string; unit: string; unit_price: string; line_total: string; on_sale: boolean; original_price: string; discount_amount: string }>>([])
+  const [editItems, setEditItems] = useState<Array<{ _key: string; id?: string; product_name: string; quantity: string; unit: string; unit_price: string; line_total: string; on_sale: boolean; original_price: string; discount_amount: string }>>([])
   const [correctSubmitting, setCorrectSubmitting] = useState(false)
   const [correctMessage, setCorrectMessage] = useState<string | null>(null)
   const [categoriesList, setCategoriesList] = useState<Array<{ id: string; parent_id: string | null; name: string; path: string | null; level: number; is_locked?: boolean; sort_order?: number }>>([])
@@ -303,7 +303,8 @@ export default function DashboardPage() {
     }
     setEditItems(
       items.length
-        ? items.map((it: any) => ({
+        ? items.map((it: any, idx: number) => ({
+            _key: it.id ?? `item_${idx}`,
             id: it.id ?? undefined,
             product_name: it.product_name ?? '',
             quantity: it.quantity != null && it.quantity !== '' ? String(it.quantity) : '1',
@@ -314,7 +315,7 @@ export default function DashboardPage() {
             original_price: it.original_price != null ? String(it.original_price) : '',
             discount_amount: it.discount_amount != null ? String(it.discount_amount) : '',
           }))
-        : [{ product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }]
+        : [{ _key: 'item_0', product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }]
     )
     setShowRawJson(false)
     setCorrectMessage(null)
@@ -1138,8 +1139,30 @@ export default function DashboardPage() {
                                                   setEditingSection((prev) => (prev?.receiptId === r.id && prev?.section === 'item' ? prev : { receiptId: r.id, section: 'item' }))
                                                 }
                                                 const isEditMode = editModeReceiptId === r.id
+                                                const handleConfirmDelete = (e: React.MouseEvent) => {
+                                                  e.stopPropagation()
+                                                  setEditItems((prev) => prev.filter((_, idx) => idx !== i))
+                                                  setEditingItemIndicesByReceipt((prev) => {
+                                                    const idxs = (prev[r.id] || []).filter((x) => x !== i).map((x) => (x > i ? x - 1 : x))
+                                                    return { ...prev, [r.id]: idxs }
+                                                  })
+                                                  setEditingSection({ receiptId: r.id, section: 'item' })
+                                                  setDeleteConfirmItemIndex(null)
+                                                }
+                                                const handleMoveUp = (e: React.MouseEvent) => {
+                                                  e.stopPropagation()
+                                                  setEditItems((prev) => { const next = [...prev]; [next[i - 1], next[i]] = [next[i], next[i - 1]]; return next })
+                                                  setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: (prev[r.id] || []).map((x) => (x === i ? i - 1 : x === i - 1 ? i : x)) }))
+                                                  setEditingSection({ receiptId: r.id, section: 'item' })
+                                                }
+                                                const handleMoveDown = (e: React.MouseEvent) => {
+                                                  e.stopPropagation()
+                                                  setEditItems((prev) => { const next = [...prev]; [next[i], next[i + 1]] = [next[i + 1], next[i]]; return next })
+                                                  setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: (prev[r.id] || []).map((x) => (x === i ? i + 1 : x === i + 1 ? i : x)) }))
+                                                  setEditingSection({ receiptId: r.id, section: 'item' })
+                                                }
                                                 return (
-                                                  <div key={rawIt.id ?? i} className="flex items-start gap-2 border-b border-theme-light-gray/50 pb-2 last:border-0">
+                                                  <div key={rawIt._key ?? rawIt.id ?? i} className="flex items-start gap-2 border-b border-theme-light-gray/50 pb-2 last:border-0">
                                                     {/* iOS-style delete + reorder controls */}
                                                     {isEditMode && !isMobileEditingItem && (
                                                       <div className="shrink-0 flex flex-col items-center gap-0.5 pt-0.5" onClick={(e) => e.stopPropagation()}>
@@ -1148,16 +1171,7 @@ export default function DashboardPage() {
                                                             <button
                                                               type="button"
                                                               className="w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold leading-none touch-manipulation"
-                                                              onClick={(e) => {
-                                                                e.stopPropagation()
-                                                                setEditItems((prev) => prev.filter((_, idx) => idx !== i))
-                                                                setEditingItemIndicesByReceipt((prev) => {
-                                                                  const idxs = (prev[r.id] || []).filter((x) => x !== i).map((x) => (x > i ? x - 1 : x))
-                                                                  return { ...prev, [r.id]: idxs }
-                                                                })
-                                                                setEditingSection({ receiptId: r.id, section: 'item' })
-                                                                setDeleteConfirmItemIndex(null)
-                                                              }}
+                                                              onClick={handleConfirmDelete}
                                                               aria-label="Confirm delete"
                                                               title="Confirm delete"
                                                             >✓</button>
@@ -1179,12 +1193,7 @@ export default function DashboardPage() {
                                                           <button
                                                             type="button"
                                                             className="text-theme-mid hover:text-theme-dark text-xs leading-none touch-manipulation"
-                                                            onClick={(e) => {
-                                                              e.stopPropagation()
-                                                              setEditItems((prev) => { const next = [...prev]; [next[i - 1], next[i]] = [next[i], next[i - 1]]; return next })
-                                                              setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: (prev[r.id] || []).map((x) => (x === i ? i - 1 : x === i - 1 ? i : x)) }))
-                                                              setEditingSection({ receiptId: r.id, section: 'item' })
-                                                            }}
+                                                            onClick={handleMoveUp}
                                                             aria-label="Move up"
                                                           >↑</button>
                                                         )}
@@ -1192,12 +1201,7 @@ export default function DashboardPage() {
                                                           <button
                                                             type="button"
                                                             className="text-theme-mid hover:text-theme-dark text-xs leading-none touch-manipulation"
-                                                            onClick={(e) => {
-                                                              e.stopPropagation()
-                                                              setEditItems((prev) => { const next = [...prev]; [next[i], next[i + 1]] = [next[i + 1], next[i]]; return next })
-                                                              setEditingItemIndicesByReceipt((prev) => ({ ...prev, [r.id]: (prev[r.id] || []).map((x) => (x === i ? i + 1 : x === i + 1 ? i : x)) }))
-                                                              setEditingSection({ receiptId: r.id, section: 'item' })
-                                                            }}
+                                                            onClick={handleMoveDown}
                                                             aria-label="Move down"
                                                           >↓</button>
                                                         )}
@@ -1263,7 +1267,7 @@ export default function DashboardPage() {
                                                   className="flex items-center gap-1.5 text-sm text-green-700 hover:text-green-800 touch-manipulation"
                                                   onClick={(e) => {
                                                     e.stopPropagation()
-                                                    setEditItems((prev) => [...prev, { id: undefined, product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])
+                                                    setEditItems((prev) => [...prev, { _key: `new_${Date.now()}_${Math.random()}`, id: undefined, product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])
                                                     setEditingSection({ receiptId: r.id, section: 'item' })
                                                   }}
                                                 >
@@ -1541,7 +1545,7 @@ export default function DashboardPage() {
                                             <p className="text-xs text-theme-dark/90 mb-2">Item lines</p>
                                             <div className="max-h-56 overflow-auto border border-theme-light-gray rounded-lg divide-y divide-theme-light-gray/50 overscroll-contain">
                                               {editItems.map((row, idx) => (
-                                                <div key={idx} className="p-2.5 space-y-2 bg-white first:rounded-t-lg last:rounded-b-lg">
+                                                <div key={row._key ?? idx} className="p-2.5 space-y-2 bg-white first:rounded-t-lg last:rounded-b-lg">
                                                   <div>
                                                     <label className="text-xs text-theme-mid block mb-0.5">Product name</label>
                                                     <input className="w-full border rounded px-2 py-2 text-sm touch-manipulation" placeholder="Product name" value={row.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], product_name: e.target.value }; return n })} />
@@ -1563,7 +1567,7 @@ export default function DashboardPage() {
                                                 </div>
                                               ))}
                                             </div>
-                                            <button type="button" className="mt-2 w-full py-2.5 text-sm font-medium text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/20 rounded-lg border border-theme-mid touch-manipulation" onClick={() => setEditItems((prev) => [...prev, { product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])}>
+                                            <button type="button" className="mt-2 w-full py-2.5 text-sm font-medium text-theme-dark/90 bg-theme-light-gray hover:bg-theme-mid/20 rounded-lg border border-theme-mid touch-manipulation" onClick={() => setEditItems((prev) => [...prev, { _key: `new_${Date.now()}_${Math.random()}`, product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])}>
                                               + Add row
                                             </button>
                                           </div>
@@ -1984,7 +1988,7 @@ export default function DashboardPage() {
                                               })
                                             }
                                             return (
-                                              <React.Fragment key={itemId ?? i}>
+                                              <React.Fragment key={rawIt._key ?? itemId ?? i}>
                                                 {isEditingItemRow && rowItem ? (
                                                   <>
                                                     <div className="py-1 px-2 w-fit max-w-full justify-self-start" onClick={(e) => e.stopPropagation()}>
@@ -2108,7 +2112,7 @@ export default function DashboardPage() {
                                           })}
                                           {editModeReceiptId === r.id && (
                                             <div className="col-span-10 px-3 py-1.5 border-t border-theme-light-gray/50" onClick={(e) => e.stopPropagation()}>
-                                              <button type="button" className="flex items-center gap-2 text-sm text-theme-dark/70 hover:text-theme-dark" onClick={(e) => { e.stopPropagation(); setEditItems((prev: any[]) => [...prev, { id: undefined, product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }]); setEditingSection({ receiptId: r.id, section: 'item' }); }}>
+                                              <button type="button" className="flex items-center gap-2 text-sm text-theme-dark/70 hover:text-theme-dark" onClick={(e) => { e.stopPropagation(); setEditItems((prev: any[]) => [...prev, { _key: `new_${Date.now()}_${Math.random()}`, id: undefined, product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }]); setEditingSection({ receiptId: r.id, section: 'item' }); }}>
                                                 <span className="w-5 h-5 rounded-full bg-green-500 text-white flex items-center justify-center text-base font-bold leading-none shrink-0">+</span>
                                                 <span>Add item</span>
                                               </button>
@@ -2464,7 +2468,7 @@ export default function DashboardPage() {
                                           {/* 手机：每条两行（name 一行，Qty/Unit pr/Amount 一行），无 table */}
                                           <div className="md:hidden max-h-48 overflow-auto border border-theme-light-gray rounded divide-y divide-theme-light-gray/50">
                                             {editItems.map((row, idx) => (
-                                              <div key={idx} className="p-2 space-y-2">
+                                              <div key={row._key ?? idx} className="p-2 space-y-2">
                                                 <div>
                                                   <label className="text-xs text-theme-mid block mb-0.5">Product name</label>
                                                   <input className="w-full border rounded px-2 py-1.5 text-sm" placeholder="Product name" value={row.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], product_name: e.target.value }; return n })} />
@@ -2499,7 +2503,7 @@ export default function DashboardPage() {
                                               </thead>
                                               <tbody>
                                                 {editItems.map((row, idx) => (
-                                                  <tr key={idx} className="border-b border-theme-light-gray/50 last:border-0">
+                                                  <tr key={row._key ?? idx} className="border-b border-theme-light-gray/50 last:border-0">
                                                     <td className="py-1 px-2"><input className="w-full min-w-[120px] border rounded px-1.5 py-0.5" placeholder="Product name" value={row.product_name} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], product_name: e.target.value }; return n })} /></td>
                                                     <td className="py-1 px-2"><input type="text" inputMode="numeric" className="w-full border rounded px-1.5 py-0.5" value={row.quantity} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], quantity: e.target.value }; return n })} /></td>
                                                     <td className="py-1 px-2"><input className="w-full border rounded px-1.5 py-0.5" value={row.unit_price} onChange={(e) => setEditItems((prev) => { const n = [...prev]; n[idx] = { ...n[idx], unit_price: e.target.value }; return n })} /></td>
@@ -2509,7 +2513,7 @@ export default function DashboardPage() {
                                               </tbody>
                                             </table>
                                           </div>
-                                          <button type="button" className="mt-2 text-sm text-theme-blue hover:underline" onClick={() => setEditItems((prev) => [...prev, { product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])}>
+                                          <button type="button" className="mt-2 text-sm text-theme-blue hover:underline" onClick={() => setEditItems((prev) => [...prev, { _key: `new_${Date.now()}_${Math.random()}`, product_name: '', quantity: '1', unit: '', unit_price: '', line_total: '', on_sale: false, original_price: '', discount_amount: '' }])}>
                                             + Add row
                                           </button>
                                         </div>

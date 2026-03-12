@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useApiUrl } from '@/lib/api-url-context'
+import { useDashboardActions } from './dashboard-actions-context'
 
 type PeriodType = '' | 'month' | 'quarter' | 'year'
 
@@ -749,6 +750,7 @@ type PeriodOption = { value: string; label: string }
 
 export default function DataAnalysisSection({ token }: { token: string | null }) {
   const apiBaseUrl = useApiUrl()
+  const { setUnclassifiedCount } = useDashboardActions()
   const [summary, setSummary] = useState<Summary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -793,7 +795,7 @@ export default function DataAnalysisSection({ token }: { token: string | null })
         if (!res.ok) throw new Error(res.statusText)
         return res.json()
       })
-      .then((data) => { if (!cancelled) setSummary(data) })
+      .then((data) => { if (!cancelled) { setSummary(data); if (data?.unclassified_count != null) setUnclassifiedCount(data.unclassified_count) } })
       .catch((e) => { if (!cancelled) setError(e.message || 'Failed to load') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
