@@ -1,0 +1,81 @@
+Parse the following receipt text and extract structured information.
+
+## Raw Text:
+{raw_text}
+
+## Trusted Hints (high confidence fields from Document AI):
+{trusted_hints}
+
+## Output Schema:
+{output_schema}
+
+## Instructions:
+REFERENCE DATE (today): {reference_date}. Any receipt date on or before this date is valid; use the date exactly as printed on the receipt.
+
+1. Extract receipt-level fields (merchant, date, time, amounts, payment method)
+   - **Date format**: Must be YYYY-MM-DD (e.g., "2026-01-25"). Use the date EXACTLY as printed on the receipt; do NOT substitute or correct the year (e.g. if the receipt shows 2026, output 2026; never change it to the current year).
+   - **Canadian date ambiguity**: Canadian stores often print dates as YY/MM/DD (e.g. "26/03/07" = 2026-03-07, "26/02/22" = 2026-02-22). For a 3-segment date A/B/C on a Canadian receipt, try all three interpretations and keep only the ones that produce a calendar-valid date:
+     1. YY/MM/DD → year=20A, month=B, day=C
+     2. DD/MM/YY → day=A, month=B, year=20C
+     3. MM/DD/YY → month=A, day=B, year=20C
+     Among valid interpretations, choose the one whose result is **closest to the REFERENCE DATE** (usually the most recent past date).
+     **NEVER apply a "past-year override"**: if the closest-to-reference interpretation gives a year like 2022, that IS the correct year — output it as-is. Do NOT silently swap the year to match the current year.
+   - **Time format**: Must be HH:MM:SS or HH:MM (e.g., "13:00:00" or "13:00")
+   - Do NOT include newlines or extra text in date/time fields
+   - **Payment**: Use full card brand name for payment_method (e.g. "Discover" not "DCVR", "Visa" not "VISA"). card_last4 = last 4 digits only (e.g. "3713" from "DCVR ************3713").
+   - **Address (CRITICAL — output separate fields for DB)**: Do NOT put the whole address in merchant_address only. Output these separate fields so we can write correctly to the database:
+     * **address_line1**: Street address only (e.g. "19715 Highway 99", "19630 Hwy 99"). No unit/suite, no city/state/zip.
+     * **address_line2**: Unit/plaza/mall number only — output the number alone (e.g. "101", "200", "1000"). Do NOT include prefixes like "Suite", "Unit", "Apt", "#". Omit if not on receipt.
+     * **city**: City name only (e.g. "Lynnwood", "Surrey").
+     * **state**: State or province code/name (e.g. "WA", "BC").
+     * **zip_code**: Zip or postal code only (e.g. "98036", "V3T 0A1").
+     * **country**: Country code or name (e.g. "US", "USA", "Canada").
+     * **merchant_address**: Optional fallback; if you fill the fields above, we will build the display address from them. You may set to null when structured fields are present.
+     * Examples: "19715 Highway 99, Suite 101, Lynnwood, WA 98036" → address_line1="19715 Highway 99", address_line2="101", city="Lynnwood", state="WA", zip_code="98036". "#1000-3700 No.3 Rd." → address_line2="1000" (number only).
+2. Extract all line items from raw_text, ensuring each item has:
+   - product_name (cleaned, no extra formatting)
+   - quantity and unit (if available)
+   - unit_price (if available)
+   - line_total (must match quantity × unit_price if both are present, **EXCEPT for package price discounts** - see tag-based instructions)
+3. Important: Extract subtotal, tax, and ALL fees/deposits:
+   - Extract subtotal ONLY if explicitly stated (e.g., "SUB TOTAL", "Subtotal")
+{costco_usa_totals_instructions}
+   - Extract tax ONLY if explicitly stated (e.g., "Tax", "GST", "PST", "HST")
+   - Extract ALL deposits and fees as separate line items:
+     * "Bottle Deposit" → include as item with product_name="Bottle Deposit"
+     * "Environment fee", "Environmental fee", "Env fee" → include as item with product_name="Environment fee"
+     * "CRF", "Container fee", "Bag fee" → include as items
+   - DO NOT calculate or estimate tax by subtracting subtotal from total
+   - Deposits, fees, and other charges are NOT tax - they are separate line items
+   - If subtotal is not shown: set subtotal to null
+   - If tax is not shown: set tax to null
+4. **Monetary output**: All amounts (subtotal, tax, total, fees, line_total, unit_price, etc.) must be integers in CENTS (e.g. $36.75 → 3675). No floats for money.
+5. Validate calculations (CRITICAL - follow this exact order, all in cents):
+   a) **Line items sum check**: Sum of all line_totals (including deposits, fees, etc.) should ≈ subtotal (±3 cents)
+      - If subtotal is NOT shown on receipt, skip this check
+      - If subtotal IS shown, this MUST pass
+   b) **Total sum check**: Starting from subtotal, add each component in order:
+      - subtotal + tax + deposits + fees = total (±3 cents)
+      - Example: If receipt shows "SUB TOTAL: $36.75, Tax: $1.73, Bottle Deposit: $0.05, Environment fee: $0.01, TOTAL: $38.54"
+        * Output as cents: subtotal 3675, tax 173, bottle 5, env 1, total 3854; verify 3675+173+5+1=3854
+      - Extract ALL fees/deposits as separate line items (Bottle Deposit, Environment fee, etc.)
+      - Include them in the items array with their exact names and amounts (amounts in cents)
+   c) **Item price validation**: For each item (if quantity and unit_price exist), verify: quantity × unit_price ≈ line_total (±1 cent)
+      - **EXCEPTION**: If the item is part of a package price discount (e.g., "2/$9.00", "3 for $10"), **SKIP this validation** - use the actual line_total from receipt
+6. Document any issues in the "tbd" section:
+   - Items with inconsistent price calculations
+   - Field conflicts between raw_text and trusted_hints
+   - Missing information
+   - In tbd.notes, reason, or any user-facing text: always write monetary amounts in dollars (e.g. $198.59), never in raw cents (e.g. 19859).
+
+## Currency Logic:
+- If address is in USA, default currency is USD
+- If address is in Canada, default currency is CAD
+- If currency is explicitly mentioned in raw_text, use that
+
+## Important:
+- If raw_text conflicts with trusted_hints, prefer raw_text and document conflict in tbd
+- Do not invent or guess values - use null if information is not available
+- Output must be valid JSON matching the schema exactly
+
+Output the JSON now:

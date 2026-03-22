@@ -226,10 +226,11 @@ function DonutChartCard({ summary }: { summary: Summary }) {
   )
   const hasUCTree = ucTree.length > 0
 
-  const findById = useCallback((nodes: UCTreeNode[], id: string): UCTreeNode | null => {
+  const findById = useCallback((nodes: UCTreeNode[], id: string, depth = 0): UCTreeNode | null => {
+    if (!nodes || depth > 50) return null
     for (const n of nodes) {
       if (n.user_category_id === id) return n
-      const found = findById(n.children, id)
+      const found = findById(n.children, id, depth + 1)
       if (found) return found
     }
     return null
@@ -280,13 +281,15 @@ function DonutChartCard({ summary }: { summary: Summary }) {
   const INNER_R = 64
   const PULL = 8
 
-  let cumDeg = 0
-  const arcSegs: ArcSeg[] = segs.map((seg) => {
-    const spanDeg = (seg.amount_cents / levelTotal) * 360
-    const start = cumDeg
-    cumDeg += spanDeg
-    return { ...seg, startDeg: start, endDeg: cumDeg, midDeg: start + spanDeg / 2 }
-  })
+  const arcSegs: ArcSeg[] = useMemo(() => {
+    let cumDeg = 0
+    return segs.map((seg) => {
+      const spanDeg = (seg.amount_cents / levelTotal) * 360
+      const start = cumDeg
+      cumDeg += spanDeg
+      return { ...seg, startDeg: start, endDeg: cumDeg, midDeg: start + spanDeg / 2 }
+    })
+  }, [segs, levelTotal])
 
   const handleSegClick = (seg: ArcSeg) => {
     if (!canDrill || !seg.hasChildren) return

@@ -395,7 +395,16 @@ def get_category_id_for_product(
     Backend-only matching: 1) exact from product_categorization_rules (store-specific first),
     2) fuzzy same-store (1–2 letter diff) from product_categorization_rules,
     3) universal fuzzy from backend-held rules (CSV).
-    Returns (category_id, source, is_store_specific) where source is 'rule_exact', 'rule_fuzzy', or '' (no match).
+
+    Returns (category_id, source, is_store_specific) where source is:
+      - 'rule_exact'  — same store + same name (user previously categorized this product at THIS store).
+                        Strong signal: confident it's the same SKU.
+      - 'rule_fuzzy'  — any other match (different store but same name, or fuzzy name match).
+                        Intentionally "fuzzy" even when the DB lookup is technically exact: a product
+                        with the same name sold at a different store may be a different SKU (e.g.
+                        fresh naan at Trader Joe's vs frozen naan at Walmart). Cross-store identity
+                        cannot be assumed, so these matches are treated as advisory-only.
+      - ''            — no match found.
     is_store_specific is True only when match came from store-specific rule (user's historical categorization).
     """
     supabase = _get_client()
@@ -409,7 +418,9 @@ def get_category_id_for_product(
             cid = _match_exact_store_only(supabase, name_to_try, store_chain_id)
             if cid:
                 return cid, "rule_exact", True
-    # Universal exact: only L1 in smart categorize
+    # Universal exact (cross-store): DB name matches exactly, but no store context.
+    # Returns 'rule_fuzzy' — not 'rule_exact' — because an identical product name at a different
+    # store is not guaranteed to be the same SKU. Only same-store exact matches are 'rule_exact'.
     for name_to_try in (normalized_underscore, normalized):
         cid = _match_exact_from_db(supabase, name_to_try, None)
         if cid:

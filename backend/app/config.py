@@ -110,21 +110,22 @@ class Settings(BaseSettings):
         description="Test user ID for development (must exist in auth.users table)"
     )
     
-    # OpenAI settings
+    # OpenAI settings (DEPRECATED — pipeline is Gemini-only as of 2025-03-21)
+    # Kept for backward compatibility with .env files; not used in any active code path.
     openai_api_key: Optional[str] = Field(
         default=None,
         alias="OPENAI_API_KEY",
-        description="OpenAI API key for LLM processing"
+        description="[DEPRECATED] OpenAI API key — no longer used"
     )
     openai_model: str = Field(
         default="gpt-4o-mini",
         alias="OPENAI_MODEL",
-        description="OpenAI model to use (e.g., gpt-4o-mini, gpt-4o, gpt-4-turbo)"
+        description="[DEPRECATED] OpenAI model — no longer used"
     )
     openai_escalation_model: Optional[str] = Field(
         default=None,
         alias="OPENAI_ESCALATION_MODEL",
-        description="When set (e.g. gpt-5.1), cascade failures escalate to this model with image input instead of Textract+OpenAI"
+        description="[DEPRECATED] OpenAI escalation model — no longer used"
     )
     
     # AWS settings
