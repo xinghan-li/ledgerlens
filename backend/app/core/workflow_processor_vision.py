@@ -9,7 +9,9 @@ Flow:
 5. Backend sum check + item count check (independent of model self-report)
 6. If PASS → save, categorize; if model set needs_review → needs_review, no escalation.
 7. If FAIL → ESCALATION: Gemini only. If sum check failed and chain has second-round prompt but not run yet, retry store second round; else escalate.
-8. Shadow legacy runs in background for A/B comparison (optional).
+
+Note: OpenAI and shadow legacy pipeline were fully deprecated 2025-03-21.
+      LLM provider is Gemini-only throughout.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config import settings
 from ..processors.core.sum_checker import check_receipt_sums
 from ..processors.enrichment.address_matcher import correct_address
+from ..processors.enrichment.address_grounding import ground_address_with_search
 from ..services.categorization.receipt_categorizer import categorize_receipt
 from ..services.database.supabase_client import (
     USER_CLASS_ADMIN,
@@ -46,14 +49,65 @@ from ..services.llm.gemini_client import (
     is_image_receipt_like,
     parse_receipt_with_gemini_vision_escalation,
 )
-from ..services.ocr.documentai_client import parse_receipt_documentai
 from ..prompts.prompt_loader import has_chain_second_round_prompt
 from ..services.llm.receipt_llm_processor import (
-    process_receipt_with_llm_from_docai,
     _is_costco_usa_receipt,
     _detect_cc_rewards_and_fix_totals,
     run_store_second_round,
 )
+# ---------------------------------------------------------------------------
+# Image compression helper
+# ---------------------------------------------------------------------------
+IMAGE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+IMAGE_TARGET_LONG_EDGE = 2000      # px — sufficient for receipt text
+IMAGE_JPEG_QUALITY = 85
+
+
+def _compress_image_if_needed(image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
+    """
+    If image exceeds IMAGE_MAX_BYTES, compress it using Pillow.
+    Returns (possibly compressed bytes, possibly updated mime_type).
+    Always converts to JPEG when compressing (receipts don't need transparency).
+    """
+    if len(image_bytes) <= IMAGE_MAX_BYTES:
+        return image_bytes, mime_type
+
+    try:
+        from PIL import Image
+        import io
+
+        original_size = len(image_bytes)
+        img = Image.open(io.BytesIO(image_bytes))
+
+        # Convert RGBA/P to RGB for JPEG
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+
+        # Resize if long edge exceeds target
+        w, h = img.size
+        long_edge = max(w, h)
+        if long_edge > IMAGE_TARGET_LONG_EDGE:
+            scale = IMAGE_TARGET_LONG_EDGE / long_edge
+            new_w, new_h = int(w * scale), int(h * scale)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=IMAGE_JPEG_QUALITY, optimize=True)
+        compressed = buf.getvalue()
+
+        logger.info(
+            "[compress] %s -> %s bytes (%.0f%% reduction)",
+            original_size,
+            len(compressed),
+            (1 - len(compressed) / original_size) * 100,
+        )
+        return compressed, "image/jpeg"
+
+    except Exception as exc:
+        logger.warning("[compress] Failed to compress image: %s — using original", exc)
+        return image_bytes, mime_type
+
+
 # ---------------------------------------------------------------------------
 # File system helpers (inlined from former workflow_common.py)
 # ---------------------------------------------------------------------------
@@ -308,71 +362,7 @@ def _build_failure_reason(
 
 
 # ---------------------------------------------------------------------------
-# Shadow — run legacy OCR→LLM pipeline in background for A/B comparison
-# ---------------------------------------------------------------------------
-
-async def _run_shadow_legacy(
-    image_bytes: bytes,
-    mime_type: str,
-    db_receipt_id: str,
-) -> None:
-    """
-    Run the legacy OCR→LLM pipeline in background and save results under the same
-    receipt_id for A/B comparison. Does NOT touch receipt_status.
-    """
-    try:
-        # Step A1: Google OCR
-        google_ocr_result = await asyncio.to_thread(
-            parse_receipt_documentai, image_bytes, mime_type
-        )
-        save_processing_run(
-            receipt_id=db_receipt_id,
-            stage="shadow_legacy",
-            model_provider="google_documentai",
-            model_name=None,
-            model_version=None,
-            input_payload={"image_bytes_length": len(image_bytes), "mime_type": mime_type},
-            output_payload=google_ocr_result,
-            output_schema_version=None,
-            status="pass",
-        )
-        logger.info(f"[shadow] OCR saved for {db_receipt_id}")
-
-        # Step A2: LLM on OCR result
-        llm_result = await process_receipt_with_llm_from_docai(google_ocr_result)
-
-        # Inject raw_text for item count check consistency
-        raw_text = (google_ocr_result.get("raw_text") or "")
-        if raw_text:
-            llm_result = {**llm_result, "raw_text": raw_text}
-
-        sum_passed, sum_details = check_receipt_sums(llm_result)
-        # Shadow legacy uses OCR + OpenAI LLM (process_receipt_with_llm_from_docai hardcodes openai)
-        save_processing_run(
-            receipt_id=db_receipt_id,
-            stage="shadow_legacy",
-            model_provider="openai",
-            model_name=settings.openai_model,
-            model_version=None,
-            input_payload={"raw_text_length": len(raw_text)},
-            output_payload={
-                **llm_result,
-                "_shadow_sum_check": {"passed": sum_passed, "details": sum_details},
-            },
-            output_schema_version=None,
-            status="pass",
-        )
-        logger.info(
-            f"[shadow] LLM saved for {db_receipt_id}, sum_check_passed={sum_passed}, "
-            f"items={len(llm_result.get('items') or [])}"
-        )
-
-    except Exception as exc:
-        logger.warning(f"[shadow] legacy run failed for {db_receipt_id}: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# Escalation — Gemini only (OpenAI debate deprecated)
+# Escalation — Gemini only
 # ---------------------------------------------------------------------------
 
 async def _run_vision_escalation_gemini_only(
@@ -386,7 +376,6 @@ async def _run_vision_escalation_gemini_only(
 ) -> Optional[Dict]:
     """
     Call Gemini escalation model only. Returns result or None on error.
-    OpenAI was removed from vision escalation to avoid introducing errors.
     """
     escalation_prompt = _get_vision_escalation_template().format(
         reference_date=_get_reference_date(),
@@ -545,6 +534,9 @@ async def process_receipt_workflow_vision(
     Returns:
         Processing result dictionary (compatible shape with legacy workflow)
     """
+    # Auto-compress large images (e.g. iPhone photos > 5 MB)
+    image_bytes, mime_type = _compress_image_if_needed(image_bytes, mime_type)
+
     if existing_receipt_id:
         receipt_id = existing_receipt_id
     else:
@@ -641,6 +633,13 @@ async def process_receipt_workflow_vision(
         # Correct address with canonical DB data before saving or further processing
         if primary_result:
             primary_result = correct_address(primary_result, auto_correct=True)
+            # If DB had no match, try Google Search grounding to fill missing fields
+            addr_meta = (primary_result.get("_metadata") or {}).get("address_correction")
+            if not addr_meta or not addr_meta.get("matched"):
+                try:
+                    primary_result = await ground_address_with_search(primary_result)
+                except Exception as g_err:
+                    logger.warning("[vision] Address grounding failed: %s", g_err)
 
         if db_receipt_id:
             primary_duration = _get_duration_from_timeline(timeline, "vision_primary")
@@ -864,11 +863,6 @@ async def process_receipt_workflow_vision(
             except Exception as out_err:
                 logger.warning(f"[vision] Failed to save output JSON: {out_err}")
 
-            # Fire-and-forget shadow legacy run
-            asyncio.create_task(
-                _run_shadow_legacy(image_bytes, mime_type, db_receipt_id)
-            )
-
         store_name = (receipt_data.get("merchant_name") or "").strip() or None
         return {
             "success": status_for_receipt == "success",
@@ -912,7 +906,7 @@ async def process_receipt_workflow_vision(
         llm_result=primary_result,
     )
 
-    # Escalation: Gemini only (OpenAI debate deprecated)
+    # Escalation: Gemini only
     gemini_esc = (settings.gemini_escalation_model or "").strip() or (os.getenv("GEMINI_ESCALATION_MODEL") or "").strip()
     escalation_configured = bool(gemini_esc)
 
@@ -921,11 +915,6 @@ async def process_receipt_workflow_vision(
             "[vision] No escalation model configured (GEMINI_ESCALATION_MODEL). "
             "Marking as needs_review without escalation."
         )
-        if db_receipt_id:
-            # needs_review + categorize 已在上面统一做过，此处只起 shadow
-            asyncio.create_task(
-                _run_shadow_legacy(image_bytes, mime_type, db_receipt_id)
-            )
         receipt_data = primary_result.get("receipt") or {}
         receipt_data["payment_method"] = _normalize_payment_method(receipt_data.get("payment_method"))
         return {
@@ -973,9 +962,6 @@ async def process_receipt_workflow_vision(
                 await asyncio.to_thread(categorize_receipt, db_receipt_id)
             except Exception:
                 pass
-            asyncio.create_task(
-                _run_shadow_legacy(image_bytes, mime_type, db_receipt_id)
-            )
         receipt_data = primary_result.get("receipt") or {}
         receipt_data["payment_method"] = _normalize_payment_method(receipt_data.get("payment_method"))
         return {
@@ -1005,8 +991,15 @@ async def process_receipt_workflow_vision(
     rec["payment_method"] = _normalize_payment_method(rec.get("payment_method"))
     best_result = {**best_result, "receipt": rec}
 
-    # Correct address with canonical DB data (vision pipeline never called this before)
+    # Correct address with canonical DB data
     best_result = correct_address(best_result, auto_correct=True)
+    # If DB had no match, try Google Search grounding
+    esc_addr_meta = (best_result.get("_metadata") or {}).get("address_correction")
+    if not esc_addr_meta or not esc_addr_meta.get("matched"):
+        try:
+            best_result = await ground_address_with_search(best_result)
+        except Exception as g_err:
+            logger.warning("[vision] Escalation address grounding failed: %s", g_err)
 
     # -----------------------------------------------------------------------
     # STEP 5A — Escalation sum check passed → success
@@ -1023,12 +1016,7 @@ async def process_receipt_workflow_vision(
                 append_workflow_step(db_receipt_id, "escalation_consensus", "pass")
             except Exception as exc:
                 logger.warning(f"[vision] Failed to update status: {exc}")
-            # Save the winning escalation result BEFORE categorize_receipt.
-            # Both Gemini and OpenAI individual runs are already saved with stage="vision_escalation".
-            # Without this, categorize_receipt reads whichever model happened to finish last —
-            # it could pick OpenAI even when Gemini won the sum check.
-            # This write is always the most recent vision_escalation row, so categorize_receipt
-            # consistently reads the correct winner.
+            # Save the escalation result BEFORE categorize_receipt so it reads the correct data.
             try:
                 save_processing_run(
                     receipt_id=db_receipt_id,
@@ -1054,9 +1042,6 @@ async def process_receipt_workflow_vision(
                 await _save_output(receipt_id, best_result, timeline, user_id=user_id or "unknown")
             except Exception:
                 pass
-            asyncio.create_task(
-                _run_shadow_legacy(image_bytes, mime_type, db_receipt_id)
-            )
 
         esc_receipt = (best_result or {}).get("receipt") or {}
         store_name = (esc_receipt.get("merchant_name") or "").strip() or None
@@ -1103,9 +1088,6 @@ async def process_receipt_workflow_vision(
             await asyncio.to_thread(categorize_receipt, db_receipt_id, True)
         except Exception:
             pass
-        asyncio.create_task(
-            _run_shadow_legacy(image_bytes, mime_type, db_receipt_id)
-        )
 
     return {
         "success": False,

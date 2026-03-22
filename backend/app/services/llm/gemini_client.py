@@ -13,6 +13,92 @@ from .gemini_rate_limiter import set_gemini_key_invalid
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Receipt output schema for Gemini Structured Output (response_schema)
+# ---------------------------------------------------------------------------
+# This schema enforces the JSON structure at the API level.
+# All monetary fields are integers in CENTS.
+# Note: "nullable": True is supported by google-genai SDK (verified v0.2+).
+RECEIPT_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reason": {"type": "string", "nullable": True},
+        "receipt": {
+            "type": "object",
+            "properties": {
+                "merchant_name": {"type": "string", "nullable": True},
+                "merchant_address": {"type": "string", "nullable": True},
+                "address_line1": {"type": "string", "nullable": True},
+                "address_line2": {"type": "string", "nullable": True},
+                "city": {"type": "string", "nullable": True},
+                "state": {"type": "string", "nullable": True},
+                "zip_code": {"type": "string", "nullable": True},
+                "country": {"type": "string", "nullable": True},
+                "merchant_phone": {"type": "string", "nullable": True},
+                "currency": {"type": "string", "nullable": True},
+                "purchase_date": {"type": "string", "nullable": True},
+                "purchase_time": {"type": "string", "nullable": True},
+                "subtotal": {"type": "integer", "nullable": True},
+                "tax": {"type": "integer", "nullable": True},
+                "total": {"type": "integer", "nullable": True},
+                "payment_method": {"type": "string", "nullable": True},
+                "card_last4": {"type": "string", "nullable": True},
+            },
+            "required": ["total"],
+        },
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "raw_text": {"type": "string"},
+                    "product_name": {"type": "string", "nullable": True},
+                    "quantity": {"type": "number", "nullable": True},
+                    "unit": {"type": "string", "nullable": True},
+                    "unit_price": {"type": "integer", "nullable": True},
+                    "line_total": {"type": "integer", "nullable": True},
+                    "is_on_sale": {"type": "boolean"},
+                    "category": {"type": "string", "nullable": True},
+                },
+                "required": ["raw_text"],
+            },
+        },
+        "tbd": {
+            "type": "object",
+            "properties": {
+                "items_with_inconsistent_price": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "raw_text": {"type": "string"},
+                            "product_name": {"type": "string", "nullable": True},
+                            "reason": {"type": "string"},
+                        },
+                    },
+                },
+                "missing_info": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "notes": {"type": "string", "nullable": True},
+            },
+        },
+        "metadata": {
+            "type": "object",
+            "properties": {
+                "validation_status": {"type": "string", "nullable": True},
+                "validation_reasoning": {"type": "string", "nullable": True},
+                "sum_check_notes": {"type": "string", "nullable": True},
+                "needs_review": {"type": "boolean", "nullable": True},
+                "needs_review_reason": {"type": "string", "nullable": True},
+                "item_count": {"type": "integer", "nullable": True},
+            },
+        },
+    },
+    "required": ["receipt", "items"],
+}
+
 # Message to show when Gemini API key is rejected by Google
 _GEMINI_KEY_INVALID_HINT = (
     "Gemini API key was rejected. Get a valid key from https://aistudio.google.com/apikey "
@@ -22,8 +108,64 @@ _GEMINI_KEY_INVALID_HINT = (
 
 # Thread-safe state management
 import asyncio
+import time
 _lock = asyncio.Lock()
 _client = None
+
+# ---------------------------------------------------------------------------
+# Context caching for vision prompts
+# ---------------------------------------------------------------------------
+# Caches the system instruction so repeated calls (e.g., bulk upload) don't
+# re-send the same long prompt every time.  TTL = 1 hour.
+_cached_content_name: Optional[str] = None
+_cached_content_instruction: Optional[str] = None   # instruction text that was cached
+_cached_content_model: Optional[str] = None          # model the cache was created for
+_cached_content_expires: float = 0                   # time.time() when cache expires
+_CACHE_TTL_SECONDS = 3600  # 1 hour
+
+
+async def _get_or_create_vision_cache(
+    instruction: str,
+    model: str,
+) -> Optional[str]:
+    """
+    Return the cached_content resource name for the given instruction + model.
+    Creates a new cache if none exists or the current one is stale/expired.
+    Returns None if caching fails (caller should fall back to inline prompt).
+    """
+    global _cached_content_name, _cached_content_instruction
+    global _cached_content_model, _cached_content_expires
+
+    # Reuse existing cache if instruction, model match and not expired
+    now = time.time()
+    if (
+        _cached_content_name
+        and _cached_content_instruction == instruction
+        and _cached_content_model == model
+        and now < _cached_content_expires
+    ):
+        return _cached_content_name
+
+    try:
+        client = await _get_client()
+        cached = client.caches.create(
+            model=model,
+            config={
+                "display_name": "ledgerlens-vision-prompt",
+                "system_instruction": instruction,
+                "ttl": f"{_CACHE_TTL_SECONDS}s",
+            },
+        )
+        _cached_content_name = cached.name
+        _cached_content_instruction = instruction
+        _cached_content_model = model
+        _cached_content_expires = now + _CACHE_TTL_SECONDS - 60  # refresh 1 min early
+        logger.info("[cache] Created vision prompt cache: %s (ttl=%ds)", cached.name, _CACHE_TTL_SECONDS)
+        return cached.name
+    except Exception as exc:
+        logger.warning("[cache] Failed to create context cache: %s — falling back to inline prompt", exc)
+        _cached_content_name = None
+        return None
 
 
 def _handle_gemini_api_error(api_error: Exception, context: str) -> None:
@@ -95,13 +237,14 @@ async def parse_receipt_with_gemini(
         # In the new API, we can use system_instruction parameter
         combined_message = f"{system_message}\n\n{user_message}"
         
-        # Configure generation settings (google-genai: use config, not generation_config)
+        # Configure generation settings with Structured Output
         config = genai.types.GenerateContentConfig(
             temperature=temperature,
             response_mime_type="application/json",
+            response_schema=RECEIPT_OUTPUT_SCHEMA,
         )
 
-        logger.info(f"Gemini API call: model={model}")
+        logger.info(f"Gemini API call: model={model} (structured output)")
 
         # Call API using google-genai SDK (config param, not generation_config)
         try:
@@ -198,9 +341,10 @@ Instructions:
     config = types.GenerateContentConfig(
         temperature=temperature,
         response_mime_type="application/json",
+        response_schema=RECEIPT_OUTPUT_SCHEMA,
     )
 
-    logger.info(f"Gemini vision retry: model={model}")
+    logger.info(f"Gemini vision retry: model={model} (structured output)")
     try:
         response = client.models.generate_content(
             model=model,
@@ -252,23 +396,46 @@ async def parse_receipt_with_gemini_vision_escalation(
     instruction: str,
     model: str,
     mime_type: str = "image/jpeg",
+    use_cache: bool = True,
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, int]]]:
     """
-    Escalation path: send receipt image + single instruction to Gemini (vision).
-    Same instruction is used for both OpenAI and Gemini escalation for consensus.
+    Send receipt image + instruction to Gemini (vision).
+    Used for both primary vision call and escalation.
+    When use_cache=True, attempts to cache the instruction via Context Caching
+    to reduce token costs on repeated calls.
     Returns (parsed_json, usage_dict). usage_dict has input_tokens, output_tokens (or None).
     """
     client = await _get_client()
     blob = types.Blob(data=image_bytes, mime_type=mime_type)
-    parts = [
-        types.Part(inline_data=blob),
-        types.Part(text=instruction),
-    ]
-    config = types.GenerateContentConfig(
-        temperature=0,
-        response_mime_type="application/json",
-    )
-    logger.info(f"Gemini vision escalation: model={model}")
+
+    # Try context caching: instruction goes into cache, only image is sent per-call
+    cache_name = None
+    if use_cache:
+        cache_name = await _get_or_create_vision_cache(instruction, model)
+
+    if cache_name:
+        # Cached path: instruction is in the cache, only send the image
+        parts = [types.Part(inline_data=blob)]
+        config = types.GenerateContentConfig(
+            temperature=0,
+            response_mime_type="application/json",
+            response_schema=RECEIPT_OUTPUT_SCHEMA,
+            cached_content=cache_name,
+        )
+        logger.info(f"Gemini vision (cached): model={model}")
+    else:
+        # Fallback: send instruction inline
+        parts = [
+            types.Part(inline_data=blob),
+            types.Part(text=instruction),
+        ]
+        config = types.GenerateContentConfig(
+            temperature=0,
+            response_mime_type="application/json",
+            response_schema=RECEIPT_OUTPUT_SCHEMA,
+        )
+        logger.info(f"Gemini vision (inline): model={model}")
+
     try:
         response = client.models.generate_content(
             model=model,

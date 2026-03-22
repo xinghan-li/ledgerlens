@@ -52,7 +52,7 @@ from .services.categorization.receipt_categorizer import (
 from .models import ReceiptOCRResponse
 from .services.ocr.documentai_client import parse_receipt_documentai
 from .services.ocr.textract_client import parse_receipt_textract
-from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_docai, process_receipt_with_llm_from_ocr
+from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_ocr
 from .core.workflow_processor_vision import process_receipt_workflow_vision
 from .core.bulk_processor import process_bulk_receipts
 from .core.workflow_processor_vision import PROJECT_ROOT
@@ -921,76 +921,6 @@ async def parse_receipt_with_textract(file: UploadFile = File(...)):
         )
 
 
-@app.post("/api/receipt/openai-llm", tags=["Receipts - LLM Model"])
-async def process_receipt_with_openai_llm_endpoint(request: DocumentAIResultRequest):
-    """
-    Process OCR results using OpenAI LLM (supports multiple OCR providers).
-    
-    Input: JSON returned by any OCR service (from /api/receipt/goog-ocr-dai or /api/receipt/amzn-ocr)
-    
-    Core advantages (unified processing):
-    - Automatically normalize different OCR output formats
-    - Unified extraction based on raw_text (not dependent on OCR-specific format)
-    - Unified validation logic (regardless of OCR source)
-    - Merchant-specific rules only need one set (targeting raw_text, not OCR)
-    
-    Workflow:
-    1. Automatically detect and normalize OCR results (Google Document AI / AWS Textract)
-    2. Extract high-confidence fields (confidence >= 0.95) as trusted_hints
-    3. Get corresponding RAG prompt based on merchant name
-    4. Call OpenAI LLM for structured reconstruction
-    5. Backend mathematical validation based on raw_text (not dependent on OCR)
-    6. Return structured JSON that can be directly stored to database
-    
-    Note: This endpoint returns complete structured data, including tbd (to be determined) fields.
-    
-    Usage example:
-    1. First call POST /api/receipt/goog-ocr-dai or POST /api/receipt/amzn-ocr to upload image and get OCR result
-    2. Send the data field from returned JSON as body's data to this endpoint
-    """
-    try:
-        # Detect OCR provider (via metadata or auto-detection)
-        ocr_data = request.data
-        ocr_provider = "unknown"
-        
-        if isinstance(ocr_data, dict):
-            # Check if has metadata field
-            if "metadata" in ocr_data and "ocr_provider" in ocr_data["metadata"]:
-                ocr_provider = ocr_data["metadata"]["ocr_provider"]
-            else:
-                # Auto-detection: check for characteristic fields
-                # Use key check instead of string conversion, more efficient and accurate
-                if "ExpenseDocuments" in ocr_data and isinstance(ocr_data.get("ExpenseDocuments"), list):
-                    ocr_provider = "aws_textract"
-                elif "entities" in ocr_data and "line_items" in ocr_data:
-                    ocr_provider = "google_documentai"
-                elif "Blocks" in ocr_data and isinstance(ocr_data.get("Blocks"), list):
-                    # AWS Textract's detect_document_text returns Blocks
-                    ocr_provider = "aws_textract"
-        
-        # Call unified LLM processing workflow (auto-normalize, use OpenAI)
-        result = await process_receipt_with_llm_from_ocr(
-            ocr_result=ocr_data,
-            merchant_name=None,  # Auto-identify from OCR result
-            ocr_provider=ocr_provider,
-            llm_provider="openai"
-        )
-        
-        logger.info(f"OpenAI LLM processing completed for file: {request.filename} (OCR: {ocr_provider})")
-        
-        return {
-            "filename": request.filename,
-            "success": True,
-            "data": result
-        }
-        
-    except Exception as e:
-        logger.error(f"OpenAI LLM processing failed for {request.filename}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"OpenAI LLM processing failed: {str(e)}"
-        )
-
 
 @app.post("/api/receipt/gemini-llm", tags=["Receipts - LLM Model"])
 async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequest):
@@ -1004,12 +934,11 @@ async def process_receipt_with_gemini_llm_endpoint(request: DocumentAIResultRequ
     - Unified extraction based on raw_text (not dependent on OCR-specific format)
     - Unified validation logic (regardless of OCR source)
     - Merchant-specific rules only need one set (targeting raw_text, not OCR)
-    - Uses Google Gemini LLM (temporarily reuses OpenAI's RAG prompt)
-    
+
     Workflow:
     1. Automatically detect and normalize OCR results (Google Document AI / AWS Textract)
     2. Extract high-confidence fields (confidence >= 0.95) as trusted_hints
-    3. Get corresponding RAG prompt based on merchant name (reuses OpenAI's prompt)
+    3. Get corresponding RAG prompt based on merchant name
     4. Call Google Gemini LLM for structured reconstruction
     5. Backend mathematical validation based on raw_text (not dependent on OCR)
     6. Return structured JSON that can be directly stored to database
@@ -1300,7 +1229,7 @@ async def confirm_receipt_after_reject(
     body: dict = Body(...),
     user_id: str = Depends(get_current_user),
 ):
-    """User confirmed 'this is a clear receipt' after Valid fail or OCR fail. Runs Gemini Vision then Textract+OpenAI. Requires receipt in pending_receipt_confirm."""
+    """User confirmed 'this is a clear receipt' after Valid fail or OCR fail. Runs Gemini Vision pipeline. Requires receipt in pending_receipt_confirm."""
     from pathlib import Path
     from .services.database.supabase_client import _get_client
     supabase = _get_client()
