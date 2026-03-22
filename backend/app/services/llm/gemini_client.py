@@ -122,6 +122,7 @@ _cached_content_instruction: Optional[str] = None   # instruction text that was 
 _cached_content_model: Optional[str] = None          # model the cache was created for
 _cached_content_expires: float = 0                   # time.time() when cache expires
 _CACHE_TTL_SECONDS = 3600  # 1 hour
+_cache_lock = asyncio.Lock()
 
 
 async def _get_or_create_vision_cache(
@@ -133,39 +134,40 @@ async def _get_or_create_vision_cache(
     Creates a new cache if none exists or the current one is stale/expired.
     Returns None if caching fails (caller should fall back to inline prompt).
     """
-    global _cached_content_name, _cached_content_instruction
-    global _cached_content_model, _cached_content_expires
+    async with _cache_lock:
+        global _cached_content_name, _cached_content_instruction
+        global _cached_content_model, _cached_content_expires
 
-    # Reuse existing cache if instruction, model match and not expired
-    now = time.time()
-    if (
-        _cached_content_name
-        and _cached_content_instruction == instruction
-        and _cached_content_model == model
-        and now < _cached_content_expires
-    ):
-        return _cached_content_name
+        # Reuse existing cache if instruction, model match and not expired
+        now = time.time()
+        if (
+            _cached_content_name
+            and _cached_content_instruction == instruction
+            and _cached_content_model == model
+            and now < _cached_content_expires
+        ):
+            return _cached_content_name
 
-    try:
-        client = await _get_client()
-        cached = client.caches.create(
-            model=model,
-            config={
-                "display_name": "ledgerlens-vision-prompt",
-                "system_instruction": instruction,
-                "ttl": f"{_CACHE_TTL_SECONDS}s",
-            },
-        )
-        _cached_content_name = cached.name
-        _cached_content_instruction = instruction
-        _cached_content_model = model
-        _cached_content_expires = now + _CACHE_TTL_SECONDS - 60  # refresh 1 min early
-        logger.info("[cache] Created vision prompt cache: %s (ttl=%ds)", cached.name, _CACHE_TTL_SECONDS)
-        return cached.name
-    except Exception as exc:
-        logger.warning("[cache] Failed to create context cache: %s — falling back to inline prompt", exc)
-        _cached_content_name = None
-        return None
+        try:
+            client = await _get_client()
+            cached = client.caches.create(
+                model=model,
+                config={
+                    "display_name": "ledgerlens-vision-prompt",
+                    "system_instruction": instruction,
+                    "ttl": f"{_CACHE_TTL_SECONDS}s",
+                },
+            )
+            _cached_content_name = cached.name
+            _cached_content_instruction = instruction
+            _cached_content_model = model
+            _cached_content_expires = now + _CACHE_TTL_SECONDS - 60  # refresh 1 min early
+            logger.info("[cache] Created vision prompt cache: %s (ttl=%ds)", cached.name, _CACHE_TTL_SECONDS)
+            return cached.name
+        except Exception as exc:
+            logger.warning("[cache] Failed to create context cache: %s — falling back to inline prompt", exc)
+            _cached_content_name = None
+            return None
 
 
 def _handle_gemini_api_error(api_error: Exception, context: str) -> None:
