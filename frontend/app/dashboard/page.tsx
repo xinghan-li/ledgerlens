@@ -1206,7 +1206,7 @@ export default function DashboardPage() {
                                                   setEditingSection({ receiptId: r.id, section: 'item' })
                                                 }
                                                 return (
-                                                  <div key={rawIt._key ?? rawIt.id ?? i} className="flex items-start gap-2 border-b border-theme-light-gray/50 pb-2 last:border-0">
+                                                  <div key={('_key' in rawIt ? rawIt._key : rawIt.id) ?? i} className="flex items-start gap-2 border-b border-theme-light-gray/50 pb-2 last:border-0">
                                                     {/* iOS-style delete + reorder controls */}
                                                     {isEditMode && !isMobileEditingItem && (
                                                       <div className="shrink-0 flex flex-col items-center gap-0.5 pt-0.5" onClick={(e) => e.stopPropagation()}>
