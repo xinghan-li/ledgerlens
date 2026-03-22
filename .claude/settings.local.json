@@ -5,7 +5,14 @@
       "Bash(xargs wc:*)",
       "Bash(npx tsc:*)",
       "Bash(xargs grep:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Read(//c/Users/Xinghan Li/.claude/skills/gstack/**)",
+      "Bash(./setup)",
+      "Bash(node:*)",
+      "Bash(curl:*)",
+      "Bash(export:*)",
+      "Bash(~/.bun/bin/bun.exe x:*)",
+      "Bash(gh pr:*)"
     ]
   }
 }

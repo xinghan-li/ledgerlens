@@ -1,10 +1,12 @@
 """
 Prompt Manager: Manage prompts for receipt parsing.
 
-Uses prompt_library + prompt_binding (replaces legacy tag-based RAG).
-Resolves prompts by scope: default + chain + location.
+Core prompts (system message, prompt template, output schema) are loaded from
+local files under prompts/templates/ (git-tracked). Store-specific prompts
+remain in the database (prompt_library + prompt_binding).
 """
 from datetime import datetime, timezone
+from pathlib import Path
 from supabase import create_client, Client
 from ..config import settings
 from typing import Optional, Dict, Any
@@ -13,6 +15,20 @@ import json
 from .prompt_loader import load_prompts_for_receipt_parse
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Local template files (git-tracked)
+# ---------------------------------------------------------------------------
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+def _load_template(filename: str) -> Optional[str]:
+    """Load a prompt template file. Returns None if file missing."""
+    path = _TEMPLATES_DIR / filename
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    logger.warning("[PromptManager] Template file not found: %s", path)
+    return None
 
 # Singleton Supabase client
 _supabase: Optional[Client] = None
@@ -72,176 +88,40 @@ def get_default_prompt() -> Dict[str, Any]:
     return {
         "prompt_template": _get_default_prompt_template(),
         "system_message": _get_default_system_message(),
-        "model_name": settings.openai_model,
+        "model_name": settings.gemini_model,
         "temperature": 0.0,
         "output_schema": _get_default_output_schema(),
     }
 
 
 def _get_default_system_message() -> str:
-    """Default system message."""
-    return """You are a receipt parsing expert. Your task is to extract structured information from receipt text and trusted hints from Document AI.
-
-Key requirements:
-1. Output ONLY valid JSON, no additional text
-2. Follow the exact schema provided
-3. **All monetary amounts must be output in CENTS (integer), not dollars.** For example: $14.99 → 1499, $198.59 → 19859. This applies to receipt.subtotal, receipt.tax, receipt.total, receipt.fees, and every item's line_total, unit_price, original_price, discount_amount. We use cents to avoid floating-point errors; do not output decimals for money.
-4. Perform validation in cents: quantity × unit_price ≈ line_total (tolerance: ±1 cent) - **EXCEPT for package price discounts** (see tag-based instructions)
-5. Sum of all line_totals must ≈ total (tolerance: ±1 cent)
-6. If information is missing or uncertain, set to null and document in tbd
-7. Do not hallucinate or guess values
-8. **IMPORTANT**: If you see package discount patterns (e.g., "2/$9.00"), follow the tag-based instructions - do NOT validate quantity × unit_price = line_total for those items
-9. **NEW**: If an Initial Parse Result is provided, use it as a reference to reduce hallucination. The initial parse is from a rule-based system that extracts items, totals, and validation from OCR coordinates. Cross-check your extraction with the initial parse result, but correct any OCR errors you find in product names.
-10. **User-facing notes (all stores)**: Our database stores monetary amounts in CENTS. In any free-text shown to the user (e.g. reason, tbd.notes, sum_check_notes, reasoning, or validation notes), always write amounts in DOLLARS with a $ sign (e.g. $198.59, $114.07). Never write raw cents (e.g. 19859, 11407) in these text fields.
-11. If you cannot be confident or need to escalate, set top-level "reason" to your finding; otherwise omit or null. Still output the best-effort JSON."""
+    """Load system message from local file (git-tracked)."""
+    content = _load_template("system_message.txt")
+    if content:
+        return content
+    raise RuntimeError(
+        "System message template not found at prompts/templates/system_message.txt"
+    )
 
 
 def _get_default_prompt_template() -> str:
-    """Default prompt template."""
-    return """Parse the following receipt text and extract structured information.
-
-## Raw Text:
-{raw_text}
-
-## Trusted Hints (high confidence fields from Document AI):
-{trusted_hints}
-
-## Output Schema:
-{output_schema}
-
-## Instructions:
-REFERENCE DATE (today): {reference_date}. Any receipt date on or before this date is valid; use the date exactly as printed on the receipt.
-
-1. Extract receipt-level fields (merchant, date, time, amounts, payment method)
-   - **Date format**: Must be YYYY-MM-DD (e.g., "2026-01-25"). Use the date EXACTLY as printed on the receipt; do NOT substitute or correct the year (e.g. if the receipt shows 2026, output 2026; never change it to the current year).
-   - **Canadian date ambiguity**: Canadian stores often print dates as YY/MM/DD (e.g. "26/03/07" = 2026-03-07, "26/02/22" = 2026-02-22). For a 3-segment date A/B/C on a Canadian receipt, try all three interpretations and keep only the ones that produce a calendar-valid date:
-     1. YY/MM/DD → year=20A, month=B, day=C
-     2. DD/MM/YY → day=A, month=B, year=20C
-     3. MM/DD/YY → month=A, day=B, year=20C
-     Among valid interpretations, choose the one whose result is **closest to the REFERENCE DATE** (usually the most recent past date).
-     **NEVER apply a "past-year override"**: if the closest-to-reference interpretation gives a year like 2022, that IS the correct year — output it as-is. Do NOT silently swap the year to match the current year.
-   - **Time format**: Must be HH:MM:SS or HH:MM (e.g., "13:00:00" or "13:00")
-   - Do NOT include newlines or extra text in date/time fields
-   - **Payment**: Use full card brand name for payment_method (e.g. "Discover" not "DCVR", "Visa" not "VISA"). card_last4 = last 4 digits only (e.g. "3713" from "DCVR ************3713").
-   - **Address (CRITICAL — output separate fields for DB)**: Do NOT put the whole address in merchant_address only. Output these separate fields so we can write correctly to the database:
-     * **address_line1**: Street address only (e.g. "19715 Highway 99", "19630 Hwy 99"). No unit/suite, no city/state/zip.
-     * **address_line2**: Unit/plaza/mall number only — output the number alone (e.g. "101", "200", "1000"). Do NOT include prefixes like "Suite", "Unit", "Apt", "#". Omit if not on receipt.
-     * **city**: City name only (e.g. "Lynnwood", "Surrey").
-     * **state**: State or province code/name (e.g. "WA", "BC").
-     * **zip_code**: Zip or postal code only (e.g. "98036", "V3T 0A1").
-     * **country**: Country code or name (e.g. "US", "USA", "Canada").
-     * **merchant_address**: Optional fallback; if you fill the fields above, we will build the display address from them. You may set to null when structured fields are present.
-     * Examples: "19715 Highway 99, Suite 101, Lynnwood, WA 98036" → address_line1="19715 Highway 99", address_line2="101", city="Lynnwood", state="WA", zip_code="98036". "#1000-3700 No.3 Rd." → address_line2="1000" (number only).
-2. Extract all line items from raw_text, ensuring each item has:
-   - product_name (cleaned, no extra formatting)
-   - quantity and unit (if available)
-   - unit_price (if available)
-   - line_total (must match quantity × unit_price if both are present, **EXCEPT for package price discounts** - see tag-based instructions)
-3. Important: Extract subtotal, tax, and ALL fees/deposits:
-   - Extract subtotal ONLY if explicitly stated (e.g., "SUB TOTAL", "Subtotal")
-{costco_usa_totals_instructions}
-   - Extract tax ONLY if explicitly stated (e.g., "Tax", "GST", "PST", "HST")
-   - Extract ALL deposits and fees as separate line items:
-     * "Bottle Deposit" → include as item with product_name="Bottle Deposit"
-     * "Environment fee", "Environmental fee", "Env fee" → include as item with product_name="Environment fee"
-     * "CRF", "Container fee", "Bag fee" → include as items
-   - DO NOT calculate or estimate tax by subtracting subtotal from total
-   - Deposits, fees, and other charges are NOT tax - they are separate line items
-   - If subtotal is not shown: set subtotal to null
-   - If tax is not shown: set tax to null
-4. **Monetary output**: All amounts (subtotal, tax, total, fees, line_total, unit_price, etc.) must be integers in CENTS (e.g. $36.75 → 3675). No floats for money.
-5. Validate calculations (CRITICAL - follow this exact order, all in cents):
-   a) **Line items sum check**: Sum of all line_totals (including deposits, fees, etc.) should ≈ subtotal (±3 cents)
-      - If subtotal is NOT shown on receipt, skip this check
-      - If subtotal IS shown, this MUST pass
-   b) **Total sum check**: Starting from subtotal, add each component in order:
-      - subtotal + tax + deposits + fees = total (±3 cents)
-      - Example: If receipt shows "SUB TOTAL: $36.75, Tax: $1.73, Bottle Deposit: $0.05, Environment fee: $0.01, TOTAL: $38.54"
-        * Output as cents: subtotal 3675, tax 173, bottle 5, env 1, total 3854; verify 3675+173+5+1=3854
-      - Extract ALL fees/deposits as separate line items (Bottle Deposit, Environment fee, etc.)
-      - Include them in the items array with their exact names and amounts (amounts in cents)
-   c) **Item price validation**: For each item (if quantity and unit_price exist), verify: quantity × unit_price ≈ line_total (±1 cent)
-      - **EXCEPTION**: If the item is part of a package price discount (e.g., "2/$9.00", "3 for $10"), **SKIP this validation** - use the actual line_total from receipt
-6. Document any issues in the "tbd" section:
-   - Items with inconsistent price calculations
-   - Field conflicts between raw_text and trusted_hints
-   - Missing information
-   - In tbd.notes, reason, or any user-facing text: always write monetary amounts in dollars (e.g. $198.59), never in raw cents (e.g. 19859).
-
-## Currency Logic:
-- If address is in USA, default currency is USD
-- If address is in Canada, default currency is CAD
-- If currency is explicitly mentioned in raw_text, use that
-
-## Important:
-- If raw_text conflicts with trusted_hints, prefer raw_text and document conflict in tbd
-- Do not invent or guess values - use null if information is not available
-- Output must be valid JSON matching the schema exactly
-
-Output the JSON now:"""
+    """Load prompt template from local file (git-tracked)."""
+    content = _load_template("prompt_template.txt")
+    if content:
+        return content
+    raise RuntimeError(
+        "Prompt template file not found at prompts/templates/prompt_template.txt"
+    )
 
 
 def _get_default_output_schema() -> Dict[str, Any]:
-    """Default output schema. All monetary amounts in cents (integer) to avoid floating point."""
-    return {
-        "reason": "string or null (if escalating or not confident, explain here; otherwise omit or null)",
-        "receipt": {
-            "merchant_name": "string or null",
-            "merchant_address": "string or null (optional; prefer filling structured address fields below)",
-            "address_line1": "string or null (street address only, no unit no city/state/zip)",
-            "address_line2": "string or null (unit/plaza number only, e.g. 101, 200 — no Suite/Unit/# prefix)",
-            "city": "string or null",
-            "state": "string or null (state or province)",
-            "zip_code": "string or null (zip or postal code)",
-            "country": "string or null",
-            "merchant_phone": "string or null",
-            "currency": "string (USD, CAD, etc.)",
-            "purchase_date": "string (YYYY-MM-DD format ONLY, e.g. '2026-01-25') or null",
-            "purchase_time": "string (HH:MM:SS or HH:MM format ONLY, e.g. '13:00:00') or null",
-            "subtotal": "integer or null (amount in CENTS, e.g. 19859 for $198.59)",
-            "tax": "integer or null (amount in CENTS)",
-            "total": "integer (amount in CENTS)",
-            "payment_method": "string or null",
-            "card_last4": "string or null"
-        },
-        "items": [
-            {
-                "raw_text": "string",
-                "product_name": "string or null",
-                "quantity": "number or null",
-                "unit": "string or null",
-                "unit_price": "integer or null (amount in CENTS)",
-                "line_total": "integer or null (amount in CENTS)",
-                "is_on_sale": "boolean",
-                "category": "string or null"
-            }
-        ],
-        "tbd": {
-            "items_with_inconsistent_price": [
-                {
-                    "raw_text": "string",
-                    "product_name": "string or null",
-                    "reason": "string (e.g., 'quantity × unit_price (X.XX) does not equal line_total (Y.YY)' or 'Unable to match product name with correct price')"
-                }
-            ],
-            "field_conflicts": {
-                "field_name": {
-                    "from_raw_text": "value or null",
-                    "from_trusted_hints": "value or null",
-                    "reason": "string"
-                }
-            },
-            "missing_info": [
-                "string (description of missing information)"
-            ],
-            "total_mismatch": {
-                "calculated_total": "number (sum of all line_totals)",
-                "documented_total": "number (from receipt total)",
-                "difference": "number",
-                "reason": "string"
-            }
-        }
-    }
+    """Load output schema from local JSON file (git-tracked)."""
+    content = _load_template("output_schema.json")
+    if content:
+        return json.loads(content)
+    raise RuntimeError(
+        "Output schema file not found at prompts/templates/output_schema.json"
+    )
 
 
 def format_prompt(

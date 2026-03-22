@@ -16,7 +16,6 @@ import re
 from ...services.ocr.documentai_client import parse_receipt_documentai
 from ...prompts.prompt_manager import get_merchant_prompt, format_prompt
 from ...prompts.prompt_loader import build_second_round_system_message
-from .llm_client import parse_receipt_with_llm
 from .gemini_client import parse_receipt_with_gemini, parse_receipt_with_gemini_vision_escalation
 from ...services.database.supabase_client import get_store_chain
 from ...prompts.extraction_rule_manager import get_merchant_extraction_rules, apply_extraction_rules
@@ -26,32 +25,11 @@ from ...config import settings
 logger = logging.getLogger(__name__)
 
 
-async def process_receipt_with_llm_from_docai(
-    docai_result: Dict[str, Any],
-    merchant_name: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Process Document AI results with LLM (backward-compatible wrapper function).
-    
-    Args:
-        docai_result: Complete JSON result returned by Document AI
-        merchant_name: Optional merchant name (if known)
-        
-    Returns:
-        Structured receipt data
-    """
-    # Normalize OCR result
-    normalized = normalize_ocr_result(docai_result, provider="google_documentai")
-    
-    # Call unified processing function (default uses OpenAI)
-    return await process_receipt_with_llm_from_ocr(normalized, merchant_name=merchant_name, llm_provider="openai")
-
-
 async def process_receipt_with_llm_from_ocr(
     ocr_result: Dict[str, Any],
     merchant_name: Optional[str] = None,
     ocr_provider: str = "unknown",
-    llm_provider: str = "openai",
+    llm_provider: str = "gemini",
     receipt_id: Optional[str] = None,
     initial_parse_result: Optional[Dict[str, Any]] = None,
     store_in_chain: bool = False,
@@ -66,7 +44,7 @@ async def process_receipt_with_llm_from_ocr(
         ocr_result: OCR result (can be any format, will be automatically normalized)
         merchant_name: Optional merchant name (if known)
         ocr_provider: OCR provider (for auto-detection, e.g., "google_documentai", "aws_textract")
-        llm_provider: LLM provider ("openai" or "gemini")
+        llm_provider: LLM provider (default "gemini"; OpenAI deprecated)
         receipt_id: Optional receipt ID for database tracking
         initial_parse_result: Optional rule-based extraction result (RBSJ) to guide LLM
         store_in_chain: When True and RBSJ success, feed only RBSJ to LLM (no raw OCR)
@@ -216,23 +194,14 @@ async def process_receipt_with_llm_from_ocr(
         )
     
     # Step 5: Call LLM (read corresponding config from environment variables based on llm_provider)
-    logger.info(f"Calling {llm_provider.upper()} LLM: model={settings.gemini_model if llm_provider.lower() == 'gemini' else settings.openai_model}")
-    if llm_provider.lower() == "gemini":
-        model = settings.gemini_model
-        llm_result = await parse_receipt_with_gemini(
-            system_message=system_message,
-            user_message=user_message,
-            model=model,
-            temperature=prompt_config.get("temperature", 0.0)
-        )
-    else:
-        model = settings.openai_model
-        llm_result = parse_receipt_with_llm(
-            system_message=system_message,
-            user_message=user_message,
-            model=model,
-            temperature=prompt_config.get("temperature", 0.0)
-        )
+    model = settings.gemini_model
+    logger.info(f"Calling Gemini LLM: model={model}")
+    llm_result = await parse_receipt_with_gemini(
+        system_message=system_message,
+        user_message=user_message,
+        model=model,
+        temperature=prompt_config.get("temperature", 0.0)
+    )
     
     # Step 6: Extract prices from raw_text for validation (not dependent on LLM, not dependent on OCR source)
     line_items = unified_info.get("line_items", [])
@@ -530,7 +499,7 @@ async def run_store_second_round(
     if not (system_message or "").strip():
         logger.warning("[Store second round] No second-round prompt loaded for chain_id=%s, skipping", chain_id)
         return None
-    model = settings.gemini_model if llm_provider.lower() == "gemini" else settings.openai_model
+    model = settings.gemini_model
     logger.info("[Store second round] Running refinement for chain_id=%s with %s (vision=%s)", chain_id, model, image_bytes is not None)
     try:
         if llm_provider.lower() == "gemini" and image_bytes:
@@ -600,7 +569,7 @@ async def run_costco_second_round(
     if not (system_message or "").strip():
         logger.warning("[Costco second round] No second-round prompt loaded for chain_id=%s, skipping", chain_id)
         return None
-    model = settings.gemini_model if llm_provider.lower() == "gemini" else settings.openai_model
+    model = settings.gemini_model
     logger.info("[Costco second round] Running refinement with %s (model=%s, vision=%s)", llm_provider, model, image_bytes is not None)
     try:
         if llm_provider.lower() == "gemini" and image_bytes:
@@ -672,7 +641,7 @@ async def run_trader_joes_second_round(
     if not (system_message or "").strip():
         logger.warning("[Trader Joe's second round] No second-round prompt loaded for chain_id=%s, skipping", chain_id)
         return None
-    model = settings.gemini_model if llm_provider.lower() == "gemini" else settings.openai_model
+    model = settings.gemini_model
     logger.info("[Trader Joe's second round] Running refinement with %s (model=%s, vision=%s)", llm_provider, model, image_bytes is not None)
     try:
         if llm_provider.lower() == "gemini" and image_bytes:
@@ -742,7 +711,7 @@ async def run_whole_foods_second_round(
     if not (system_message or "").strip():
         logger.warning("[Whole Foods second round] No second-round prompt loaded for chain_id=%s, skipping", chain_id)
         return None
-    model = settings.gemini_model if llm_provider.lower() == "gemini" else settings.openai_model
+    model = settings.gemini_model
     logger.info("[Whole Foods second round] Running refinement with %s (model=%s, vision=%s)", llm_provider, model, image_bytes is not None)
     try:
         if llm_provider.lower() == "gemini" and image_bytes:

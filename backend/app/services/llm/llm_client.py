@@ -1,6 +1,9 @@
 """
 OpenAI LLM Client: Call OpenAI API for receipt parsing.
 Supports text-only and vision (image + prompt) for escalation.
+
+DEPRECATED (2025-03-21): This module is no longer used. The pipeline is Gemini-only.
+Kept for reference; will be removed in a future cleanup.
 """
 from openai import OpenAI
 from ...config import settings

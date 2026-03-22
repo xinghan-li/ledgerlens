@@ -5,7 +5,11 @@ import { useRouter } from 'next/navigation'
 import { getFirebaseAuth, getAuthToken } from '@/lib/firebase'
 import { formatTimeToHHmm, toTitleCaseStore } from '@/lib/utils'
 import { onAuthStateChanged } from 'firebase/auth'
-import DataAnalysisSection from './DataAnalysisSection'
+import dynamic from 'next/dynamic'
+const DataAnalysisSection = dynamic(() => import('./DataAnalysisSection'), {
+  loading: () => <div className="bg-white rounded-xl shadow p-6 mb-6 animate-pulse h-64" />,
+  ssr: false,
+})
 import { CameraCaptureButton } from './camera'
 import { useApiUrl } from '@/lib/api-url-context'
 import { useAuth, authFetch } from '@/lib/auth-context'
@@ -31,6 +35,39 @@ type ReceiptListItem = {
   store_name?: string | null
   chain_name?: string | null
   receipt_date?: string | null
+}
+
+/** Item as returned by the receipt detail API. */
+type ReceiptItem = {
+  id?: string
+  product_name?: string | null
+  original_product_name?: string | null
+  quantity?: number | string | null
+  unit?: string | null
+  unit_price?: number | string | null
+  line_total?: number | string | null
+  on_sale?: boolean
+  original_price?: number | string | null
+  discount_amount?: number | string | null
+  user_category_path?: string | null
+  category_path?: string | null
+  category_id?: string | null
+  user_category_id?: string | null
+  categorization_source?: string | null
+}
+
+/** Item in the local edit form state (all monetary values as dollar strings for inputs). */
+type EditableReceiptItem = {
+  _key: string
+  id?: string
+  product_name: string
+  quantity: string
+  unit: string
+  unit_price: string
+  line_total: string
+  on_sale: boolean
+  original_price: string
+  discount_amount: string
 }
 
 export default function DashboardPage() {
@@ -77,7 +114,7 @@ export default function DashboardPage() {
   const [editPaymentMethod, setEditPaymentMethod] = useState('')
   const [editPaymentLast4, setEditPaymentLast4] = useState('')
   const [editMerchantPhone, setEditMerchantPhone] = useState('')
-  const [editItems, setEditItems] = useState<Array<{ _key: string; id?: string; product_name: string; quantity: string; unit: string; unit_price: string; line_total: string; on_sale: boolean; original_price: string; discount_amount: string }>>([])
+  const [editItems, setEditItems] = useState<EditableReceiptItem[]>([])
   const [correctSubmitting, setCorrectSubmitting] = useState(false)
   const [correctMessage, setCorrectMessage] = useState<string | null>(null)
   const [categoriesList, setCategoriesList] = useState<Array<{ id: string; parent_id: string | null; name: string; path: string | null; level: number; is_locked?: boolean; sort_order?: number }>>([])
@@ -118,6 +155,7 @@ export default function DashboardPage() {
   }, [])
   const [mobileReceiptViewMode, setMobileReceiptViewMode] = useState<'receipt' | 'classification'>('receipt')
   const [mobileReceiptVisibleCount, setMobileReceiptVisibleCount] = useState(5)
+  const [desktopReceiptVisibleCount, setDesktopReceiptVisibleCount] = useState(10)
   const router = useRouter()
   const { setActions, setBannerInView } = useDashboardActions()
   const cameraTriggerRef = useRef<HTMLButtonElement>(null)
@@ -133,6 +171,7 @@ export default function DashboardPage() {
     processingCountRef.current = processingCount
   }, [processingCount])
 
+  // Parallel data fetch: auth/me + receipt list + categories all fire at once
   useEffect(() => {
     if (!token) {
       setUserClass(null)
@@ -140,6 +179,7 @@ export default function DashboardPage() {
       return
     }
     let cancelled = false
+    // 1) auth/me
     fetch(`${apiBaseUrl}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -149,8 +189,12 @@ export default function DashboardPage() {
         }
       })
       .catch(() => { if (!cancelled) setUserClass(null); if (!cancelled) setUserName(null) })
+    // 2) receipt list (in parallel)
+    fetchReceiptList()
+    // 3) categories (in parallel)
+    fetchCategories()
     return () => { cancelled = true }
-  }, [token])
+  }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setActions({
@@ -303,7 +347,7 @@ export default function DashboardPage() {
     }
     setEditItems(
       items.length
-        ? items.map((it: any, idx: number) => ({
+        ? items.map((it: ReceiptItem, idx: number) => ({
             _key: it.id ?? `item_${idx}`,
             id: it.id ?? undefined,
             product_name: it.product_name ?? '',
@@ -361,9 +405,7 @@ export default function DashboardPage() {
     return () => unsubscribe()
   }, [router])
 
-  useEffect(() => {
-    if (token) fetchReceiptList()
-  }, [token, fetchReceiptList])
+  // Receipt list fetch is now in the parallel data fetch effect above
 
   const clearCameraUploadTimers = useCallback(() => {
     cameraUploadTimersRef.current.forEach((id) => clearTimeout(id))
@@ -436,10 +478,7 @@ export default function DashboardPage() {
     } catch (_) {}
   }, [apiBaseUrl, auth])
 
-  useEffect(() => {
-    fetchCategories()
-  }, [fetchCategories])
-
+  // Categories initial fetch is now in the parallel data fetch effect above
   // Refetch categories when opening classification editor so user-created sub-categories from /dashboard/categories are visible
   useEffect(() => {
     if (editingSection?.section === 'classification') fetchCategories()
@@ -882,6 +921,11 @@ export default function DashboardPage() {
                 byMonthVisible[key].push(r)
               })
               const visibleMonths = orderedMonths.filter((m) => (byMonthVisible[m]?.length ?? 0) > 0)
+
+              // Desktop pagination: only render first N receipts
+              const visibleOnDesktop = flattenedByDate.slice(0, desktopReceiptVisibleCount)
+              const hasMoreOnDesktop = flattenedByDate.length > desktopReceiptVisibleCount
+              const visibleDesktopIds = new Set(visibleOnDesktop.map((r) => r.id))
               return (
                 <div className="space-y-6">
                   {/* 手机端：按月份分组，带分割线，仅展示最近 N 条，每次展开 5 个 */}
@@ -1114,10 +1158,10 @@ export default function DashboardPage() {
                                               // In edit mode, iterate over editItems so add/delete/reorder updates are immediately visible
                                               const displayRows = editModeReceiptId === r.id ? editItems : items
                                               if (displayRows.length === 0) return <p className="text-theme-mid text-sm">No items</p>
-                                              return displayRows.map((rawIt: any, i: number) => {
+                                              return displayRows.map((rawIt: ReceiptItem | EditableReceiptItem, i: number) => {
                                                 // For display data (category paths, etc.) look up original item by id
                                                 const it = editModeReceiptId === r.id
-                                                  ? (items.find((orig: any) => orig.id && orig.id === rawIt.id) ?? rawIt)
+                                                  ? (items.find((orig: ReceiptItem) => orig.id && orig.id === rawIt.id) ?? rawIt)
                                                   : rawIt
                                                 const editRow = editModeReceiptId === r.id ? rawIt : null
                                                 const name = editRow?.product_name || (it.product_name ?? it.original_product_name ?? '')
@@ -1162,7 +1206,7 @@ export default function DashboardPage() {
                                                   setEditingSection({ receiptId: r.id, section: 'item' })
                                                 }
                                                 return (
-                                                  <div key={rawIt._key ?? rawIt.id ?? i} className="flex items-start gap-2 border-b border-theme-light-gray/50 pb-2 last:border-0">
+                                                  <div key={('_key' in rawIt ? rawIt._key : rawIt.id) ?? i} className="flex items-start gap-2 border-b border-theme-light-gray/50 pb-2 last:border-0">
                                                     {/* iOS-style delete + reorder controls */}
                                                     {isEditMode && !isMobileEditingItem && (
                                                       <div className="shrink-0 flex flex-col items-center gap-0.5 pt-0.5" onClick={(e) => e.stopPropagation()}>
@@ -1335,14 +1379,14 @@ export default function DashboardPage() {
                                                 >
                                                   {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
                                                   {$(rec.card_last4) && <div>Card: ****{String(rec.card_last4).replace(/\D/g, '').slice(-4)}</div>}
-                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1 text-theme-mid text-[10px]">(est.)</span>}</div>}
+                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1.5 inline-flex items-center rounded px-1 py-0 text-[10px] font-medium bg-amber-100 text-amber-700 border border-amber-300" title="Date was estimated — no date found on receipt">est.</span>}</div>}
                                                   <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
                                                 </div>
                                               ) : (
                                                 <>
                                                   {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
                                                   {$(rec.card_last4) && <div>Card: ****{String(rec.card_last4).replace(/\D/g, '').slice(-4)}</div>}
-                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1 text-theme-mid text-[10px]">(est.)</span>}</div>}
+                                                  {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1.5 inline-flex items-center rounded px-1 py-0 text-[10px] font-medium bg-amber-100 text-amber-700 border border-amber-300" title="Date was estimated — no date found on receipt">est.</span>}</div>}
                                                   <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
                                                 </>
                                               )}
@@ -1700,14 +1744,17 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   )}
-                  {orderedMonths.map((monthKey) => (
+                  {orderedMonths.map((monthKey) => {
+                    const visibleInMonth = byMonth[monthKey].filter((r) => visibleDesktopIds.has(r.id))
+                    if (visibleInMonth.length === 0) return null
+                    return (
                     <div key={monthKey}>
                       <div className="flex items-center gap-3 mb-3">
                         <span className="text-sm font-semibold text-theme-dark/90">{monthLabels[monthKey]}</span>
                         <div className="flex-1 h-px bg-theme-light-gray" />
                       </div>
                       <div className="space-y-3">
-                        {byMonth[monthKey].map((r) => (
+                        {visibleInMonth.map((r) => (
                           <div
                             key={r.id}
                             className="border border-theme-light-gray rounded-lg overflow-hidden"
@@ -2176,14 +2223,14 @@ export default function DashboardPage() {
                                                       >
                                                         {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
                                                         {$(rec.card_last4) && <div>Payment Card: {rec.payment_method ? `${rec.payment_method} ` : ''}****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
-                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1 text-theme-mid text-[10px]">(est.)</span>}</div>}
+                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1.5 inline-flex items-center rounded px-1 py-0 text-[10px] font-medium bg-amber-100 text-amber-700 border border-amber-300" title="Date was estimated — no date found on receipt">est.</span>}</div>}
                                                         <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
                                                       </div>
                                                     ) : (
                                                       <>
                                                         {$(rec.payment_method) && <div>Payment: {rec.payment_method}</div>}
                                                         {$(rec.card_last4) && <div>Payment Card: {rec.payment_method ? `${rec.payment_method} ` : ''}****{String(rec.card_last4).replace(/\D/g, '').slice(-4) || rec.card_last4}</div>}
-                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1 text-theme-mid text-[10px]">(est.)</span>}</div>}
+                                                        {$(rec.purchase_date) && <div>Date: {rec.purchase_date}{rec.purchase_date_is_estimated && <span className="ml-1.5 inline-flex items-center rounded px-1 py-0 text-[10px] font-medium bg-amber-100 text-amber-700 border border-amber-300" title="Date was estimated — no date found on receipt">est.</span>}</div>}
                                                         <div>Time: {editPurchaseTime?.trim() || $(rec.purchase_time) ? formatTimeToHHmm(editPurchaseTime?.trim() || rec.purchase_time || '') : '—'}</div>
                                                       </>
                                                     )}
@@ -2654,7 +2701,17 @@ export default function DashboardPage() {
                         ))}
                       </div>
                     </div>
-                  ))}
+                    )
+                  })}
+                  {hasMoreOnDesktop && (
+                    <button
+                      type="button"
+                      className="w-full py-3 text-sm text-theme-orange hover:underline font-medium"
+                      onClick={() => setDesktopReceiptVisibleCount((c) => c + 10)}
+                    >
+                      Show more receipts ({flattenedByDate.length - desktopReceiptVisibleCount} remaining)
+                    </button>
+                  )}
                 </div>
                 </div>
               );
