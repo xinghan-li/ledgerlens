@@ -16,7 +16,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const auth = getFirebaseAuth()
+    let refreshTimer: ReturnType<typeof setInterval> | null = null
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
       if (!user) {
         setToken(null)
         return
@@ -24,11 +27,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const t = await user.getIdToken()
         setToken(t)
+        // Proactive refresh every 50 minutes (token expires in 60 min)
+        refreshTimer = setInterval(async () => {
+          try {
+            const fresh = await user.getIdToken(true)
+            setToken(fresh)
+          } catch { /* will retry next interval */ }
+        }, 50 * 60 * 1000)
       } catch {
         setToken(null)
       }
     })
-    return () => unsubscribe()
+    return () => {
+      unsubscribe()
+      if (refreshTimer) clearInterval(refreshTimer)
+    }
   }, [])
 
   const refreshToken = useCallback(async (): Promise<string | null> => {
