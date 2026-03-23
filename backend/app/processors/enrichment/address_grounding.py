@@ -57,7 +57,9 @@ Use Google Search to find this store's real address. Return a JSON object with:
 - confidence: "high", "medium", or "low"
 - source_note: brief note about what you found (e.g. "Google Maps listing confirmed")
 
-If you cannot find the store, set verified=false and return whatever partial info you have.\
+If you cannot find the store, set verified=false and return whatever partial info you have.
+
+Return ONLY the JSON object, no markdown fences or extra text.\
 """
 
 
@@ -108,8 +110,6 @@ async def ground_address_with_search(
         client = await _get_gemini_client()
         config = types.GenerateContentConfig(
             temperature=0,
-            response_mime_type="application/json",
-            response_schema=_ADDRESS_SCHEMA,
             tools=[types.Tool(google_search=types.GoogleSearch())],
         )
 
@@ -123,7 +123,13 @@ async def ground_address_with_search(
             logger.warning("[grounding] Empty response from Gemini grounding")
             return llm_result
 
-        result = json.loads(response.text.strip())
+        raw_text = response.text.strip()
+        # Strip markdown code fences if present
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("\n", 1)[1] if "\n" in raw_text else raw_text[3:]
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3].strip()
+        result = json.loads(raw_text)
         confidence = result.get("confidence", "low")
         verified = result.get("verified", False)
 

@@ -114,7 +114,7 @@ Grounding, Evaluation) to improve accuracy, speed, and cost.
 
 - [ ] **#2 Genkit Flow 重构 workflow_processor_vision.py (1400+ lines)**
   - Replace hand-written orchestration with declarative Flow (Google Genkit or similar)
-  - Would simplify: retry logic, tracing, streaming, error handling
+  - Would simplify: retry logic, tracing, streaming, error handlingre
   - **Skipped (2025-03-21)**: Pipeline is stable and working. Large refactor with high
     risk of breakage and no user-visible improvement. Revisit when adding major new
     pipeline features (e.g., multi-page receipt support) where the current code becomes

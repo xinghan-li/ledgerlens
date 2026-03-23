@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useApiUrl } from '@/lib/api-url-context'
 import { useAuth } from '@/lib/auth-context'
+import { useDashboardActions } from '@/app/dashboard/dashboard-actions-context'
 import CategoryTreeSelector, { type UserCat } from '@/app/dashboard/CategoryTreeSelector'
 
 type UnclassifiedItem = {
@@ -79,6 +80,7 @@ function StoreCell({ name, address }: { name: string; address: string | null }) 
 export default function UnclassifiedPage() {
   const apiBaseUrl = useApiUrl()
   const auth = useAuth()
+  const { setUnclassifiedCount } = useDashboardActions()
   const [items, setItems] = useState<UnclassifiedItem[]>([])
   const [categories, setCategories] = useState<UserCat[]>([])
   const [loading, setLoading] = useState(true)
@@ -97,7 +99,9 @@ export default function UnclassifiedPage() {
       })
       if (res.ok) {
         const data = await res.json()
-        setItems(Array.isArray(data) ? data : [])
+        const list = Array.isArray(data) ? data : []
+        setItems(list)
+        setUnclassifiedCount(list.length)
         setError(null)
       } else {
         const text = await res.text()
@@ -114,7 +118,7 @@ export default function UnclassifiedPage() {
     } catch (e) {
       setError((e as Error).message || 'Network error')
     }
-  }, [apiBaseUrl, auth?.token])
+  }, [apiBaseUrl, auth?.token, setUnclassifiedCount])
 
   const fetchCategories = useCallback(async () => {
     if (!auth?.token) return
