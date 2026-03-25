@@ -54,6 +54,7 @@ type UserCategoryNode = {
 type Summary = {
   total_receipts: number
   total_amount_cents: number
+  total_tax_cents?: number
   by_store: Array<{ name: string; amount_cents: number; count: number }>
   by_payment: Array<{ name: string; amount_cents: number; count: number }>
   by_category_l1: Array<{ name: string; amount_cents: number }>
@@ -127,13 +128,18 @@ function buildSegments(
   const sorted = [...cats].sort((a, b) => b.amount_cents - a.amount_cents)
   const main: SpendingSegment[] = []
   let otherCents = 0
+  let categorizedCents = 0
   sorted.forEach((cat, i) => {
+    categorizedCents += cat.amount_cents
     const pct = (cat.amount_cents / total) * 100
     if (pct < 2) { otherCents += cat.amount_cents; return }
     main.push({ name: cat.name, amount_cents: cat.amount_cents, color: getCatColor(cat.name, i), pct })
   })
   if (otherCents > 0)
     main.push({ name: 'Other', amount_cents: otherCents, color: '#9E9E9E', pct: (otherCents / total) * 100 })
+  const uncategorizedCents = totalCents - categorizedCents
+  if (uncategorizedCents > 0)
+    main.push({ name: 'Uncategorized', amount_cents: uncategorizedCents, color: '#E0E0E0', pct: (uncategorizedCents / total) * 100 })
   return main
 }
 
@@ -246,7 +252,11 @@ function DonutChartCard({ summary }: { summary: Summary }) {
       }
 
       const sorted = [...currentNodes].sort((a, b) => b.amount_cents - a.amount_cents).filter(c => c.amount_cents > 0)
-      const levelTotal = sorted.reduce((s, c) => s + c.amount_cents, 0) || 1
+      // At root level, use total_amount_cents so percentages are relative to total spending
+      const isRoot = drillPath.length === 0
+      const levelTotal = isRoot
+        ? (summary.total_amount_cents || 1)
+        : (sorted.reduce((s, c) => s + c.amount_cents, 0) || 1)
 
       const segs: DonutSeg[] = sorted.map((node, i) => {
         let color: string
@@ -260,6 +270,22 @@ function DonutChartCard({ summary }: { summary: Summary }) {
           hasChildren: node.children.filter(c => c.amount_cents > 0).length > 0,
         }
       })
+
+      // At root level, add uncategorized segment to fill the gap
+      if (isRoot) {
+        const categorizedCents = sorted.reduce((s, c) => s + c.amount_cents, 0)
+        const uncategorizedCents = summary.total_amount_cents - categorizedCents
+        if (uncategorizedCents > 0) {
+          segs.push({
+            id: '__uncategorized__',
+            name: 'Uncategorized',
+            amount_cents: uncategorizedCents,
+            color: '#E0E0E0',
+            pct: (uncategorizedCents / levelTotal) * 100,
+            hasChildren: false,
+          })
+        }
+      }
 
       return { segs, levelTotal, canDrill: true }
     }
@@ -448,6 +474,17 @@ function DonutChartCard({ summary }: { summary: Summary }) {
             <p className="text-[11px] font-semibold uppercase tracking-widest text-theme-mid mb-1">TOP CATEGORY</p>
             <p className="text-xl font-bold text-theme-dark truncate" title={topCat.name}>{topCat.name}</p>
             <p className="text-xs text-theme-mid/80 mt-0.5">{formatDollars(topCat.amount_cents)}</p>
+          </div>
+        )}
+        {(summary.total_tax_cents ?? 0) > 0 && (
+          <div className="flex-1 bg-white rounded-xl shadow p-4 sm:p-6">
+            <p className="text-[11px] font-semibold uppercase tracking-widest text-theme-mid mb-1">TOTAL TAX</p>
+            <p className="text-2xl font-bold text-theme-dark">{formatDollars(summary.total_tax_cents ?? 0)}</p>
+            <p className="text-xs text-theme-mid/80 mt-0.5">
+              {summary.total_amount_cents > 0
+                ? `${(((summary.total_tax_cents ?? 0) / summary.total_amount_cents) * 100).toFixed(1)}% of total`
+                : ''}
+            </p>
           </div>
         )}
       </div>
@@ -877,7 +914,7 @@ export default function DataAnalysisSection({ token }: { token: string | null })
         {!loading && !error && summary && (summary.total_receipts > 0 || summary.total_amount_cents > 0) && (
           <>
             {/* Total Receipts + Total Amount */}
-            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm items-end">
+            <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-sm items-end">
               <div>
                 <span className="text-theme-mid block">Total Receipts</span>
                 <p className="font-semibold text-theme-dark">{summary.total_receipts}</p>
@@ -885,6 +922,10 @@ export default function DataAnalysisSection({ token }: { token: string | null })
               <div>
                 <span className="text-theme-mid block">Total Amount</span>
                 <p className="font-semibold text-theme-dark tabular-nums">{formatDollars(summary.total_amount_cents)}</p>
+              </div>
+              <div>
+                <span className="text-theme-mid block">Tax</span>
+                <p className="font-semibold text-theme-dark tabular-nums">{formatDollars(summary.total_tax_cents ?? 0)}</p>
               </div>
             </div>
             {/* Feature 1: Stacked Progress Bar */}

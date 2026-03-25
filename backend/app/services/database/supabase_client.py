@@ -3102,6 +3102,7 @@ def get_user_analytics_summary(
         return {
             "total_receipts": 0,
             "total_amount_cents": 0,
+            "total_tax_cents": 0,
             "by_store": [],
             "by_payment": [],
             "by_category_l1": [],
@@ -3116,7 +3117,7 @@ def get_user_analytics_summary(
     # Summaries: total (cents), store_chain_id, store_name, payment_method, payment_last4; optionally filter by receipt_date
     sum_q = (
         supabase.table("record_summaries")
-        .select("receipt_id, total, store_chain_id, store_name, payment_method, payment_last4")
+        .select("receipt_id, total, tax, store_chain_id, store_name, payment_method, payment_last4")
         .in_("receipt_id", receipt_ids)
     )
     if start_date and end_date:
@@ -3137,10 +3138,14 @@ def get_user_analytics_summary(
     # By payment
     payment_totals: Dict[str, Dict[str, Any]] = {}
     total_amount_cents = 0
+    total_tax_cents = 0
     for s in summaries:
         total_cents = s.get("total")
         if total_cents is not None:
             total_amount_cents += int(total_cents)
+        tax_cents = s.get("tax")
+        if tax_cents is not None:
+            total_tax_cents += int(tax_cents)
         store_key = None
         if s.get("store_chain_id"):
             store_key = chain_name_by_id.get(str(s["store_chain_id"])) or s.get("store_name") or "Unknown"
@@ -3279,6 +3284,7 @@ def get_user_analytics_summary(
     return {
         "total_receipts": len(summaries),
         "total_amount_cents": total_amount_cents,
+        "total_tax_cents": total_tax_cents,
         "by_store": by_store,
         "by_payment": by_payment,
         "by_category_l1": by_category_l1,
