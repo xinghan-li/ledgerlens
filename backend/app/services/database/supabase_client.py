@@ -3222,7 +3222,7 @@ def get_user_analytics_summary(
     unclassified_count = 0
     unclassified_amount_cents = 0
     for it in items:
-        if it.get("category_id") or it.get("user_category_id"):
+        if it.get("user_category_id"):
             continue
         line_cents = it.get("line_total")
         if line_cents is not None:
