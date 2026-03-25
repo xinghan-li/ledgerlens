@@ -944,14 +944,22 @@ export default function DataAnalysisSection({ token }: { token: string | null })
                 <p className="font-semibold text-theme-dark tabular-nums">{formatDollars(summary.total_fees_cents ?? 0)}</p>
               </div>
             </div>
-            {/* Feature 1: Stacked Progress Bar */}
-            {summary.by_category_l1.length > 0 && (
-              <StackedProgressBar segments={buildSegments(summary.by_category_l1, summary.total_amount_cents, [
-                { name: 'Tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
-                { name: 'Fees', amount_cents: summary.total_fees_cents ?? 0, color: '#CFD8DC' },
-                { name: 'Uncategorized', amount_cents: summary.unclassified_amount_cents ?? 0, color: '#E0E0E0' },
-              ])} />
-            )}
+            {/* Feature 1: Stacked Progress Bar — uses user categories when available */}
+            {(() => {
+              const ucTree = (summary.by_user_category && summary.by_user_category.length > 0)
+                ? buildUCTree(summary.by_user_category)
+                : []
+              const barCats = ucTree.length > 0
+                ? ucTree.map(n => ({ name: n.name, amount_cents: n.amount_cents }))
+                : summary.by_category_l1
+              return barCats.length > 0 ? (
+                <StackedProgressBar segments={buildSegments(barCats, summary.total_amount_cents, [
+                  { name: 'Tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
+                  { name: 'Fees', amount_cents: summary.total_fees_cents ?? 0, color: '#CFD8DC' },
+                  { name: 'Uncategorized', amount_cents: summary.unclassified_amount_cents ?? 0, color: '#E0E0E0' },
+                ])} />
+              ) : null
+            })()}
           </>
         )}
       </div>
