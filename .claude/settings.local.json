@@ -20,7 +20,10 @@
       "Read(//f//**)",
       "Bash(grep -n \"save_receipt_items\\\\|save_receipt_summary\" backend/app/core/*.py)",
       "Bash(find backend:*)",
-      "Bash(find backend/app/prompts -type f -name *.py -o -name *.txt -o -name *.md)"
+      "Bash(find backend/app/prompts -type f -name *.py -o -name *.txt -o -name *.md)",
+      "mcp__claude_ai_Supabase__execute_sql",
+      "mcp__claude_ai_Supabase__list_projects",
+      "mcp__claude_ai_Supabase__list_tables"
     ],
     "additionalDirectories": [
       "f:\\"
