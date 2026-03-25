@@ -1,10 +1,9 @@
 """
 LLM-based classification suggestion for classification_review.
 
-Calls Gemini to infer category (L1/L2/L3), size, unit_type from raw_product_name
+Calls Gemini to infer L1 category, size, unit_type from raw_product_name
 and merchant context. Results are used to pre-fill classification_review rows as unconfirmed.
 """
-import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -15,53 +14,25 @@ from app.services.llm.gemini_client import parse_receipt_with_gemini
 logger = logging.getLogger(__name__)
 
 
-def _path_to_category_id(path: str, supabase) -> Optional[str]:
+def _name_to_l1_category_id(name: str, supabase) -> Optional[str]:
     """
-    Look up category_id from path (e.g. 'Grocery/Dairy/Milk' or 'Grocery/Produce/Fruit').
-    Returns UUID of level-3 category or None.
+    Look up L1 category_id by name (e.g. 'Groceries', 'Electronics').
+    Case-insensitive match against active L1 categories.
     """
-    if not path or not isinstance(path, str):
+    if not name or not isinstance(name, str):
         return None
-    # Normalize: trim, collapse spaces, optional " / " or " > " to "/"
-    path_clean = path.strip().replace(" / ", "/").replace(" > ", "/").replace("\\", "/")
-    path_clean = "/".join(p.strip() for p in path_clean.split("/") if p.strip())
-    if not path_clean:
+    name_lower = name.strip().lower()
+    if not name_lower:
         return None
     try:
-        # Path in DB may use different casing; try exact first, then case-insensitive
-        res = supabase.table("categories").select("id").eq("path", path_clean).eq("level", 3).limit(1).execute()
-        if res.data and res.data[0]:
-            return res.data[0]["id"]
-        # Try matching by path segments: we have path like "Grocery/Dairy/Milk", DB has "grocery/dairy/milk"
-        path_lower = path_clean.lower()
-        res2 = supabase.table("categories").select("id, path").eq("level", 3).execute()
-        for row in (res2.data or []):
-            db_path = (row.get("path") or "").lower()
-            if db_path == path_lower:
+        res = supabase.table("categories").select("id, name").eq("level", 1).eq("is_active", True).execute()
+        for row in (res.data or []):
+            if (row.get("name") or "").lower() == name_lower:
                 return row["id"]
-        # Fuzzy: check if path ends match (e.g. "dairy/milk")
-        for row in (res2.data or []):
-            db_path = (row.get("path") or "").lower()
-            if path_lower.endswith(db_path.split("/")[-1] if "/" in db_path else db_path):
-                # Weak match - prefer exact path
-                pass
         return None
     except Exception as e:
-        logger.warning(f"Category path lookup failed for '{path_clean}': {e}")
+        logger.warning(f"L1 category lookup failed for '{name}': {e}")
         return None
-
-
-def _load_level3_paths(supabase) -> List[str]:
-    """Load all level-3 category paths so LLM can pick from them (e.g. Grocery/Dairy/Milk)."""
-    try:
-        res = supabase.table("categories").select("path").eq("level", 3).execute()
-        if not res.data:
-            return []
-        paths = [r.get("path") for r in res.data if r.get("path")]
-        return list(dict.fromkeys(paths))
-    except Exception as e:
-        logger.warning("Failed to load level-3 paths: %s", e)
-        return []
 
 
 async def suggest_classifications(
@@ -69,7 +40,7 @@ async def suggest_classifications(
     store_chain_name: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Call Gemini to suggest category (L1/L2/L3), size, unit_type for each product.
+    Call Gemini to suggest L1 category, size, unit_type for each product.
 
     Args:
         raw_product_names: List of product names as on receipt
@@ -88,21 +59,13 @@ async def suggest_classifications(
         return []
 
     supabase = _get_client()
-    level3_paths = _load_level3_paths(supabase)
 
     user_msg = "Infer categories, size, and unit_type for these products.\n\n"
     user_msg += f"Store/Merchant: {store_chain_name or 'Unknown'}\n\n"
     user_msg += "Raw product names:\n"
     for name in raw_product_names:
         user_msg += f"- {name}\n"
-    if level3_paths:
-        user_msg += "\nUse ONLY these exact level-3 paths for category_i/category_ii/category_iii (format Level1/Level2/Level3):\n"
-        for p in level3_paths[:80]:
-            user_msg += f"- {p}\n"
-        if len(level3_paths) > 80:
-            user_msg += f"... and {len(level3_paths) - 80} more. Pick the closest match from the taxonomy.\n"
     user_msg += "\nOutput valid JSON with the items array."
-
 
     try:
         result = await parse_receipt_with_gemini(
@@ -118,7 +81,7 @@ async def suggest_classifications(
     results: List[Dict[str, Any]] = []
 
     def _parse_size(s: str) -> tuple:
-        """Parse '3.5 oz' -> (3.5, 'oz', None); '12ct' -> (12, 'ct', None). Requires number + unit suffix."""
+        """Parse '3.5 oz' -> (3.5, 'oz', None); '12ct' -> (12, 'ct', None)."""
         import re
         s = (s or "").strip()
         if not s:
@@ -132,12 +95,12 @@ async def suggest_classifications(
         return (None, None, None)
 
     def _parse_quantity_only(s: str) -> Optional[float]:
-        """Parse a string that may be just a number (e.g. '3.5') when LLM returns size and unit separately."""
+        """Parse a string that may be just a number (e.g. '3.5')."""
         import re
         s = (s or "").strip()
         if not s:
             return None
-        m = re.match(r"^(\d+\.?\d*)\s*$", s) or re.match(r"^(\d+\.?\d*)", s)
+        m = re.match(r"^(\d+\.?\d*)", s)
         if m:
             try:
                 return float(m.group(1))
@@ -155,15 +118,15 @@ async def suggest_classifications(
         }
         for it in items_in:
             if (it.get("raw_product_name") or "").strip() == raw.strip():
-                c1 = (it.get("category_i") or "").strip()
-                c2 = (it.get("category_ii") or "").strip()
-                c3 = (it.get("category_iii") or "").strip()
-                path = "/".join(filter(None, [c1, c2, c3]))
-                if path:
-                    out["category_id"] = _path_to_category_id(path, supabase)
+                # New prompt returns "category" (L1 name)
+                cat_name = (it.get("category") or "").strip()
+                # Backward compat: also check old category_i field
+                if not cat_name:
+                    cat_name = (it.get("category_i") or "").strip()
+                if cat_name:
+                    out["category_id"] = _name_to_l1_category_id(cat_name, supabase)
                 s = (it.get("size") or "").strip()
                 u = (it.get("unit_type") or "").strip()
-                # Prefer combined "3.5 oz" so _parse_size can extract both; else LLM may return size="3.5", unit_type="oz" separately
                 combined = f"{s} {u}".strip() if (s and u) else (s or u or "")
                 qty, unit, pkg = _parse_size(combined)
                 if qty is not None:
@@ -172,7 +135,6 @@ async def suggest_classifications(
                     out["size_unit"] = unit
                 elif u:
                     out["size_unit"] = u.lower()
-                # When LLM returns quantity in size and unit in unit_type, _parse_size("3.5") fails; fallback to numeric-only
                 if out.get("size_quantity") is None and s:
                     q = _parse_quantity_only(s)
                     if q is not None:

@@ -277,8 +277,7 @@ function DonutChartCard({ summary }: { summary: Summary }) {
       // At root level, add tax, fees, and uncategorized segments
       if (isRoot) {
         const extras: Array<{ id: string; name: string; amount_cents: number; color: string }> = [
-          { id: '__tax__', name: 'Tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
-          { id: '__fees__', name: 'Fees', amount_cents: summary.total_fees_cents ?? 0, color: '#CFD8DC' },
+          { id: '__tax__', name: 'tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
           { id: '__uncategorized__', name: 'Uncategorized', amount_cents: summary.unclassified_amount_cents ?? 0, color: '#E0E0E0' },
         ]
         for (const ex of extras) {
@@ -302,8 +301,7 @@ function DonutChartCard({ summary }: { summary: Summary }) {
     // Don't add Uncategorized here — by_category_l1 uses category_id while unclassified uses user_category_id, mixing them would double-count
     const total = summary.total_amount_cents || 1
     const segs: DonutSeg[] = buildSegments(summary.by_category_l1, total, [
-      { name: 'Tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
-      { name: 'Fees', amount_cents: summary.total_fees_cents ?? 0, color: '#CFD8DC' },
+      { name: 'tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
     ]).map(s => ({
       ...s,
       id: s.name,
@@ -447,9 +445,9 @@ function DonutChartCard({ summary }: { summary: Summary }) {
                       <span className="flex-1 truncate text-theme-dark/90 min-w-0">{seg.name}</span>
                       <span className="tabular-nums text-theme-dark font-medium shrink-0">{formatDollars(seg.amount_cents)}</span>
                       <span className="tabular-nums text-theme-mid shrink-0 w-12 text-right">{seg.pct.toFixed(1)}%</span>
-                      {canDrill && seg.hasChildren && (
-                        <span className="text-theme-mid/60 text-xs shrink-0">›</span>
-                      )}
+                      <span className="text-theme-mid/60 text-xs shrink-0 w-3 text-center">
+                        {canDrill && seg.hasChildren ? '›' : ''}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -486,17 +484,6 @@ function DonutChartCard({ summary }: { summary: Summary }) {
             <p className="text-[11px] font-semibold uppercase tracking-widest text-theme-mid mb-1">TOP CATEGORY</p>
             <p className="text-xl font-bold text-theme-dark truncate" title={topCat.name}>{topCat.name}</p>
             <p className="text-xs text-theme-mid/80 mt-0.5">{formatDollars(topCat.amount_cents)}</p>
-          </div>
-        )}
-        {((summary.total_tax_cents ?? 0) + (summary.total_fees_cents ?? 0)) > 0 && (
-          <div className="flex-1 bg-white rounded-xl shadow p-4 sm:p-6">
-            <p className="text-[11px] font-semibold uppercase tracking-widest text-theme-mid mb-1">TAX & FEES</p>
-            <p className="text-2xl font-bold text-theme-dark">{formatDollars((summary.total_tax_cents ?? 0) + (summary.total_fees_cents ?? 0))}</p>
-            <p className="text-xs text-theme-mid/80 mt-0.5">
-              {(summary.total_tax_cents ?? 0) > 0 && `Tax ${formatDollars(summary.total_tax_cents ?? 0)}`}
-              {(summary.total_tax_cents ?? 0) > 0 && (summary.total_fees_cents ?? 0) > 0 && ' · '}
-              {(summary.total_fees_cents ?? 0) > 0 && `Fees ${formatDollars(summary.total_fees_cents ?? 0)}`}
-            </p>
           </div>
         )}
       </div>
@@ -926,7 +913,7 @@ export default function DataAnalysisSection({ token }: { token: string | null })
         {!loading && !error && summary && (summary.total_receipts > 0 || summary.total_amount_cents > 0) && (
           <>
             {/* Total Receipts + Total Amount */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-2 text-sm items-end">
+            <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-sm items-end">
               <div>
                 <span className="text-theme-mid block">Total Receipts</span>
                 <p className="font-semibold text-theme-dark">{summary.total_receipts}</p>
@@ -939,10 +926,6 @@ export default function DataAnalysisSection({ token }: { token: string | null })
                 <span className="text-theme-mid block">Tax</span>
                 <p className="font-semibold text-theme-dark tabular-nums">{formatDollars(summary.total_tax_cents ?? 0)}</p>
               </div>
-              <div>
-                <span className="text-theme-mid block">Fees</span>
-                <p className="font-semibold text-theme-dark tabular-nums">{formatDollars(summary.total_fees_cents ?? 0)}</p>
-              </div>
             </div>
             {/* Feature 1: Stacked Progress Bar — uses user categories when available */}
             {(() => {
@@ -954,8 +937,7 @@ export default function DataAnalysisSection({ token }: { token: string | null })
                 ? ucTree.map(n => ({ name: n.name, amount_cents: n.amount_cents }))
                 : summary.by_category_l1
               const extras: Array<{ name: string; amount_cents: number; color: string }> = [
-                { name: 'Tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
-                { name: 'Fees', amount_cents: summary.total_fees_cents ?? 0, color: '#CFD8DC' },
+                { name: 'tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
               ]
               // Only add Uncategorized when using user categories (same basis as unclassified_amount_cents)
               if (hasUC) extras.push({ name: 'Uncategorized', amount_cents: summary.unclassified_amount_cents ?? 0, color: '#E0E0E0' })
