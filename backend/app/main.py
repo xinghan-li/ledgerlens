@@ -56,6 +56,11 @@ from .services.llm.receipt_llm_processor import process_receipt_with_llm_from_oc
 from .core.workflow_processor_vision import process_receipt_workflow_vision
 from .core.bulk_processor import process_bulk_receipts
 from .core.workflow_processor_vision import PROJECT_ROOT
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def _run_vision_workflow_in_thread(
@@ -174,8 +179,8 @@ def _run_vision_pre_check_sync(
     if image_path:
         try:
             update_receipt_file_url(db_receipt_id, image_path)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(f"[vision-async] Failed to update receipt file URL for {db_receipt_id}: {exc}", exc_info=True)
 
     return {
         "early_return": False,
@@ -209,8 +214,8 @@ async def _run_vision_background(
         try:
             from .services.database.supabase_client import update_receipt_status
             update_receipt_status(existing_receipt_id, "failed", "vision_primary", admin_failure_kind="vision_fail")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(f"[vision-async] Failed to update receipt status for {existing_receipt_id}: {exc}", exc_info=True)
 from .models import DocumentAIResultRequest
 from .processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
 from .processors.validation.receipt_body_detector import filter_blocks_by_receipt_body, get_receipt_body_bounds
@@ -218,12 +223,7 @@ from .processors.validation.receipt_partitioner import partition_receipt
 from .processors.validation.coordinate_sum_checker import coordinate_based_sum_check
 from .processors.validation.pipeline import process_receipt_pipeline
 from .config import settings
-import logging
 from pathlib import Path
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Receipt OCR MVP",
