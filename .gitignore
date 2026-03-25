@@ -72,3 +72,4 @@ yarn-error.log*
 # Output
 input/
 output/
+.gstack/

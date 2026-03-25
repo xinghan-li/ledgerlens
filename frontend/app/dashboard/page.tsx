@@ -405,7 +405,13 @@ export default function DashboardPage() {
     return () => unsubscribe()
   }, [router])
 
-  // Receipt list fetch is now in the parallel data fetch effect above
+  // Auto-refresh receipt list while any receipt is still processing (poll every 8s)
+  useEffect(() => {
+    const hasProcessing = receiptList.some((r) => r.current_status === 'processing')
+    if (!hasProcessing) return
+    const interval = setInterval(() => fetchReceiptList(), 8000)
+    return () => clearInterval(interval)
+  }, [receiptList, fetchReceiptList])
 
   const clearCameraUploadTimers = useCallback(() => {
     cameraUploadTimersRef.current.forEach((id) => clearTimeout(id))
@@ -571,7 +577,8 @@ export default function DashboardPage() {
     formData.append('file', file)
     const controller = new AbortController()
     uploadControllersRef.current.set(key, controller)
-    const timeoutId = setTimeout(() => controller.abort(), 180000)
+    // Backend now returns immediately after pre-check; 30s is plenty
+    const timeoutId = setTimeout(() => controller.abort(), 30000)
 
     try {
       let response: Response
@@ -599,9 +606,17 @@ export default function DashboardPage() {
 
       if (response.ok) {
         const data = await response.json()
-        setUploadResult(data)
-        setUploadError(null)
-        fetchReceiptList()
+        if (data.status === 'processing' && data.receipt_id) {
+          // Async flow: receipt accepted, processing in background
+          setUploadError(null)
+          setUploadResult(null)
+          fetchReceiptList()
+        } else {
+          // Early exits: duplicate, locked, etc.
+          setUploadResult(data)
+          setUploadError(null)
+          fetchReceiptList()
+        }
       } else {
         let errorMessage: string
         if (response.status === 401) {
@@ -631,7 +646,7 @@ export default function DashboardPage() {
       if (!(error instanceof Error && error.name === 'AbortError' && cancelledKeysRef.current.has(key))) {
         if (error instanceof Error) {
           if (error.name === 'AbortError') {
-            setUploadError('Request timed out (3 min). Check:\n1. Backend is running\n2. Network is stable\n3. Image size is not too large')
+            setUploadError('Upload timed out. Please check your network and try again.')
           } else if (error.message.includes('Failed to fetch') || error.message === 'Load failed' || error.message === 'Load failed.') {
             const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
             const tip = isLocal
@@ -736,7 +751,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Processing: phase 1 = bookkeeper working; phase 2 = when store is detected we run extra check (no hardcoded store name) */}
+        {/* In-flight upload indicator (upload itself, before backend accepts) */}
         {processingCount > 0 && (
           <div className="mb-4 p-4 sm:p-5 bg-theme-light-gray/50 border border-theme-orange/30 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 animate-processing-pulse">
             <div className="flex items-center gap-2 sm:gap-3">
@@ -745,13 +760,7 @@ export default function DashboardPage() {
               </span>
               <div>
                 <p className="text-theme-dark font-medium text-base sm:text-lg mb-0.5">
-                  {processingCount === 1
-                    ? 'Bookkeeper is working hard on reviewing your receipt.'
-                    : `Bookkeeper is working hard on reviewing your ${processingCount} receipts.`}
-                </p>
-                <p className="text-theme-orange text-sm">
-                  You can upload more (up to {MAX_PROCESSING} at a time).
-                  For some stores we run an extra check or may escalate to a senior processor — sit tight, this may take a minute.
+                  Uploading {processingCount === 1 ? 'receipt' : `${processingCount} receipts`}...
                 </p>
               </div>
             </div>
@@ -761,8 +770,28 @@ export default function DashboardPage() {
               className="px-3 py-1.5 rounded bg-theme-red/90 hover:bg-theme-red text-white text-sm font-medium shrink-0"
               aria-label="Cancel all uploads"
             >
-              Cancel all
+              Cancel
             </button>
+          </div>
+        )}
+        {/* Backend processing indicator: receipts accepted, LLM working in background */}
+        {processingCount === 0 && receiptList.some((r) => r.current_status === 'processing') && (
+          <div className="mb-4 p-4 sm:p-5 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <span className="inline-block text-xl sm:text-2xl animate-spin select-none" aria-hidden>
+                ⏳
+              </span>
+              <div>
+                <p className="text-theme-dark font-medium text-base sm:text-lg mb-0.5">
+                  {receiptList.filter((r) => r.current_status === 'processing').length === 1
+                    ? 'Your receipt is being processed.'
+                    : `${receiptList.filter((r) => r.current_status === 'processing').length} receipts are being processed.`}
+                </p>
+                <p className="text-blue-700 text-sm">
+                  This usually takes 1-3 minutes. You can leave this page and come back later — we&#39;ll have it ready for you.
+                </p>
+              </div>
+            </div>
           </div>
         )}
         {/* Upload success toast: Success / Success after secondary check / Success after escalation */}
@@ -873,6 +902,7 @@ export default function DashboardPage() {
                 return new Date(d)
               }
               const getStatusLabel = (r: ReceiptListItem): string => {
+                if (r.current_status === 'processing') return 'Processing...'
                 if (r.current_status === 'success') {
                   if (r.current_stage === 'vision_store_specific') return 'Success after secondary check'
                   if (r.current_stage === 'vision_escalation') return 'Success after escalation'
@@ -988,7 +1018,7 @@ export default function DashboardPage() {
                             </span>
                             <span className="text-xs text-theme-mid">
                               {formatDisplayDate(r)}
-                              <span className={`ml-1.5 px-1.5 py-0.5 rounded ${r.current_status === 'success' ? 'bg-green-100 text-green-800' : r.current_status === 'failed' || r.current_status === 'needs_review' ? 'bg-amber-100 text-amber-800' : 'bg-theme-light-gray/50 text-theme-dark/90'}`}>
+                              <span className={`ml-1.5 px-1.5 py-0.5 rounded ${r.current_status === 'processing' ? 'bg-blue-100 text-blue-800 animate-pulse' : r.current_status === 'success' ? 'bg-green-100 text-green-800' : r.current_status === 'failed' || r.current_status === 'needs_review' ? 'bg-amber-100 text-amber-800' : 'bg-theme-light-gray/50 text-theme-dark/90'}`}>
                                 {getStatusLabel(r)}
                               </span>
                             </span>

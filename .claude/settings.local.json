@@ -12,7 +12,15 @@
       "Bash(curl:*)",
       "Bash(export:*)",
       "Bash(~/.bun/bin/bun.exe x:*)",
-      "Bash(gh pr:*)"
+      "Bash(gh pr:*)",
+      "WebSearch",
+      "WebFetch(domain:apps.apple.com)",
+      "WebFetch(domain:grocy.info)",
+      "WebFetch(domain:campusideaz.com)",
+      "Read(//f//**)"
+    ],
+    "additionalDirectories": [
+      "f:\\"
     ]
   }
 }

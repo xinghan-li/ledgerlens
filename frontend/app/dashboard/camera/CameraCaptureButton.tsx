@@ -182,7 +182,8 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
     stop()
     try {
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 180000)
+      // Backend returns immediately after pre-check; 30s is plenty
+      const timeoutId = setTimeout(() => controller.abort(), 30000)
       const res = auth
         ? await authFetch(
             apiBaseUrl,
@@ -203,6 +204,7 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
           onError?.('This receipt was already uploaded. If something is wrong, delete the existing receipt and upload a new photo.')
           return
         }
+        // Async flow: backend accepted, processing in background. Navigate back.
         onSuccess?.()
       } else {
         if (res.status === 401) {
@@ -215,7 +217,7 @@ export default function CameraCaptureButton({ token, auth, disabled, showAsProce
       }
     } catch (e) {
       if ((e as Error).name === 'AbortError') {
-        onError?.('Request timed out (3 min). Check My Receipts later in case it finished.')
+        onError?.('Upload timed out. Please check your network and try again.')
       } else {
         onError?.(normalizeNetworkError(e instanceof Error ? e.message : 'Upload failed.', apiBaseUrl))
       }
