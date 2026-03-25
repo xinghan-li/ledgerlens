@@ -299,11 +299,11 @@ function DonutChartCard({ summary }: { summary: Summary }) {
     }
 
     // Fallback: system L1 categories, non-drillable
+    // Don't add Uncategorized here — by_category_l1 uses category_id while unclassified uses user_category_id, mixing them would double-count
     const total = summary.total_amount_cents || 1
     const segs: DonutSeg[] = buildSegments(summary.by_category_l1, total, [
       { name: 'Tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
       { name: 'Fees', amount_cents: summary.total_fees_cents ?? 0, color: '#CFD8DC' },
-      { name: 'Uncategorized', amount_cents: summary.unclassified_amount_cents ?? 0, color: '#E0E0E0' },
     ]).map(s => ({
       ...s,
       id: s.name,
@@ -949,15 +949,18 @@ export default function DataAnalysisSection({ token }: { token: string | null })
               const ucTree = (summary.by_user_category && summary.by_user_category.length > 0)
                 ? buildUCTree(summary.by_user_category)
                 : []
-              const barCats = ucTree.length > 0
+              const hasUC = ucTree.length > 0
+              const barCats = hasUC
                 ? ucTree.map(n => ({ name: n.name, amount_cents: n.amount_cents }))
                 : summary.by_category_l1
+              const extras: Array<{ name: string; amount_cents: number; color: string }> = [
+                { name: 'Tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
+                { name: 'Fees', amount_cents: summary.total_fees_cents ?? 0, color: '#CFD8DC' },
+              ]
+              // Only add Uncategorized when using user categories (same basis as unclassified_amount_cents)
+              if (hasUC) extras.push({ name: 'Uncategorized', amount_cents: summary.unclassified_amount_cents ?? 0, color: '#E0E0E0' })
               return barCats.length > 0 ? (
-                <StackedProgressBar segments={buildSegments(barCats, summary.total_amount_cents, [
-                  { name: 'Tax', amount_cents: summary.total_tax_cents ?? 0, color: '#B0BEC5' },
-                  { name: 'Fees', amount_cents: summary.total_fees_cents ?? 0, color: '#CFD8DC' },
-                  { name: 'Uncategorized', amount_cents: summary.unclassified_amount_cents ?? 0, color: '#E0E0E0' },
-                ])} />
+                <StackedProgressBar segments={buildSegments(barCats, summary.total_amount_cents, extras)} />
               ) : null
             })()}
           </>
