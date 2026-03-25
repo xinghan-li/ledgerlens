@@ -17,7 +17,10 @@
       "WebFetch(domain:apps.apple.com)",
       "WebFetch(domain:grocy.info)",
       "WebFetch(domain:campusideaz.com)",
-      "Read(//f//**)"
+      "Read(//f//**)",
+      "Bash(grep -n \"save_receipt_items\\\\|save_receipt_summary\" backend/app/core/*.py)",
+      "Bash(find backend:*)",
+      "Bash(find backend/app/prompts -type f -name *.py -o -name *.txt -o -name *.md)"
     ],
     "additionalDirectories": [
       "f:\\"
