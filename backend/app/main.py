@@ -83,6 +83,134 @@ def _run_vision_workflow_in_thread(
         )
     finally:
         loop.close()
+
+
+def _run_vision_pre_check_sync(
+    image_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    user_id: str,
+) -> Dict[str, Any]:
+    """
+    Synchronous pre-check: compress image, duplicate check, rate-limit, create DB row, save image.
+    Returns early-exit result or receipt IDs for background processing.
+    """
+    from .core.workflow_processor_vision import (
+        _compress_image_if_needed,
+        generate_receipt_id,
+        _save_image_for_manual_review,
+    )
+    from .services.database.supabase_client import (
+        USER_CLASS_ADMIN,
+        check_duplicate_by_hash,
+        check_user_locked,
+        create_receipt,
+        get_user_class,
+        update_receipt_file_url,
+    )
+    import hashlib
+    from datetime import datetime
+
+    image_bytes, mime_type = _compress_image_if_needed(image_bytes, mime_type)
+    receipt_id = generate_receipt_id(filename)
+    file_hash = hashlib.sha256(image_bytes).hexdigest()
+
+    # Lock check
+    user_class = get_user_class(user_id)
+    if user_class < USER_CLASS_ADMIN:
+        locked, locked_until = check_user_locked(user_id)
+        if locked:
+            return {
+                "early_return": True,
+                "result": {
+                    "success": False, "receipt_id": None, "status": "locked",
+                    "error": "user_locked",
+                    "message": "Upload is temporarily locked. Please try again later.",
+                    "locked_until": locked_until.isoformat() if locked_until else None,
+                    "pipeline": "vision_b",
+                },
+            }
+
+    # Duplicate check
+    duplicate_id = check_duplicate_by_hash(file_hash, user_id)
+    if duplicate_id:
+        allow_dup = user_class >= USER_CLASS_ADMIN or settings.allow_duplicate_for_debug
+        if allow_dup:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            file_hash = f"{file_hash}_debug_{timestamp}"
+        else:
+            return {
+                "early_return": True,
+                "result": {
+                    "success": False, "receipt_id": receipt_id, "status": "duplicate",
+                    "error": "duplicate_receipt",
+                    "message": "This receipt has already been uploaded.",
+                    "existing_receipt_id": duplicate_id, "pipeline": "vision_b",
+                },
+            }
+
+    # Create DB row (status = "processing")
+    try:
+        db_receipt_id = create_receipt(
+            user_id=user_id,
+            raw_file_url=None,
+            file_hash=file_hash,
+            pipeline_version="vision_b",
+        )
+        logger.info(f"[vision-async] Created receipt {db_receipt_id}")
+    except Exception as exc:
+        logger.error(f"[vision-async] Failed to create receipt: {exc}")
+        return {
+            "early_return": True,
+            "result": {
+                "success": False, "receipt_id": None, "status": "error",
+                "error": "db_error", "message": "Failed to create receipt record.",
+                "pipeline": "vision_b",
+            },
+        }
+
+    # Save image immediately so it persists even if background task fails
+    image_path = _save_image_for_manual_review(receipt_id, image_bytes, filename)
+    if image_path:
+        try:
+            update_receipt_file_url(db_receipt_id, image_path)
+        except Exception:
+            pass
+
+    return {
+        "early_return": False,
+        "receipt_id": receipt_id,
+        "db_receipt_id": db_receipt_id,
+        "image_bytes": image_bytes,
+        "mime_type": mime_type,
+    }
+
+
+async def _run_vision_background(
+    image_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    user_id: str,
+    existing_receipt_id: str,
+):
+    """Fire-and-forget background task: run vision workflow, catch all errors."""
+    try:
+        result = await asyncio.to_thread(
+            _run_vision_workflow_in_thread,
+            image_bytes, filename, mime_type, user_id,
+            existing_receipt_id=existing_receipt_id,
+        )
+        logger.info(
+            f"[vision-async] Background completed for {existing_receipt_id}: "
+            f"status={result.get('status')}"
+        )
+    except Exception as exc:
+        logger.error(f"[vision-async] Background failed for {existing_receipt_id}: {exc}", exc_info=True)
+        try:
+            from .services.database.supabase_client import update_receipt_status
+            update_receipt_status(existing_receipt_id, "failed", "vision_primary", admin_failure_kind="vision_fail")
+        except Exception:
+            pass
 from .models import DocumentAIResultRequest
 from .processors.validation.coordinate_extractor import extract_text_blocks_with_coordinates
 from .processors.validation.receipt_body_detector import filter_blocks_by_receipt_body, get_receipt_body_bounds
@@ -1032,34 +1160,8 @@ async def process_receipt_workflow_endpoint(
             detail="Vision pipeline is currently disabled.",
         )
 
-    try:
-        mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
-        result = await asyncio.to_thread(
-            _run_vision_workflow_in_thread,
-            contents,
-            file.filename,
-            mime_type,
-            user_id,
-        )
-        
-        if result.get("needs_user_confirm"):
-            return result
-        if result.get("error") == "not_a_receipt":
-            raise HTTPException(
-                status_code=400,
-                detail=result.get("message", "Uploaded image does not appear to be a receipt.")
-            )
-        
-        logger.info(f"Workflow completed for {file.filename}: status={result.get('status')}")
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Workflow failed for {file.filename}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Workflow processing failed: {str(e)}"
-        )
+    mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
+    return await _handle_async_vision_upload(contents, file.filename, mime_type, user_id)
 
 
 @app.post("/api/receipt/workflow-vision", tags=["Receipts - Vision"])
@@ -1068,13 +1170,10 @@ async def process_receipt_workflow_vision_endpoint(
     user_id: str = Depends(check_workflow_rate_limit),
 ):
     """
-    Vision-only receipt processing pipeline.
+    Vision-only receipt processing pipeline (async).
 
-    Sends the raw image to Gemini for structured JSON; optional store-specific
-    second round; on sum check failure, Gemini-only escalation; then needs_review
-    if still unresolved. Same as /api/receipt/workflow (legacy OCR+LLM deprecated).
-
-    Rate limits and duplicate detection are identical to /api/receipt/workflow.
+    Accepts the image, creates a DB record, and returns immediately with receipt_id.
+    Processing runs in the background. Poll GET /api/receipt/{receipt_id} for status.
     """
     if file.content_type not in ("image/jpeg", "image/png", "image/jpg"):
         raise HTTPException(
@@ -1095,42 +1194,44 @@ async def process_receipt_workflow_vision_endpoint(
     if not settings.vision_pipeline_enabled:
         raise HTTPException(
             status_code=503,
-            detail="Vision pipeline is currently disabled. Please use /api/receipt/workflow.",
+            detail="Vision pipeline is currently disabled.",
         )
 
+    mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
+    return await _handle_async_vision_upload(contents, file.filename, mime_type, user_id)
+
+
+async def _handle_async_vision_upload(
+    contents: bytes, filename: str, mime_type: str, user_id: str,
+) -> Dict[str, Any]:
+    """Shared async upload handler: pre-check → return immediately → background processing."""
     try:
-        mime_type = "image/jpeg" if file.content_type in ("image/jpeg", "image/jpg") else "image/png"
-        # Run vision workflow in thread so the main event loop stays free (same as legacy).
-        result = await asyncio.to_thread(
-            _run_vision_workflow_in_thread,
-            contents,
-            file.filename,
-            mime_type,
-            user_id,
+        pre = await asyncio.to_thread(
+            _run_vision_pre_check_sync, contents, filename, mime_type, user_id,
         )
-
-        if result.get("needs_user_confirm"):
-            return result
-        if result.get("error") == "not_a_receipt":
-            raise HTTPException(
-                status_code=400,
-                detail=result.get("message", "Uploaded image does not appear to be a receipt."),
-            )
-
-        logger.info(
-            f"[vision] Workflow completed for {file.filename}: "
-            f"status={result.get('status')}"
-        )
-        return result
-
-    except HTTPException:
-        raise
     except Exception as exc:
-        logger.error(f"[vision] Workflow failed for {file.filename}: {exc}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Vision workflow processing failed: {str(exc)}",
+        logger.error(f"[vision-async] Pre-check failed for {filename}: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Upload pre-check failed: {str(exc)}")
+
+    if pre.get("early_return"):
+        return pre["result"]
+
+    db_receipt_id = pre["db_receipt_id"]
+
+    # Kick off background processing (fire-and-forget)
+    asyncio.create_task(
+        _run_vision_background(
+            pre["image_bytes"], filename, pre["mime_type"], user_id, db_receipt_id,
         )
+    )
+
+    return {
+        "success": True,
+        "receipt_id": db_receipt_id,
+        "status": "processing",
+        "message": "Receipt uploaded. Processing has started.",
+        "pipeline": "vision_b",
+    }
 
 
 @app.get("/api/receipt/list", tags=["Receipts - Other"])

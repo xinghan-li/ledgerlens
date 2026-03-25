@@ -528,8 +528,8 @@ def create_receipt(
     
     payload = {
         "user_id": user_id,
-        "current_status": "failed",  # Start with "failed", will be updated to "success" when processing completes
-        "current_stage": "ocr",  # Start with ocr, will be updated during processing
+        "current_status": "processing",  # Async: starts as "processing", updated to "success"/"failed"/"needs_review" when done
+        "current_stage": "vision_primary",  # Vision pipeline starts here
         "raw_file_url": raw_file_url,
         "file_hash": file_hash,
         "pipeline_version": pipeline_version,
@@ -659,7 +659,7 @@ def update_receipt_status(
     Update receipt current_status and current_stage.
     Optionally set admin_failure_kind for admin failed list (first_round_fail, user_escalated, vision_fail, escalation_fail).
     """
-    if current_status not in ('success', 'failed', 'needs_review'):
+    if current_status not in ('success', 'failed', 'needs_review', 'processing'):
         raise ValueError(f"Invalid status: {current_status}")
     if current_stage not in (
         'ocr', 'llm_primary', 'llm_fallback', 'manual',
@@ -3212,7 +3212,7 @@ def get_user_analytics_summary(
     unclassified_count = 0
     unclassified_amount_cents = 0
     for it in items:
-        if it.get("category_id"):
+        if it.get("category_id") or it.get("user_category_id"):
             continue
         line_cents = it.get("line_total")
         if line_cents is not None:
