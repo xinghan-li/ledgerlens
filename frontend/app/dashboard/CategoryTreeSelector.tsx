@@ -3,12 +3,15 @@
 /**
  * CategoryTreeSelector
  *
- * A searchable tree-based category selector. Create-new is inside the dropdown:
- *   - Top: "+ Create Sub Category at this level" (under L1) when rootParentId + onCreateCategory provided
- *   - Each row: "+ sub-level" on the right to add child under that node
+ * A searchable, collapsible tree-based category selector.
+ * - Default: only L1 categories shown, collapsed
+ * - Click chevron bubble to expand/collapse children
+ * - Click category name to select it
+ * - Search mode: shows all matching nodes flat (ignores collapse state)
+ * - "+ sub-level" to create child under any node
  */
 
-import { useMemo, useState, useRef, useEffect } from 'react'
+import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 
 export type UserCat = {
   id: string
@@ -32,7 +35,7 @@ function buildTree(cats: UserCat[]): TreeNode[] {
     } else {
       const parent = byId.get(node.parent_id)
       if (parent) parent.children.push(node)
-      else roots.push(node) // parent not in this subset → promote to root
+      else roots.push(node)
     }
   }
   const sortNodes = (nodes: TreeNode[]) => {
@@ -68,18 +71,27 @@ function getCategoryPath(cats: UserCat[], id: string): string {
   return parts.join(' › ')
 }
 
+/** Collect all ancestor IDs for a given category so we can auto-expand the path to the selected value */
+function getAncestorIds(cats: UserCat[], id: string): Set<string> {
+  const byId = new Map(cats.map((c) => [c.id, c]))
+  const ancestors = new Set<string>()
+  let cur = byId.get(id)
+  while (cur?.parent_id) {
+    ancestors.add(cur.parent_id)
+    cur = byId.get(cur.parent_id)
+  }
+  return ancestors
+}
+
 interface Props {
   categories: UserCat[]
   value: string | null
   onChange: (id: string | null) => void
   placeholder?: string
   disabled?: boolean
-  /** When set, show "+ Create Sub Category at this level" at top and allow creating under this parent (L1 id). */
   rootParentId?: string
-  /** Create category via API. May return new id (string) or full category object for optimistic UI. */
   onCreateCategory?: (parentId: string, name: string) => Promise<string | UserCat | null>
   onRefetchCategories?: () => Promise<void>
-  /** Called when a new category is created so parent can add it to the list optimistically. */
   onCategoryCreated?: (cat: UserCat) => void
 }
 
@@ -103,8 +115,17 @@ export default function CategoryTreeSelector({
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
+  // Expanded state: which L1/L2 nodes are expanded
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    // Auto-expand path to selected value
+    if (value) return getAncestorIds(categories, value)
+    return new Set()
+  })
+
   const tree = useMemo(() => buildTree(categories), [categories])
   const flat = useMemo(() => flattenWithDepth(tree), [tree])
+
+  const isSearching = search.trim().length > 0
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim()
@@ -115,10 +136,50 @@ export default function CategoryTreeSelector({
     )
   }, [flat, search])
 
+  // In normal (non-search) mode, only show nodes whose parents are all expanded
+  const visibleNodes = useMemo(() => {
+    if (isSearching) return filtered
+    return flat.filter(({ node, depth }) => {
+      if (depth === 0) return true // L1 always visible
+      // Check all ancestors are expanded
+      const byId = new Map(categories.map((c) => [c.id, c]))
+      let cur = byId.get(node.parent_id ?? '')
+      while (cur) {
+        if (!expanded.has(cur.id)) return false
+        if (!cur.parent_id) break
+        cur = byId.get(cur.parent_id)
+      }
+      return true
+    })
+  }, [flat, filtered, isSearching, expanded, categories])
+
   const selectedLabel = useMemo(() => {
     if (!value) return null
     return getCategoryPath(categories, value)
   }, [categories, value])
+
+  const toggleExpanded = useCallback((id: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  // Update expanded when value changes (auto-expand path to selected)
+  useEffect(() => {
+    if (value) {
+      const ancestors = getAncestorIds(categories, value)
+      if (ancestors.size > 0) {
+        setExpanded(prev => {
+          const next = new Set(prev)
+          for (const a of ancestors) next.add(a)
+          return next
+        })
+      }
+    }
+  }, [value, categories])
 
   // Close on outside click
   useEffect(() => {
@@ -169,6 +230,8 @@ export default function CategoryTreeSelector({
             : null
         if (fullCat) onCategoryCreated?.(fullCat)
         if (onRefetchCategories) await onRefetchCategories()
+        // Auto-expand the parent so the new child is visible
+        setExpanded(prev => { const n = new Set(prev); n.add(parentId); return n })
         onChange(newId)
         setNewCategoryName('')
         setCreatingUnder(null)
@@ -184,6 +247,11 @@ export default function CategoryTreeSelector({
   }
 
   const canCreate = Boolean(rootParentId && onCreateCategory && !disabled)
+
+  /** Check if a node has children */
+  const hasChildren = useCallback((nodeId: string): boolean => {
+    return categories.some(c => c.parent_id === nodeId)
+  }, [categories])
 
   return (
     <div ref={containerRef} className="relative w-full">
@@ -220,7 +288,7 @@ export default function CategoryTreeSelector({
           </div>
 
           {/* Options */}
-          <div className="max-h-52 overflow-y-auto py-1">
+          <div className="max-h-60 overflow-y-auto py-1">
             {/* Clear option */}
             {value && (
               <button
@@ -261,44 +329,60 @@ export default function CategoryTreeSelector({
               </>
             )}
 
-            {filtered.length === 0 && !canCreate && (
+            {visibleNodes.length === 0 && !canCreate && (
               <p className="px-3 py-2 text-xs text-theme-mid italic">No categories found</p>
             )}
 
-            {filtered.map(({ node, depth }) => {
+            {visibleNodes.map(({ node, depth }) => {
               const isSelected = node.id === value
-              const indentPx = depth * 12
+              const indentPx = depth * 16
               const showCreateUnderThis = creatingUnder === node.id
+              const nodeHasChildren = hasChildren(node.id)
+              const isExpanded = expanded.has(node.id)
               return (
                 <div key={node.id} className="flex flex-col">
                   <div
-                    className={`flex items-center w-full text-left px-3 py-1.5 text-xs gap-1 min-w-0 ${
+                    className={`flex items-center w-full text-left px-2 py-1.5 text-xs gap-0.5 min-w-0 ${
                       isSelected ? 'bg-theme-orange/15 text-theme-dark font-medium' : 'text-theme-dark hover:bg-theme-cream-f0'
                     }`}
-                    style={{ paddingLeft: `${12 + indentPx}px` }}
+                    style={{ paddingLeft: `${8 + indentPx}px` }}
                   >
+                    {/* Expand/collapse chevron */}
+                    {nodeHasChildren && !isSearching ? (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleExpanded(node.id) }}
+                        className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full bg-theme-light-gray/60 hover:bg-theme-light-gray text-theme-mid text-[9px] mr-1"
+                        title={isExpanded ? 'Collapse' : 'Expand'}
+                      >
+                        {isExpanded ? '▼' : '▶'}
+                      </button>
+                    ) : (
+                      <span className="shrink-0 w-5 mr-1" />
+                    )}
+                    {/* Category name (clickable to select) */}
                     <button
                       type="button"
                       onClick={() => handleSelect(node.id)}
                       className="flex-1 min-w-0 flex items-center gap-1 text-left"
                     >
-                      {depth > 0 && <span className="text-theme-mid shrink-0">{'·'.repeat(depth)}</span>}
                       <span className="truncate">{toTitleCase(node.name)}</span>
-                      {node.is_locked && <span className="ml-1 text-theme-mid text-[10px] shrink-0">L1</span>}
+                      {node.is_locked && <span className="ml-0.5 text-theme-mid text-[10px] shrink-0">L1</span>}
                     </button>
+                    {/* Create sub-level button */}
                     {canCreate && (
                       <button
                         type="button"
-                        onClick={(e) => { e.stopPropagation(); setCreatingUnder(showCreateUnderThis ? null : node.id); setNewCategoryName(''); setCreateError(null) }}
+                        onClick={(e) => { e.stopPropagation(); setCreatingUnder(showCreateUnderThis ? null : node.id); setNewCategoryName(''); setCreateError(null); if (!isExpanded) toggleExpanded(node.id) }}
                         className="shrink-0 px-1.5 py-0.5 text-theme-orange hover:bg-theme-orange/15 rounded text-[10px]"
                         title="Create sub-level"
                       >
-                        + sub-level
+                        +
                       </button>
                     )}
                   </div>
                   {showCreateUnderThis && (
-                    <div className="flex items-center gap-1.5 flex-wrap pl-3 pr-2 py-1 bg-theme-cream-f0/50 border-b border-theme-light-gray/30" style={{ paddingLeft: `${12 + indentPx + 12}px` }}>
+                    <div className="flex items-center gap-1.5 flex-wrap pr-2 py-1 bg-theme-cream-f0/50 border-b border-theme-light-gray/30" style={{ paddingLeft: `${8 + indentPx + 22}px` }}>
                       <input
                         type="text"
                         value={newCategoryName}
@@ -309,14 +393,14 @@ export default function CategoryTreeSelector({
                         autoFocus
                       />
                       <button type="button" onClick={handleCreateSubmit} disabled={creating || !newCategoryName.trim()} className="px-2 py-1 text-xs bg-theme-orange text-white rounded hover:bg-theme-orange/90 disabled:opacity-50">Add</button>
-                      <button type="button" onClick={() => { setCreatingUnder(null); setNewCategoryName(''); setCreateError(null) }} className="px-2 py-1 text-xs text-theme-mid hover:text-theme-dark">Cancel</button>
+                      <button type="button" onClick={() => { setCreatingUnder(null); setNewCategoryName(''); setCreateError(null) }} className="px-2 py-1 text-xs text-theme-mid hover:text-theme-dark">×</button>
                     </div>
                   )}
                 </div>
               )
             })}
 
-            {filtered.length === 0 && canCreate && (
+            {visibleNodes.length === 0 && canCreate && (
               <p className="px-3 py-2 text-xs text-theme-mid italic">No sub-categories yet. Use &quot;+ Create Sub Category at this level&quot; above.</p>
             )}
 

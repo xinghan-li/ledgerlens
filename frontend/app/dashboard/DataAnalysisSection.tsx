@@ -87,35 +87,40 @@ function useIndentScale(): number {
 
 // ===== Visualization: Color Palette =====
 
-const CAT_PALETTE = [
-  '#3B82F6', // blue
-  '#F97316', // orange
-  '#22C55E', // green
-  '#EF4444', // red
-  '#A855F7', // purple
-  '#06B6D4', // cyan
-  '#EAB308', // yellow
-  '#EC4899', // pink
-  '#14B8A6', // teal
-  '#F59E0B', // amber
-  '#6366F1', // indigo
-  '#84CC16', // lime
-]
-const CAT_COLOR_OVERRIDES: Record<string, string> = {
-  grocery: '#22C55E', groceries: '#22C55E',
-  household: '#6366F1',
-  health: '#F97316', healthcare: '#F97316',
-  'personal care': '#EF4444', beauty: '#EF4444',
-  tax: '#94A3B8', fees: '#94A3B8', 'tax & fees': '#94A3B8',
-  restaurant: '#F43F5E', dining: '#F43F5E', 'food & dining': '#F43F5E',
-  entertainment: '#A855F7',
-  transport: '#3B82F6', transportation: '#3B82F6',
-  clothing: '#EC4899', apparel: '#EC4899',
-  electronics: '#06B6D4',
+// 19 L1 categories + tax/uncategorized, all distinct and visually pleasing
+const CAT_COLORS: Record<string, string> = {
+  'groceries':            '#22C55E', // green
+  'snacks & beverages':   '#F59E0B', // amber
+  'dining':               '#F43F5E', // rose
+  'household supplies':   '#6366F1', // indigo
+  'home & furniture':     '#8B5CF6', // violet
+  'electronics':          '#06B6D4', // cyan
+  'clothing & apparel':   '#EC4899', // pink
+  'personal care':        '#EF4444', // red
+  'medical':              '#F97316', // orange
+  'transportation':       '#3B82F6', // blue
+  'education & office':   '#0EA5E9', // sky
+  'entertainment':        '#A855F7', // purple
+  'services':             '#14B8A6', // teal
+  'subscriptions':        '#D946EF', // fuchsia
+  'childcare':            '#FB923C', // light orange
+  'pet supplies':         '#84CC16', // lime
+  'garden':               '#10B981', // emerald
+  'special tax & fees':   '#64748B', // slate
+  'other':                '#9E9E9E', // gray
+  // non-category extras
+  'tax':                  '#B0BEC5', // blue-gray
+  'uncategorized':        '#E0E0E0', // light gray
 }
 
+// Fallback palette for any unknown category names
+const CAT_FALLBACK_PALETTE = [
+  '#7C3AED', '#0891B2', '#BE185D', '#CA8A04', '#059669',
+  '#4F46E5', '#DC2626', '#2563EB', '#65A30D', '#DB2777',
+]
+
 function getCatColor(name: string, idx: number): string {
-  return CAT_COLOR_OVERRIDES[name.toLowerCase().trim()] ?? CAT_PALETTE[idx % CAT_PALETTE.length]
+  return CAT_COLORS[name.toLowerCase().trim()] ?? CAT_FALLBACK_PALETTE[idx % CAT_FALLBACK_PALETTE.length]
 }
 
 
@@ -136,7 +141,7 @@ function buildSegments(
     main.push({ name: cat.name, amount_cents: cat.amount_cents, color: getCatColor(cat.name, i), pct })
   })
   if (otherCents > 0)
-    main.push({ name: 'Other', amount_cents: otherCents, color: '#9E9E9E', pct: (otherCents / total) * 100 })
+    main.push({ name: 'Others (<2%)', amount_cents: otherCents, color: '#9E9E9E', pct: (otherCents / total) * 100 })
   if (extras) {
     for (const ex of extras) {
       if (ex.amount_cents > 0)
@@ -799,8 +804,18 @@ export default function DataAnalysisSection({ token }: { token: string | null })
   const [quarterOptions, setQuarterOptions] = useState<PeriodOption[]>([])
   const [yearOptions, setYearOptions] = useState<PeriodOption[]>([])
 
-  // Session-level dismiss for the unclassified banner (reappears on page refresh)
-  const [unclassifiedBannerDismissed, setUnclassifiedBannerDismissed] = useState(false)
+  // Persistent dismiss: stored in localStorage, keyed by unclassified count
+  // Banner only reappears when new unclassified items are added (count changes)
+  const [unclassifiedBannerDismissed, setUnclassifiedBannerDismissed] = useState(() => {
+    if (typeof window === 'undefined') return false
+    const stored = localStorage.getItem('unclassified_banner_dismissed_count')
+    return stored !== null // will compare against actual count after data loads
+  })
+  const [dismissedAtCount, setDismissedAtCount] = useState<number | null>(() => {
+    if (typeof window === 'undefined') return null
+    const stored = localStorage.getItem('unclassified_banner_dismissed_count')
+    return stored !== null ? parseInt(stored, 10) : null
+  })
 
   useEffect(() => {
     setMonthOptions(buildMonthOptions())
@@ -834,7 +849,21 @@ export default function DataAnalysisSection({ token }: { token: string | null })
         if (!res.ok) throw new Error(res.statusText)
         return res.json()
       })
-      .then((data) => { if (!cancelled) { setSummary(data); if (data?.unclassified_count != null) setUnclassifiedCount(data.unclassified_count) } })
+      .then((data) => {
+        if (!cancelled) {
+          setSummary(data)
+          const count = data?.unclassified_count ?? 0
+          if (data?.unclassified_count != null) setUnclassifiedCount(count)
+          // Re-show banner only if count increased since last dismiss
+          if (dismissedAtCount !== null && count > dismissedAtCount) {
+            setUnclassifiedBannerDismissed(false)
+            localStorage.removeItem('unclassified_banner_dismissed_count')
+            setDismissedAtCount(null)
+          } else if (dismissedAtCount !== null && count <= dismissedAtCount) {
+            setUnclassifiedBannerDismissed(true)
+          }
+        }
+      })
       .catch((e) => { if (!cancelled) setError(e.message || 'Failed to load') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -975,13 +1004,18 @@ export default function DataAnalysisSection({ token }: { token: string | null })
                 className="flex-1 flex items-center justify-between px-4 py-3 rounded-l-lg border border-r-0 border-amber-300 bg-amber-50 hover:bg-amber-100 transition-colors duration-150"
               >
                 <span className="text-sm font-medium text-amber-900">
-                  ⚠️ {summary.unclassified_count} unclassified item(s) — {formatDollars(summary.unclassified_amount_cents ?? 0)}
+                  {summary.unclassified_count} item(s) pending classification — {formatDollars(summary.unclassified_amount_cents ?? 0)}
                 </span>
                 <span className="text-xs text-amber-600 shrink-0 ml-3">Review →</span>
               </Link>
               <button
                 type="button"
-                onClick={() => setUnclassifiedBannerDismissed(true)}
+                onClick={() => {
+                  const count = summary.unclassified_count ?? 0
+                  setUnclassifiedBannerDismissed(true)
+                  setDismissedAtCount(count)
+                  localStorage.setItem('unclassified_banner_dismissed_count', String(count))
+                }}
                 title="Dismiss"
                 className="px-3 rounded-r-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-500 hover:text-amber-700 transition-colors duration-150 text-base leading-none"
               >
