@@ -22,7 +22,7 @@ Output valid JSON with this schema:
   "items": [
     {
       "raw_product_name": "exact string from input",
-      "category": "one of the 17 L1 category names below",
+      "category": "one of the 19 L1 category names below",
       "size": "string or null",
       "unit_type": "string or null"
     }
@@ -35,7 +35,7 @@ Output valid JSON with this schema:
 
 2. **Snacks & Beverages** — Non-essential, ready-to-consume food and drinks. Includes chips, candy, cookies, crackers, granola bars, popcorn, nuts (snack packs), sodas, juices, energy drinks, bottled water, coffee beans/grounds, tea, alcohol (beer, wine, spirits). Rule of thumb: if you eat/drink it as-is without cooking, and it is not a core meal ingredient, it goes here.
 
-3. **Restaurants** — Any prepared food or drink purchased from a restaurant, café, fast-food chain, food truck, or delivery service (DoorDash, Uber Eats, etc.). Includes dine-in, takeout, and delivery meals. If the merchant is primarily a restaurant/café, ALL items on that receipt go here.
+3. **Dining** — Any prepared food or drink purchased from a restaurant, café, fast-food chain, food truck, or delivery service (DoorDash, Uber Eats, etc.). Includes dine-in, takeout, and delivery meals. If the merchant is primarily a restaurant/café, ALL items on that receipt go here.
 
 4. **Household Supplies** — Consumable products for cleaning and maintaining the home. Includes cleaning sprays, detergent, dish soap, trash bags, paper towels, toilet paper, tissues, aluminum foil, plastic wrap, sponges, light bulbs, batteries. Does NOT include furniture, décor, or durable goods (those go in Home & Furniture).
 
@@ -53,24 +53,29 @@ Output valid JSON with this schema:
 
 11. **Education & Office** — School and office supplies and services: pens, pencils, notebooks, binders, printer paper, ink cartridges, desk organizers, backpacks (school), textbooks, tuition, online course fees, tutoring, school lunch/meal plan charges, postage/shipping supplies.
 
-12. **Entertainment** — Leisure, recreation, and media: movie tickets, streaming subscriptions (Netflix, Spotify, etc.), books, magazines, video games, toys, board games, sporting goods (equipment, gym membership), concert/event tickets, hobby supplies (art, crafts, musical instruments), amusement parks, recreational activities.
+12. **Entertainment** — Leisure, recreation, and media: movie tickets, books, magazines, video games, toys, board games, sporting goods (equipment, gym membership), concert/event tickets, hobby supplies (art, crafts, musical instruments), amusement parks, recreational activities.
 
-13. **Services & Fees** — Service charges and fees that are not covered by more specific categories: haircuts/salon, dry cleaning, laundry service, bank fees, ATM fees, subscription boxes, membership fees (non-gym), insurance premiums (non-auto), legal/accounting services, home repair services (plumber, electrician), tax preparation, phone/internet bills, utility bills.
+13. **Services** — Service charges not covered by more specific categories: haircuts/salon, dry cleaning, laundry service, bank fees, ATM fees, membership fees (non-gym), insurance premiums (non-auto), legal/accounting services, home repair services (plumber, electrician), tax preparation, phone/internet bills, utility bills.
 
-14. **Childcare** — Services related to child supervision and early education: daycare, babysitter, nanny, after-school programs, summer camp, preschool tuition. Note: physical products for children (diapers → Household Supplies, baby food → Groceries, children clothing → Clothing & Apparel) go in their respective product categories; Childcare is for services only.
+14. **Subscriptions** — Recurring subscription charges: streaming services (Netflix, Spotify, Disney+, YouTube Premium), subscription boxes, SaaS/app subscriptions, newspaper/magazine subscriptions, meal kit subscriptions. If a charge is clearly a recurring subscription payment, it goes here rather than Entertainment or Services.
 
-15. **Pet Supplies** — Everything for pets: pet food, treats, litter, toys, beds, leashes, collars, grooming products, pet medication, vet visits/services.
+15. **Childcare** — Services related to child supervision and early education: daycare, babysitter, nanny, after-school programs, summer camp, preschool tuition. Note: physical products for children (diapers → Household Supplies, baby food → Groceries, children clothing → Clothing & Apparel) go in their respective product categories; Childcare is for services only.
 
-16. **Garden** — Outdoor and garden products: plants, seeds, soil, fertilizer, gardening tools, pots/planters, outdoor furniture (patio chairs, tables, umbrellas), lawn mower, hose, sprinkler, grill/BBQ, outdoor lighting, pool supplies.
+16. **Pet Supplies** — Everything for pets: pet food, treats, litter, toys, beds, leashes, collars, grooming products, pet medication, vet visits/services.
 
-17. **Other** — Use ONLY when no other category fits. This is the last resort. Common examples: gift cards (unknown purpose), charitable donations, miscellaneous fees that do not fit elsewhere. If in doubt between two categories, pick the more specific one — do NOT default to Other.
+17. **Garden** — Outdoor and garden products: plants, seeds, soil, fertilizer, gardening tools, pots/planters, outdoor furniture (patio chairs, tables, umbrellas), lawn mower, hose, sprinkler, grill/BBQ, outdoor lighting, pool supplies.
+
+18. **Special Tax & Fees** — Tax payments and government/institutional fees that appear as line items on a receipt: property tax, vehicle registration tax, license renewal fees, permit fees, government filing fees, HOA fees. Note: sales tax on a receipt is NOT this category (sales tax is captured at the receipt level, not as an item). This is for tax/fee items that are the primary purpose of the transaction.
+
+19. **Other** — Use ONLY when no other category fits. This is the last resort. Common examples: gift cards (unknown purpose), charitable donations, miscellaneous items that do not fit elsewhere. If in doubt between two categories, pick the more specific one — do NOT default to Other.
 
 ## Decision Rules
 
-- **Merchant override**: If the merchant is clearly a restaurant/café/fast-food (e.g. Starbucks, McDonald''s, Chipotle), classify ALL items as Restaurants regardless of individual item names.
-- **Store context**: Use the store name to inform ambiguous items. "Water" at Costco → Snacks & Beverages (bottled water); "Water" on a utility bill → Services & Fees.
+- **Merchant override**: If the merchant is clearly a restaurant/café/fast-food (e.g. Starbucks, McDonald''s, Chipotle), classify ALL items as Dining regardless of individual item names.
+- **Store context**: Use the store name to inform ambiguous items. "Water" at Costco → Snacks & Beverages (bottled water); "Water" on a utility bill → Services.
 - **Primary purpose wins**: A "travel mug" at Target → Home & Furniture (it is a durable good), not Snacks & Beverages. A "phone case" → Electronics (accessory for an electronic device), not Clothing & Apparel.
 - **Multi-purpose items**: When an item could fit multiple categories, choose the one that best matches its primary use. Baby wipes → Household Supplies (cleaning product); diaper cream → Personal Care.
+- **Subscriptions vs Services**: If an item is clearly a recurring subscription (e.g. "Netflix", "Spotify Premium", "HelloFresh"), use Subscriptions. One-time service charges (e.g. "haircut", "oil change") use Services or their specific category.
 - **Never guess**: If a product name is completely ambiguous or unreadable, use Other.',
   updated_at = NOW()
 WHERE key = 'classification' AND is_active = TRUE;
