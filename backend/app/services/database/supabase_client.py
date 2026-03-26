@@ -3352,6 +3352,9 @@ def get_user_unclassified_items(user_id: str) -> List[Dict[str, Any]]:
         uf = it.get("user_feedback") or {}
         if uf.get("dismissed"):
             continue
+        # Skip items the user marked "I don't know" – these are escalated to admin
+        if it.get("user_marked_idk"):
+            continue
         rid = it.get("receipt_id")
         s = summary_by_rid.get(str(rid)) if rid else {}
         store_name = (s.get("store_name") or "").strip()
@@ -3365,7 +3368,6 @@ def get_user_unclassified_items(user_id: str) -> List[Dict[str, Any]]:
             "store_address": s.get("store_address"),
             "product_name": it.get("product_name") or "",
             "line_total_cents": it.get("line_total"),
-            "user_marked_idk": bool(it.get("user_marked_idk")),
         })
     return out
 

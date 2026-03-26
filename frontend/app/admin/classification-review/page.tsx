@@ -9,111 +9,6 @@ function prefillNormalizedName(raw: string): string {
   return (raw ?? '').toLowerCase().replace(/\s+/g, '_')
 }
 
-type Cat = { id: string; name: string; path: string; level: number; parent_id: string | null }
-
-function CategoryCascade({
-  row,
-  level1,
-  level2,
-  level3,
-  getAncestorIds,
-  editedL1,
-  editedL2,
-  editedCategoryId,
-  onEditedL1,
-  onEditedL2,
-  onEditedCategoryId,
-  disabled,
-}: {
-  row: Row
-  level1: Cat[]
-  level2: Cat[]
-  level3: Cat[]
-  getAncestorIds: (cid: string | null) => { l1: string | null; l2: string | null }
-  editedL1: Record<string, string>
-  editedL2: Record<string, string>
-  editedCategoryId: Record<string, string>
-  onEditedL1: (id: string, val: string) => void
-  onEditedL2: (id: string, val: string) => void
-  onEditedCategoryId: (id: string, val: string) => void
-  disabled?: boolean
-}) {
-  const effectiveCategoryId = editedCategoryId[row.id] ?? row.category_id ?? ''
-  const { l1: derivedL1, l2: derivedL2 } = getAncestorIds(effectiveCategoryId || null)
-  const l1Id = (derivedL1 ?? editedL1[row.id] ?? '')
-  const l2Id = (derivedL2 ?? editedL2[row.id] ?? '')
-  const l2Options = level2.filter((c) => c.parent_id === l1Id)
-  let l3Options = level3.filter((c) => c.parent_id === l2Id)
-  if (effectiveCategoryId && !l3Options.some((c) => c.id === effectiveCategoryId)) {
-    const sel = level3.find((c) => c.id === effectiveCategoryId)
-    if (sel) l3Options = [...l3Options, sel]
-  }
-
-  const l1Name = level1.find((c) => c.id === l1Id)?.name ?? '—'
-  const l2Name = level2.find((c) => c.id === l2Id)?.name ?? '—'
-  const l3Name = level3.find((c) => c.id === effectiveCategoryId)?.name ?? '—'
-
-  if (disabled) {
-    return (
-      <>
-        <td className="px-2 py-2 truncate" title={l1Name}>{l1Name}</td>
-        <td className="px-2 py-2 truncate" title={l2Name}>{l2Name}</td>
-        <td className="px-2 py-2 truncate" title={l3Name}>{l3Name}</td>
-      </>
-    )
-  }
-
-  return (
-    <>
-      <td className="px-2 py-2 overflow-hidden">
-        <select
-          className="border border-theme-light-gray rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
-          value={l1Id}
-          onChange={(e) => {
-            const v = e.target.value || ''
-            onEditedL1(row.id, v)
-            onEditedL2(row.id, '')
-            onEditedCategoryId(row.id, '')
-          }}
-        >
-          <option value="">--</option>
-          {level1.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-      </td>
-      <td className="px-2 py-2 overflow-hidden">
-        <select
-          className="border border-theme-light-gray rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
-          value={l2Id}
-          onChange={(e) => {
-            const v = e.target.value || ''
-            onEditedL2(row.id, v)
-            onEditedCategoryId(row.id, '')
-          }}
-        >
-          <option value="">--</option>
-          {l2Options.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-      </td>
-      <td className="px-2 py-2 overflow-hidden">
-        <select
-          className="border border-theme-light-gray rounded px-1 w-full max-w-[6.5rem] focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
-          value={effectiveCategoryId}
-          onChange={(e) => onEditedCategoryId(row.id, e.target.value || '')}
-        >
-          <option value="">--</option>
-          {l3Options.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-      </td>
-    </>
-  )
-}
-
 type Row = {
   id: string
   raw_product_name: string
@@ -154,8 +49,6 @@ export default function ClassificationReviewPage() {
   const [similarTo, setSimilarTo] = useState<string | null>(null)
   // 本地编辑值，避免 onChange 触发 PATCH 导致整表刷新
   const [editedNormalizedName, setEditedNormalizedName] = useState<Record<string, string>>({})
-  const [editedCategoryL1, setEditedCategoryL1] = useState<Record<string, string>>({})
-  const [editedCategoryL2, setEditedCategoryL2] = useState<Record<string, string>>({})
   const [editedCategoryId, setEditedCategoryId] = useState<Record<string, string>>({})
   const [editedSizeQuantity, setEditedSizeQuantity] = useState<Record<string, string>>({})
   const [editedSizeUnit, setEditedSizeUnit] = useState<Record<string, string>>({})
@@ -165,8 +58,6 @@ export default function ClassificationReviewPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   // 筛选
   const [filterCat1, setFilterCat1] = useState<string>('')
-  const [filterCat2, setFilterCat2] = useState<string>('')
-  const [filterCat3, setFilterCat3] = useState<string>('')
   const [filterUnit, setFilterUnit] = useState<string>('')
   const [filterPackage, setFilterPackage] = useState<string>('')
 
@@ -269,7 +160,7 @@ export default function ClassificationReviewPage() {
       const currentName = getCurrentNormalizedName(row).trim()
       if (!currentName) throw new Error('normalized_name is required')
       const currentCategoryId = (editedCategoryId[id] ?? row.category_id ?? '').trim() || null
-      if (!currentCategoryId) throw new Error('Please select Category III')
+      if (!currentCategoryId) throw new Error('Please select a category')
       const sq = (editedSizeQuantity[id] ?? (row.size_quantity != null ? String(row.size_quantity) : '')).trim()
       const num = sq ? parseFloat(sq) : NaN
       const currentQty = !isNaN(num) ? num : null
@@ -302,8 +193,6 @@ export default function ClassificationReviewPage() {
       }
       if (!res.ok) throw new Error(data.detail?.message || data.detail || 'Confirm failed')
       setEditedNormalizedName((prev) => { const n = { ...prev }; delete n[id]; return n })
-      setEditedCategoryL1((prev) => { const n = { ...prev }; delete n[id]; return n })
-      setEditedCategoryL2((prev) => { const n = { ...prev }; delete n[id]; return n })
       setEditedCategoryId((prev) => { const n = { ...prev }; delete n[id]; return n })
       setEditedSizeQuantity((prev) => { const n = { ...prev }; delete n[id]; return n })
       setEditedSizeUnit((prev) => { const n = { ...prev }; delete n[id]; return n })
@@ -322,17 +211,6 @@ export default function ClassificationReviewPage() {
   }
 
   const level1Categories = categories.filter((c) => c.level === 1)
-  const level2Categories = categories.filter((c) => c.level === 2)
-  const level3Categories = categories.filter((c) => c.level === 3)
-
-  function getAncestorIds(categoryId: string | null): { l1: string | null; l2: string | null } {
-    if (!categoryId) return { l1: null, l2: null }
-    const l3 = categories.find((c) => c.id === categoryId)
-    if (!l3 || !l3.parent_id) return { l1: null, l2: null }
-    const l2 = categories.find((c) => c.id === l3.parent_id)
-    if (!l2 || !l2.parent_id) return { l1: null, l2: l2?.id ?? null }
-    return { l1: l2.parent_id, l2: l2.id }
-  }
 
   // 筛选 + 排序后的行
   const displayedRows = (() => {
@@ -340,20 +218,9 @@ export default function ClassificationReviewPage() {
     // 筛选
     if (filterCat1) {
       list = list.filter((r) => {
-        const cid = editedCategoryId[r.id] ?? r.category_id ?? null
-        const { l1 } = getAncestorIds(cid)
-        return l1 === filterCat1
+        const cid = editedCategoryId[r.id] ?? r.category_id ?? ''
+        return cid === filterCat1
       })
-    }
-    if (filterCat2) {
-      list = list.filter((r) => {
-        const cid = editedCategoryId[r.id] ?? r.category_id ?? null
-        const { l2 } = getAncestorIds(cid)
-        return l2 === filterCat2
-      })
-    }
-    if (filterCat3) {
-      list = list.filter((r) => (editedCategoryId[r.id] ?? r.category_id ?? '') === filterCat3)
     }
     if (filterUnit) list = list.filter((r) => (r.size_unit ?? '') === filterUnit)
     if (filterPackage) list = list.filter((r) => (r.package_type ?? '') === filterPackage)
@@ -373,8 +240,8 @@ export default function ClassificationReviewPage() {
             vb = editedNormalizedName[b.id] ?? b.normalized_name ?? prefillNormalizedName(b.raw_product_name)
             break
           case 'category':
-            va = getAncestorIds(editedCategoryId[a.id] ?? a.category_id ?? null).l1 ?? ''
-            vb = getAncestorIds(editedCategoryId[b.id] ?? b.category_id ?? null).l1 ?? ''
+            va = level1Categories.find((c) => c.id === (editedCategoryId[a.id] ?? a.category_id))?.name ?? ''
+            vb = level1Categories.find((c) => c.id === (editedCategoryId[b.id] ?? b.category_id))?.name ?? ''
             break
           case 'size_quantity':
             va = a.size_quantity ?? -Infinity
@@ -406,13 +273,6 @@ export default function ClassificationReviewPage() {
   // 筛选下拉选项（从当前 rows 提取）
   const uniqueUnits = [...new Set(rows.map((r) => r.size_unit ?? '').filter(Boolean))].sort()
   const uniquePackages = [...new Set(rows.map((r) => r.package_type ?? '').filter(Boolean))].sort()
-  const l2FilterOptions = filterCat1
-    ? level2Categories.filter((c) => c.parent_id === filterCat1)
-    : level2Categories
-  const l3FilterOptions = filterCat2
-    ? level3Categories.filter((c) => c.parent_id === filterCat2)
-    : level3Categories
-
   const handleSort = (col: string) => {
     if (sortColumn === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     else { setSortColumn(col); setSortDir('asc') }
@@ -541,31 +401,11 @@ export default function ClassificationReviewPage() {
           <span className="text-theme-dark/90 text-sm">Filter:</span>
           <select
             value={filterCat1}
-            onChange={(e) => { setFilterCat1(e.target.value); setFilterCat2(''); setFilterCat3(''); }}
+            onChange={(e) => setFilterCat1(e.target.value)}
             className="border border-theme-light-gray rounded px-2 py-1 text-sm"
           >
-            <option value="">Category I: All</option>
+            <option value="">Category: All</option>
             {level1Categories.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-          <select
-            value={filterCat2}
-            onChange={(e) => { setFilterCat2(e.target.value); setFilterCat3(''); }}
-            className="border border-theme-light-gray rounded px-2 py-1 text-sm"
-          >
-            <option value="">Category II: All</option>
-            {l2FilterOptions.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-          <select
-            value={filterCat3}
-            onChange={(e) => setFilterCat3(e.target.value)}
-            className="border border-theme-light-gray rounded px-2 py-1 text-sm"
-          >
-            <option value="">Category III: All</option>
-            {l3FilterOptions.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
@@ -589,11 +429,11 @@ export default function ClassificationReviewPage() {
               <option key={p} value={p}>{p}</option>
             ))}
           </select>
-          {(filterCat1 || filterCat2 || filterCat3 || filterUnit || filterPackage) && (
+          {(filterCat1 || filterUnit || filterPackage) && (
             <button
               type="button"
               className="text-sm text-theme-dark/90 hover:text-theme-dark underline"
-              onClick={() => { setFilterCat1(''); setFilterCat2(''); setFilterCat3(''); setFilterUnit(''); setFilterPackage(''); }}
+              onClick={() => { setFilterCat1(''); setFilterUnit(''); setFilterPackage(''); }}
             >
               Clear filters
             </button>
@@ -616,13 +456,11 @@ export default function ClassificationReviewPage() {
                   Product (raw / normalized) {sortColumn === 'raw_product_name' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th
-                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-theme-light-gray/50 w-[11%]"
+                  className="px-2 py-2 text-left cursor-pointer select-none hover:bg-theme-light-gray/50 w-[15%]"
                   onClick={() => handleSort('category')}
                 >
-                  Category I {sortColumn === 'category' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+                  Category {sortColumn === 'category' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                 </th>
-                <th className="px-2 py-2 text-left w-[11%]">Category II</th>
-                <th className="px-2 py-2 text-left w-[11%]">Category III</th>
                 <th
                   className="px-2 py-2 text-left cursor-pointer select-none hover:bg-theme-light-gray/50 w-[6%]"
                   onClick={() => handleSort('size_quantity')}
@@ -667,20 +505,24 @@ export default function ClassificationReviewPage() {
                       )}
                     </div>
                   </td>
-                  <CategoryCascade
-                    row={r}
-                    level1={level1Categories}
-                    level2={level2Categories}
-                    level3={level3Categories}
-                    getAncestorIds={getAncestorIds}
-                    editedL1={editedCategoryL1}
-                    editedL2={editedCategoryL2}
-                    editedCategoryId={editedCategoryId}
-                    onEditedL1={(id, val) => setEditedCategoryL1((p) => ({ ...p, [id]: val }))}
-                    onEditedL2={(id, val) => setEditedCategoryL2((p) => ({ ...p, [id]: val }))}
-                    onEditedCategoryId={(id, val) => setEditedCategoryId((p) => ({ ...p, [id]: val }))}
-                    disabled={r.status === 'confirmed'}
-                  />
+                  <td className="px-2 py-2 overflow-hidden">
+                    {r.status === 'confirmed' ? (
+                      <span className="truncate block" title={level1Categories.find((c) => c.id === (editedCategoryId[r.id] ?? r.category_id))?.name ?? '—'}>
+                        {level1Categories.find((c) => c.id === (editedCategoryId[r.id] ?? r.category_id))?.name ?? '—'}
+                      </span>
+                    ) : (
+                      <select
+                        className="border border-theme-light-gray rounded px-1 w-full max-w-40 focus:ring-1 focus:ring-theme-orange/50 focus:border-theme-orange"
+                        value={editedCategoryId[r.id] ?? r.category_id ?? ''}
+                        onChange={(e) => setEditedCategoryId((p) => ({ ...p, [r.id]: e.target.value || '' }))}
+                      >
+                        <option value="">--</option>
+                        {level1Categories.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </td>
                   <td className="px-2 py-2">
                     {r.status === 'confirmed' ? (
                       <span>{editedSizeQuantity[r.id] ?? (r.size_quantity != null ? String(r.size_quantity) : '')}</span>

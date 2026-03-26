@@ -15,7 +15,6 @@ type UnclassifiedItem = {
   store_address: string | null
   product_name: string
   line_total_cents: number | null
-  user_marked_idk?: boolean
 }
 
 type DismissReason = 'incorrect_item' | 'other'
@@ -248,7 +247,7 @@ export default function UnclassifiedPage() {
         <Link href="/dashboard" className="text-sm text-theme-dark/90 hover:underline shrink-0">Back to dashboard</Link>
       </div>
       <p className="text-sm text-theme-dark/90 mb-4">
-        Assign a category from your personal category tree and confirm, or click &quot;I don&apos;t know&quot; to skip.{' '}
+        Assign a category from your personal category tree and confirm, or click &quot;I don&apos;t know&quot; to let the admin handle it.{' '}
         <Link href="/dashboard/categories" className="text-theme-orange hover:underline">Manage your categories →</Link>
       </p>
 
@@ -300,7 +299,6 @@ export default function UnclassifiedPage() {
                   <tbody>
                     {byDate[date].map((it) => {
                       const id = it.record_item_id
-                      const isIdk = it.user_marked_idk === true
                       const saving = savingId === id
                       return (
                         <tr key={id} className="border-b border-theme-light-gray/50 hover:bg-theme-cream/30">
@@ -314,43 +312,39 @@ export default function UnclassifiedPage() {
                               categories={categories}
                               value={selectedCat[id] ?? null}
                               onChange={(val) => setSelectedCat((o) => ({ ...o, [id]: val }))}
-                              disabled={isIdk || saving}
+                              disabled={saving}
                               placeholder="Select category…"
                             />
                           </td>
                           <td className="py-2 align-top">
-                            {isIdk ? (
-                              <span className="text-xs text-theme-mid">I don&apos;t know</span>
-                            ) : (
-                              <div className="flex flex-col gap-1">
-                                <div className="flex items-center gap-1">
-                                  <button
-                                    type="button"
-                                    disabled={saving || !selectedCat[id]}
-                                    onClick={() => confirmCategory(it)}
-                                    className="text-xs px-2 py-1 rounded bg-green-100 text-green-800 hover:bg-green-200 disabled:opacity-50"
-                                  >
-                                    {saving ? '…' : 'Confirm'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={saving}
-                                    onClick={() => openDismissModal(it)}
-                                    className="text-xs px-2 py-1 rounded bg-theme-red/10 text-theme-red border border-theme-red/30 hover:bg-theme-red/15 disabled:opacity-50"
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
+                            <div className="flex flex-col gap-1">
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  disabled={saving || !selectedCat[id]}
+                                  onClick={() => confirmCategory(it)}
+                                  className="text-xs px-2 py-1 rounded bg-green-100 text-green-800 hover:bg-green-200 disabled:opacity-50"
+                                >
+                                  {saving ? '…' : 'Confirm'}
+                                </button>
                                 <button
                                   type="button"
                                   disabled={saving}
-                                  onClick={() => markIdk(it)}
-                                  className="text-xs px-2 py-1 rounded border border-theme-mid text-theme-dark/90 hover:bg-theme-light-gray w-fit"
+                                  onClick={() => openDismissModal(it)}
+                                  className="text-xs px-2 py-1 rounded bg-theme-red/10 text-theme-red border border-theme-red/30 hover:bg-theme-red/15 disabled:opacity-50"
                                 >
-                                  I don&apos;t know
+                                  Delete
                                 </button>
                               </div>
-                            )}
+                              <button
+                                type="button"
+                                disabled={saving}
+                                onClick={() => markIdk(it)}
+                                className="text-xs px-2 py-1 rounded border border-theme-mid text-theme-dark/90 hover:bg-theme-light-gray w-fit"
+                              >
+                                I don&apos;t know
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       )
