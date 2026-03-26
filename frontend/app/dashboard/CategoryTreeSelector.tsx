@@ -139,10 +139,10 @@ export default function CategoryTreeSelector({
   // In normal (non-search) mode, only show nodes whose parents are all expanded
   const visibleNodes = useMemo(() => {
     if (isSearching) return filtered
+    const byId = new Map(categories.map((c) => [c.id, c]))
     return flat.filter(({ node, depth }) => {
       if (depth === 0) return true // L1 always visible
       // Check all ancestors are expanded
-      const byId = new Map(categories.map((c) => [c.id, c]))
       let cur = byId.get(node.parent_id ?? '')
       while (cur) {
         if (!expanded.has(cur.id)) return false
