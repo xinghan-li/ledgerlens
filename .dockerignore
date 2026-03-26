@@ -1,0 +1,51 @@
+# Only include backend/ and content/ for the backend Docker build
+
+# Frontend (not needed in backend image)
+frontend/
+
+# Dev/docs files
+docs/
+development_log/
+amzn_json/
+gemini_response_json/
+goog_json/
+input/
+output/
+temp/
+
+# Sensitive files
+.env
+.env.*
+backend/.env
+backend/.env.*
+backend/keys/
+backend/service_account/
+
+# Python virtual environments and caches
+backend/.venv/
+backend/venv/
+**/__pycache__/
+*.py[cod]
+*.pyo
+backend/.pytest_cache/
+
+# Dev/test files in backend
+backend/tests/
+backend/scripts/
+backend/agent-tbd/
+backend/docs/
+backend/data/
+backend/output/
+backend/input/
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Temp
+*.log
+*.tmp
