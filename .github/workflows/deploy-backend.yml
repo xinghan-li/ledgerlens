@@ -33,7 +33,7 @@ jobs:
 
       - name: Build Docker Image
         run: |
-          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/backend:${{ github.sha }} ./backend
+          docker build -f backend/Dockerfile -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/backend:${{ github.sha }} .
 
       - name: Push to Artifact Registry
         run: |
