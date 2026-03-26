@@ -21,14 +21,14 @@ def _name_to_l1_category_id(name: str, supabase) -> Optional[str]:
     """
     if not name or not isinstance(name, str):
         return None
-    name_lower = name.strip().lower()
-    if not name_lower:
+    name_clean = name.strip()
+    if not name_clean:
         return None
     try:
-        res = supabase.table("categories").select("id, name").eq("level", 1).eq("is_active", True).execute()
-        for row in (res.data or []):
-            if (row.get("name") or "").lower() == name_lower:
-                return row["id"]
+        # Use ilike for case-insensitive matching in the database
+        res = supabase.table("categories").select("id").eq("level", 1).eq("is_active", True).ilike("name", name_clean).limit(1).execute()
+        if res.data:
+            return res.data[0]["id"]
         return None
     except Exception as e:
         logger.warning(f"L1 category lookup failed for '{name}': {e}")
