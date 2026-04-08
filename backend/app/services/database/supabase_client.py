@@ -2896,9 +2896,9 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
     if runs_result and runs_result.data and len(runs_result.data) > 0:
         try:
             out = runs_result.data[0].get("output_payload") or {}
-            meta = out.get("_metadata") or {}
+            meta = out.get("_metadata") or out.get("metadata") or {}
             notes = (meta.get("sum_check_notes") or "").strip()
-            reasoning = (meta.get("reasoning") or "").strip()
+            reasoning = (meta.get("reasoning") or meta.get("validation_reasoning") or "").strip()
             sum_check_passed = meta.get("sum_check_passed")
             ic_receipt = meta.get("item_count_on_receipt")
             ic_extracted = meta.get("item_count_extracted")
