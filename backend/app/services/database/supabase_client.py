@@ -15,6 +15,7 @@ import re
 
 from rapidfuzz import fuzz
 
+from ...utils.llm_metadata import llm_metadata_reasoning_text, llm_result_metadata
 from ..standardization.product_normalizer import normalize_name_for_storage
 from ...processors.enrichment.payment_types import normalize_payment_type
 
@@ -644,7 +645,7 @@ def save_processing_run(
     # Extract validation_status from output_payload for LLM stage records
     validation_status = None
     if stage == "llm" and output_payload:
-        metadata = output_payload.get("_metadata", {})
+        metadata = llm_result_metadata(output_payload)
         validation_status = metadata.get("validation_status")
         # Ensure validation_status is one of the valid values
         if validation_status and validation_status not in ("pass", "needs_review", "unknown"):
@@ -2586,7 +2587,7 @@ def _merchant_name_from_latest_llm_run(supabase: Client, receipt_ids: List[str])
                 payload = json.loads(payload)
             except Exception:
                 continue
-        meta = payload.get("_metadata") or {}
+        meta = llm_result_metadata(payload)
         rec = payload.get("receipt") or {}
         name = rec.get("merchant_name") or meta.get("merchant_name")
         if not name and isinstance(meta.get("address_correction"), dict):
@@ -2861,7 +2862,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
             if isinstance(out, str):
                 out = json.loads(out) if out else {}
             rec = out.get("receipt") or {}
-            meta = out.get("_metadata") or {}
+            meta = llm_result_metadata(out)
             addr_corr = meta.get("address_correction") or {}
             if s is None:
                 # Build receipt_data entirely from run (amounts in payload are cents).
@@ -2924,9 +2925,9 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
     if runs_result and runs_result.data and len(runs_result.data) > 0:
         try:
             out = runs_result.data[0].get("output_payload") or {}
-            meta = out.get("_metadata") or out.get("metadata") or {}
+            meta = llm_result_metadata(out)
             notes = (meta.get("sum_check_notes") or "").strip()
-            reasoning = (meta.get("reasoning") or meta.get("validation_reasoning") or "").strip()
+            reasoning = llm_metadata_reasoning_text(meta)
             sum_check_passed = meta.get("sum_check_passed")
             ic_receipt = meta.get("item_count_on_receipt")
             ic_extracted = meta.get("item_count_extracted")

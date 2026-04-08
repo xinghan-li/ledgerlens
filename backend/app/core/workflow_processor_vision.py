@@ -27,6 +27,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import settings
+from ..utils.llm_metadata import (
+    llm_metadata_reasoning_text,
+    llm_result_metadata,
+)
 from ..processors.core.sum_checker import check_receipt_sums
 from ..processors.enrichment.address_matcher import correct_address
 from ..processors.enrichment.address_grounding import ground_address_with_search
@@ -61,6 +65,22 @@ from ..services.llm.receipt_llm_processor import (
 IMAGE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 IMAGE_TARGET_LONG_EDGE = 2000      # px — sufficient for receipt text
 IMAGE_JPEG_QUALITY = 85
+
+# Legacy string confidence from older prompts / models (maps to approximate floats for the gate)
+MODEL_CONFIDENCE_LEGACY_STRING_MAP: Dict[str, float] = {
+    "high": 0.95,
+    "medium": 0.75,
+    "low": 0.45,
+}
+
+
+def _parse_model_confidence(raw: Any) -> Optional[float]:
+    """Normalize metadata confidence: numeric 0–1 or legacy strings high/medium/low."""
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        return MODEL_CONFIDENCE_LEGACY_STRING_MAP.get(raw.strip().lower())
+    return None
 
 
 def _compress_image_if_needed(image_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
@@ -320,13 +340,6 @@ def _normalize_payment_method(pm: Any) -> str:
     return str(pm)
 
 
-def _result_metadata(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Read metadata from either '_metadata' or 'metadata'."""
-    if not isinstance(result, dict):
-        return {}
-    return (result.get("_metadata") or result.get("metadata") or {})
-
-
 def _build_failure_reason(
     sum_check_passed: bool,
     sum_check_details: Dict[str, Any],
@@ -345,9 +358,9 @@ def _build_failure_reason(
         if not errors:
             lines.append("- Sum check failed (details unavailable)")
 
-    metadata = _result_metadata(llm_result)
+    metadata = llm_result_metadata(llm_result)
     model_status = metadata.get("validation_status", "unknown")
-    model_reasoning = metadata.get("reasoning") or metadata.get("validation_reasoning") or ""
+    model_reasoning = llm_metadata_reasoning_text(metadata)
     model_sum_notes = metadata.get("sum_check_notes") or ""
 
     lines.append(f"\nPrimary model validation_status: {model_status}")
@@ -449,7 +462,7 @@ def _resolve_costco_store_ids(
     redundant store-match call and is immune to address-format edge-cases).
     Falls back to a direct ``get_store_chain`` lookup when metadata is absent.
     """
-    _addr_corr = _result_metadata(primary_result).get("address_correction") or {}
+    _addr_corr = llm_result_metadata(primary_result).get("address_correction") or {}
     chain_id = _addr_corr.get("chain_id")
     location_id = _addr_corr.get("location_id")
     if not chain_id:
@@ -643,7 +656,7 @@ async def process_receipt_workflow_vision(
         if primary_result:
             primary_result = correct_address(primary_result, auto_correct=True)
             # If DB had no match, try Google Search grounding to fill missing fields
-            addr_meta = _result_metadata(primary_result).get("address_correction")
+            addr_meta = llm_result_metadata(primary_result).get("address_correction")
             if not addr_meta or not addr_meta.get("matched"):
                 try:
                     primary_result = await ground_address_with_search(primary_result)
@@ -805,17 +818,10 @@ async def process_receipt_workflow_vision(
     # Escalation only when backend sum check actually failed (numbers don't add up). Item-count mismatch
     # or model needs_review alone (e.g. receipt says 10 items, we got 9 — often deposit/fee or count difference)
     # does NOT trigger escalation; we save as needs_review for frontend and do not call stronger models.
-    model_meta = _result_metadata(primary_result)
+    model_meta = llm_result_metadata(primary_result)
     model_validation_status = model_meta.get("validation_status", "pass")
     model_confidence_raw = model_meta.get("confidence")
-
-    # Parse confidence: accept float (0-1) or legacy string ("high"/"medium"/"low")
-    model_confidence: Optional[float] = None
-    if isinstance(model_confidence_raw, (int, float)):
-        model_confidence = float(model_confidence_raw)
-    elif isinstance(model_confidence_raw, str):
-        _conf_map = {"high": 0.95, "medium": 0.75, "low": 0.45}
-        model_confidence = _conf_map.get(model_confidence_raw.lower())
+    model_confidence = _parse_model_confidence(model_confidence_raw)
 
     # Confidence gate: sum check passed but confidence below threshold → escalate
     confidence_threshold = settings.confidence_threshold
@@ -1033,7 +1039,7 @@ async def process_receipt_workflow_vision(
     # Correct address with canonical DB data
     best_result = correct_address(best_result, auto_correct=True)
     # If DB had no match, try Google Search grounding
-    esc_addr_meta = _result_metadata(best_result).get("address_correction")
+    esc_addr_meta = llm_result_metadata(best_result).get("address_correction")
     if not esc_addr_meta or not esc_addr_meta.get("matched"):
         try:
             best_result = await ground_address_with_search(best_result)
