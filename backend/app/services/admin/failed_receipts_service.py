@@ -7,6 +7,11 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.utils.llm_metadata import (
+    llm_metadata_reasoning_optional,
+    llm_result_metadata,
+)
+
 from app.services.database.supabase_client import (
     _get_client,
     get_store_chain,
@@ -295,8 +300,8 @@ def get_failed_receipt_for_edit(receipt_id: str) -> Optional[Dict[str, Any]]:
     # Expose latest run output and reasoning for admin (image + reasoning + JSON)
     payload = out.get("_output_payload") or {}
     out["run_output_payload"] = payload
-    meta = payload.get("_metadata") or payload.get("metadata") or {}
-    out["run_reasoning"] = meta.get("reasoning") or meta.get("validation_reasoning")
+    meta = llm_result_metadata(payload)
+    out["run_reasoning"] = llm_metadata_reasoning_optional(meta)
     out["run_reasoning_extra"] = {
         "validation_status": meta.get("validation_status"),
         "sum_check_notes": meta.get("sum_check_notes"),
