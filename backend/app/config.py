@@ -142,18 +142,19 @@ class Settings(BaseSettings):
         description="Google Gemini API key for LLM processing"
     )
     gemini_model: str = Field(
-        default="gemini-1.5-flash",
+        default="gemini-2.5-flash",
         alias="GEMINI_MODEL",
-        description=(
-            "Google Gemini model to use. "
-            "Free tier: gemini-1.5-flash (recommended), gemini-1.5-pro. "
-            "Paid tier: gemini-2.0-flash-exp (experimental, requires paid plan)"
-        )
+        description="Google Gemini model to use"
     )
     gemini_escalation_model: Optional[str] = Field(
         default=None,
         alias="GEMINI_ESCALATION_MODEL",
         description="When set (e.g. gemini-3.1-pro), cascade failures escalate to this model with image input for consensus with OpenAI escalation"
+    )
+    confidence_threshold: float = Field(
+        default=0.80,
+        alias="CONFIDENCE_THRESHOLD",
+        description="LLM confidence threshold (0-1). Sum check PASS + confidence below this triggers escalation."
     )
     
     # Vision-First pipeline (Route B) settings

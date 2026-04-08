@@ -314,7 +314,12 @@ def seed_user_default_categories_if_needed(user_id: str) -> bool:
         added = res.data if isinstance(res.data, int) else 0
         return added > 0
     except Exception:
-        logger.exception("sync_system_categories_to_user RPC failed for user %s", user_id)
+        logger.warning(
+            "sync_system_categories_to_user RPC failed for user %s — likely race condition or stale data; "
+            "categories endpoint still returns existing rows normally",
+            user_id,
+            exc_info=True,
+        )
         return False
 
 

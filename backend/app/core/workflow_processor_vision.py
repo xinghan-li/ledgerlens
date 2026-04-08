@@ -625,10 +625,12 @@ async def process_receipt_workflow_vision(
         timeline.end("vision_primary")
 
         if primary_usage:
+            cached = primary_usage.get("cached_tokens")
             logger.info(
-                "[vision] Primary token in=%s out=%s",
+                "[vision] Primary token in=%s out=%s cached=%s",
                 primary_usage.get("input_tokens"),
                 primary_usage.get("output_tokens"),
+                cached if cached else 0,
             )
         # Correct address with canonical DB data before saving or further processing
         if primary_result:
@@ -797,12 +799,38 @@ async def process_receipt_workflow_vision(
     # or model needs_review alone (e.g. receipt says 10 items, we got 9 — often deposit/fee or count difference)
     # does NOT trigger escalation; we save as needs_review for frontend and do not call stronger models.
     model_validation_status = (primary_result.get("_metadata") or {}).get("validation_status", "pass")
+    model_confidence_raw = (primary_result.get("_metadata") or {}).get("confidence")
+
+    # Parse confidence: accept float (0-1) or legacy string ("high"/"medium"/"low")
+    model_confidence: Optional[float] = None
+    if isinstance(model_confidence_raw, (int, float)):
+        model_confidence = float(model_confidence_raw)
+    elif isinstance(model_confidence_raw, str):
+        _conf_map = {"high": 0.95, "medium": 0.75, "low": 0.45}
+        model_confidence = _conf_map.get(model_confidence_raw.lower())
+
+    # Confidence gate: sum check passed but confidence below threshold → escalate
+    confidence_threshold = settings.confidence_threshold
+    confidence_too_low = (
+        model_confidence is not None
+        and model_confidence < confidence_threshold
+    )
 
     logger.info(
         f"[vision] sum_check_passed={sum_check_passed}, "
         f"model_status={model_validation_status}, "
+        f"confidence={model_confidence}, threshold={confidence_threshold}, "
         f"items={len(primary_result.get('items') or [])}"
     )
+
+    if sum_check_passed and confidence_too_low:
+        logger.info(
+            f"[vision] Sum check passed but confidence={model_confidence} < threshold={confidence_threshold}; "
+            f"treating as failure, escalating for {receipt_id}"
+        )
+        sum_check_passed = False
+        if db_receipt_id:
+            append_workflow_step(db_receipt_id, "confidence_gate", "fail")
 
     # -----------------------------------------------------------------------
     # STEP 3A — Backend sum check PASSED → save & categorize; escalate only when sum check fails
