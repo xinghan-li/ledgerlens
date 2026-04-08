@@ -15,6 +15,7 @@ import re
 
 from rapidfuzz import fuzz
 
+from ...utils.llm_metadata import llm_metadata_reasoning_text, llm_result_metadata
 from ..standardization.product_normalizer import normalize_name_for_storage
 from ...processors.enrichment.payment_types import normalize_payment_type
 
@@ -133,6 +134,34 @@ def _get_client() -> Client:
         )
     
     return _supabase
+
+
+def _reset_client() -> None:
+    """Discard the cached client so the next _get_client() call creates a fresh one.
+    Call this when a RemoteProtocolError / connection-terminated error is caught to
+    recover from stale HTTP/2 connections (e.g. after a PostgREST restart).
+    """
+    global _supabase
+    _supabase = None
+    logger.warning("Supabase client reset (stale connection discarded); next call will reconnect.")
+
+
+def _get_client_with_retry() -> Client:
+    """Return the Supabase client, resetting the singleton once on connection errors.
+
+    Wraps _get_client() so callers don't need to handle RemoteProtocolError themselves.
+    On a connection-level error the singleton is discarded and a fresh client is
+    created, which re-establishes the HTTP connection to PostgREST.
+    """
+    import httpcore
+    import httpx
+    try:
+        return _get_client()
+    except (httpcore.RemoteProtocolError, httpx.RemoteProtocolError,
+            httpcore.ConnectError, httpx.ConnectError) as exc:
+        logger.warning("Supabase client connection error on get: %s — resetting client", exc)
+        _reset_client()
+        return _get_client()
 
 
 def get_store_chains_with_receipt_counts(active_only: bool = True) -> List[Dict[str, Any]]:
@@ -616,7 +645,7 @@ def save_processing_run(
     # Extract validation_status from output_payload for LLM stage records
     validation_status = None
     if stage == "llm" and output_payload:
-        metadata = output_payload.get("_metadata", {})
+        metadata = llm_result_metadata(output_payload)
         validation_status = metadata.get("validation_status")
         # Ensure validation_status is one of the valid values
         if validation_status and validation_status not in ("pass", "needs_review", "unknown"):
@@ -2558,7 +2587,7 @@ def _merchant_name_from_latest_llm_run(supabase: Client, receipt_ids: List[str])
                 payload = json.loads(payload)
             except Exception:
                 continue
-        meta = payload.get("_metadata") or {}
+        meta = llm_result_metadata(payload)
         rec = payload.get("receipt") or {}
         name = rec.get("merchant_name") or meta.get("merchant_name")
         if not name and isinstance(meta.get("address_correction"), dict):
@@ -2833,7 +2862,7 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
             if isinstance(out, str):
                 out = json.loads(out) if out else {}
             rec = out.get("receipt") or {}
-            meta = out.get("_metadata") or {}
+            meta = llm_result_metadata(out)
             addr_corr = meta.get("address_correction") or {}
             if s is None:
                 # Build receipt_data entirely from run (amounts in payload are cents).
@@ -2896,9 +2925,9 @@ def get_receipt_detail_for_user(receipt_id: str, user_id: str) -> Optional[Dict[
     if runs_result and runs_result.data and len(runs_result.data) > 0:
         try:
             out = runs_result.data[0].get("output_payload") or {}
-            meta = out.get("_metadata") or out.get("metadata") or {}
+            meta = llm_result_metadata(out)
             notes = (meta.get("sum_check_notes") or "").strip()
-            reasoning = (meta.get("reasoning") or meta.get("validation_reasoning") or "").strip()
+            reasoning = llm_metadata_reasoning_text(meta)
             sum_check_passed = meta.get("sum_check_passed")
             ic_receipt = meta.get("item_count_on_receipt")
             ic_extracted = meta.get("item_count_extracted")
@@ -2949,31 +2978,44 @@ def update_record_item_category(
     """
     Update record_items.user_category_id for one item. Verifies receipt belongs to user and item belongs to receipt.
     user_category_id must belong to the same user. Pass None to clear. Returns True if updated.
+    Retries once on HTTP connection errors (e.g. after PostgREST restart resets HTTP/2 connections).
     """
-    supabase = _get_client()
-    rec = supabase.table("receipt_status").select("id").eq("id", receipt_id).eq("user_id", user_id).limit(1).execute()
-    if not rec.data:
-        return False
-    row = supabase.table("record_items").select("id").eq("id", item_id).eq("receipt_id", receipt_id).limit(1).execute()
-    if not row.data:
-        return False
-    if user_category_id:
-        cat = (
-            supabase.table("user_categories")
-            .select("id")
-            .eq("id", user_category_id)
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
-        if not cat.data:
+    import httpcore
+    import httpx
+
+    def _run() -> bool:
+        supabase = _get_client()
+        rec = supabase.table("receipt_status").select("id").eq("id", receipt_id).eq("user_id", user_id).limit(1).execute()
+        if not rec.data:
             return False
-    payload: Dict[str, Any] = {
-        "user_category_id": user_category_id if user_category_id else None,
-        "category_source": "user_override",
-    }
-    supabase.table("record_items").update(payload).eq("id", item_id).eq("receipt_id", receipt_id).execute()
-    return True
+        row = supabase.table("record_items").select("id").eq("id", item_id).eq("receipt_id", receipt_id).limit(1).execute()
+        if not row.data:
+            return False
+        if user_category_id:
+            cat = (
+                supabase.table("user_categories")
+                .select("id")
+                .eq("id", user_category_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if not cat.data:
+                return False
+        payload: Dict[str, Any] = {
+            "user_category_id": user_category_id if user_category_id else None,
+            "category_source": "user_override",
+        }
+        supabase.table("record_items").update(payload).eq("id", item_id).eq("receipt_id", receipt_id).execute()
+        return True
+
+    try:
+        return _run()
+    except (httpcore.RemoteProtocolError, httpx.RemoteProtocolError,
+            httpcore.ConnectError, httpx.ConnectError) as exc:
+        logger.warning("update_record_item_category: connection error %s — resetting client and retrying once", exc)
+        _reset_client()
+        return _run()
 
 
 def update_record_items_categories_batch(

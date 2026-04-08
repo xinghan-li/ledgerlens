@@ -1,0 +1,18 @@
+---
+description: Language rules for AI responses in this project
+globs: []
+alwaysApply: true
+---
+# Communication Language Rules
+
+The user of this project speaks **Chinese (Simplified)** and **English** only.
+
+## Rules
+
+- **Always respond in Chinese (Simplified)** when the user writes in Chinese.
+- **Always respond in English** when the user writes in English.
+- **NEVER respond in Korean** under any circumstances.
+- **NEVER respond in Japanese** under any circumstances.
+- **NEVER use any language other than Chinese (Simplified) or English.**
+
+This rule has the highest priority and overrides any other language tendencies.

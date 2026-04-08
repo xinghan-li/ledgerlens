@@ -1,3 +1,11 @@
+# Communication Language
+
+The user communicates in **Chinese (Simplified)** or **English** only.
+Always respond in the same language the user writes in.
+**Never respond in Korean or any other language.**
+
+---
+
 # gstack
 
 Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
