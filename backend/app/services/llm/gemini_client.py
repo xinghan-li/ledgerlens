@@ -88,6 +88,7 @@ RECEIPT_OUTPUT_SCHEMA = {
             "type": "object",
             "properties": {
                 "validation_status": {"type": "string", "nullable": True},
+                "reasoning": {"type": "string", "nullable": True},
                 "validation_reasoning": {"type": "string", "nullable": True},
                 "sum_check_notes": {"type": "string", "nullable": True},
                 "needs_review": {"type": "boolean", "nullable": True},
