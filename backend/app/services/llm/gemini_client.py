@@ -88,11 +88,13 @@ RECEIPT_OUTPUT_SCHEMA = {
             "type": "object",
             "properties": {
                 "validation_status": {"type": "string", "nullable": True},
+                "reasoning": {"type": "string", "nullable": True},
                 "validation_reasoning": {"type": "string", "nullable": True},
                 "sum_check_notes": {"type": "string", "nullable": True},
                 "needs_review": {"type": "boolean", "nullable": True},
                 "needs_review_reason": {"type": "string", "nullable": True},
                 "item_count": {"type": "integer", "nullable": True},
+                "confidence": {"type": "number", "nullable": True},
             },
         },
     },
@@ -388,9 +390,13 @@ def _usage_from_gemini_response(response: Any) -> Optional[Dict[str, int]]:
         return None
     in_tok = getattr(usage, "prompt_token_count", None) or getattr(usage, "promptTokenCount", None)
     out_tok = getattr(usage, "candidates_token_count", None) or getattr(usage, "candidatesTokenCount", None)
+    cached_tok = getattr(usage, "cached_content_token_count", None) or getattr(usage, "cachedContentTokenCount", None)
     if in_tok is None and out_tok is None:
         return None
-    return {"input_tokens": in_tok, "output_tokens": out_tok}
+    result = {"input_tokens": in_tok, "output_tokens": out_tok}
+    if cached_tok is not None:
+        result["cached_tokens"] = cached_tok
+    return result
 
 
 async def parse_receipt_with_gemini_vision_escalation(

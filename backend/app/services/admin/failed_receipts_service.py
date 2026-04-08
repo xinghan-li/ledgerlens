@@ -295,8 +295,8 @@ def get_failed_receipt_for_edit(receipt_id: str) -> Optional[Dict[str, Any]]:
     # Expose latest run output and reasoning for admin (image + reasoning + JSON)
     payload = out.get("_output_payload") or {}
     out["run_output_payload"] = payload
-    meta = payload.get("_metadata") or {}
-    out["run_reasoning"] = meta.get("reasoning")
+    meta = payload.get("_metadata") or payload.get("metadata") or {}
+    out["run_reasoning"] = meta.get("reasoning") or meta.get("validation_reasoning")
     out["run_reasoning_extra"] = {
         "validation_status": meta.get("validation_status"),
         "sum_check_notes": meta.get("sum_check_notes"),

@@ -320,6 +320,13 @@ def _normalize_payment_method(pm: Any) -> str:
     return str(pm)
 
 
+def _result_metadata(result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Read metadata from either '_metadata' or 'metadata'."""
+    if not isinstance(result, dict):
+        return {}
+    return (result.get("_metadata") or result.get("metadata") or {})
+
+
 def _build_failure_reason(
     sum_check_passed: bool,
     sum_check_details: Dict[str, Any],
@@ -338,9 +345,9 @@ def _build_failure_reason(
         if not errors:
             lines.append("- Sum check failed (details unavailable)")
 
-    metadata = llm_result.get("_metadata") or {}
+    metadata = _result_metadata(llm_result)
     model_status = metadata.get("validation_status", "unknown")
-    model_reasoning = metadata.get("reasoning") or ""
+    model_reasoning = metadata.get("reasoning") or metadata.get("validation_reasoning") or ""
     model_sum_notes = metadata.get("sum_check_notes") or ""
 
     lines.append(f"\nPrimary model validation_status: {model_status}")
@@ -442,7 +449,7 @@ def _resolve_costco_store_ids(
     redundant store-match call and is immune to address-format edge-cases).
     Falls back to a direct ``get_store_chain`` lookup when metadata is absent.
     """
-    _addr_corr = (primary_result.get("_metadata") or {}).get("address_correction") or {}
+    _addr_corr = _result_metadata(primary_result).get("address_correction") or {}
     chain_id = _addr_corr.get("chain_id")
     location_id = _addr_corr.get("location_id")
     if not chain_id:
@@ -625,16 +632,18 @@ async def process_receipt_workflow_vision(
         timeline.end("vision_primary")
 
         if primary_usage:
+            cached = primary_usage.get("cached_tokens")
             logger.info(
-                "[vision] Primary token in=%s out=%s",
+                "[vision] Primary token in=%s out=%s cached=%s",
                 primary_usage.get("input_tokens"),
                 primary_usage.get("output_tokens"),
+                cached if cached else 0,
             )
         # Correct address with canonical DB data before saving or further processing
         if primary_result:
             primary_result = correct_address(primary_result, auto_correct=True)
             # If DB had no match, try Google Search grounding to fill missing fields
-            addr_meta = (primary_result.get("_metadata") or {}).get("address_correction")
+            addr_meta = _result_metadata(primary_result).get("address_correction")
             if not addr_meta or not addr_meta.get("matched"):
                 try:
                     primary_result = await ground_address_with_search(primary_result)
@@ -796,13 +805,43 @@ async def process_receipt_workflow_vision(
     # Escalation only when backend sum check actually failed (numbers don't add up). Item-count mismatch
     # or model needs_review alone (e.g. receipt says 10 items, we got 9 — often deposit/fee or count difference)
     # does NOT trigger escalation; we save as needs_review for frontend and do not call stronger models.
-    model_validation_status = (primary_result.get("_metadata") or {}).get("validation_status", "pass")
+    model_meta = _result_metadata(primary_result)
+    model_validation_status = model_meta.get("validation_status", "pass")
+    model_confidence_raw = model_meta.get("confidence")
+
+    # Parse confidence: accept float (0-1) or legacy string ("high"/"medium"/"low")
+    model_confidence: Optional[float] = None
+    if isinstance(model_confidence_raw, (int, float)):
+        model_confidence = float(model_confidence_raw)
+    elif isinstance(model_confidence_raw, str):
+        _conf_map = {"high": 0.95, "medium": 0.75, "low": 0.45}
+        model_confidence = _conf_map.get(model_confidence_raw.lower())
+
+    # Confidence gate: sum check passed but confidence below threshold → escalate
+    confidence_threshold = settings.confidence_threshold
+    confidence_too_low = (
+        model_confidence is not None
+        and model_confidence < confidence_threshold
+    )
 
     logger.info(
         f"[vision] sum_check_passed={sum_check_passed}, "
         f"model_status={model_validation_status}, "
+        f"confidence={model_confidence}, threshold={confidence_threshold}, "
         f"items={len(primary_result.get('items') or [])}"
     )
+
+    if sum_check_passed and confidence_too_low:
+        logger.info(
+            f"[vision] Sum check passed but confidence={model_confidence} < threshold={confidence_threshold}; "
+            f"treating as failure, escalating for {receipt_id}"
+        )
+        sum_check_passed = False
+        sum_check_details.setdefault("errors", []).append(
+            f"Confidence score {model_confidence} is below threshold {confidence_threshold}"
+        )
+        if db_receipt_id:
+            append_workflow_step(db_receipt_id, "confidence_gate", "fail")
 
     # -----------------------------------------------------------------------
     # STEP 3A — Backend sum check PASSED → save & categorize; escalate only when sum check fails
@@ -994,7 +1033,7 @@ async def process_receipt_workflow_vision(
     # Correct address with canonical DB data
     best_result = correct_address(best_result, auto_correct=True)
     # If DB had no match, try Google Search grounding
-    esc_addr_meta = (best_result.get("_metadata") or {}).get("address_correction")
+    esc_addr_meta = _result_metadata(best_result).get("address_correction")
     if not esc_addr_meta or not esc_addr_meta.get("matched"):
         try:
             best_result = await ground_address_with_search(best_result)

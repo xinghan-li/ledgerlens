@@ -23,7 +23,16 @@
       "Bash(find backend/app/prompts -type f -name *.py -o -name *.txt -o -name *.md)",
       "mcp__claude_ai_Supabase__execute_sql",
       "mcp__claude_ai_Supabase__list_projects",
-      "mcp__claude_ai_Supabase__list_tables"
+      "mcp__claude_ai_Supabase__list_tables",
+      "Bash(ls f:/LedgerLens/.env*)",
+      "Bash(ls f:/LedgerLens/backend/.env*)",
+      "Bash(grep -E \"\\\\.\\(txt|json\\)$\")",
+      "Bash(grep -E \"\\\\.tsx$\")",
+      "Bash(ls f:/LedgerLens/backend/database/*.sql)",
+      "Bash(python -c \"from app.config import settings; print\\(f''confidence_threshold={settings.confidence_threshold}''\\)\")",
+      "Bash(python -c \"from app.services.llm.gemini_client import RECEIPT_OUTPUT_SCHEMA; print\\(''confidence'' in RECEIPT_OUTPUT_SCHEMA[''properties''][''metadata''][''properties'']\\)\")",
+      "Bash(python -c \"from app.core.workflow_processor_vision import process_receipt_vision; print\\(''workflow_processor_vision imported ok''\\)\")",
+      "Bash(python -c \"from app.core.workflow_processor_vision import process_receipt_workflow_vision; print\\(''workflow_processor_vision imported ok''\\)\")"
     ],
     "additionalDirectories": [
       "f:\\"
